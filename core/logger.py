@@ -1,10 +1,8 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
-
-# 确保日志文件夹存在
-LOG_DIR = os.path.join(os.getcwd(), "logs")
-os.makedirs(LOG_DIR, exist_ok=True)
+from config.settings import BASE_DIR, LOGS_DIR
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 def setup_logger():
     logger = logging.getLogger("KnowledgeAgent")
@@ -21,7 +19,7 @@ def setup_logger():
 
     # 滚动日志：单个日志最大10MB，保留5个备份
     file_handler = RotatingFileHandler(
-        filename=os.path.join(LOG_DIR, "processors.log"),
+        filename=os.path.join(LOGS_DIR, "processors.log"),
         maxBytes=15 * 1024 * 1024,
         backupCount=5,
         encoding="utf-8"

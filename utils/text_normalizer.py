@@ -1,10 +1,14 @@
 import re
 
-from core.singleton import singleton
 
-
-class TextNormalizer(metaclass=singleton):
+class TextNormalizer:
     """文本标准化工具（所有文件分块前必须经过）"""
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def clean(self, text: str) -> str:
         if not text:

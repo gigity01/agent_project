@@ -2,13 +2,12 @@ import os
 import uuid
 
 from core.logger import logger
-from core.settings import SUPPORTED_SUFFIXES, CLEANED_DIR, UPLOAD_DIR
+from config.settings import SUPPORT_FILE_TYPES, CLEANED_FILES_DIR, UPLOADS_DIR
 
 
 def is_safe_file_path(file_path: str) -> bool:
     real_path = os.path.abspath(file_path)
-    # 强制限定只能在上传目录，防路径穿越/绝对路径绕过
-    if not real_path.startswith(os.path.abspath(UPLOAD_DIR)):
+    if not real_path.startswith(os.path.abspath(UPLOADS_DIR)):
         logger.error(f"安全拦截：文件不在允许目录内 -> {real_path}")
         return False
 
@@ -21,7 +20,7 @@ def is_safe_file_path(file_path: str) -> bool:
         return False
 
     suffix = os.path.splitext(real_path)[-1].lower()
-    if suffix not in SUPPORTED_SUFFIXES:
+    if suffix not in SUPPORT_FILE_TYPES:
         logger.error(f"不支持的文件后缀 -> {suffix}")
         return False
 
@@ -40,7 +39,7 @@ def save_cleaned_file(content: str, origin_suffix: str) -> str | None:
         return None
 
     safe_name = get_safe_filename(origin_suffix)
-    save_path = os.path.join(CLEANED_DIR, safe_name)
+    save_path = os.path.join(CLEANED_FILES_DIR, safe_name)
 
     try:
         with open(save_path, "w", encoding="utf-8") as f:

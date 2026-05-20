@@ -1,76 +1,56 @@
-from typing import Optional
+
 import pandas as pd
 from processors.base_processor import BaseFileProcessor
 from utils.file_utils import is_safe_file_path, save_cleaned_file
 from utils.text_utils import clean_text, deduplicate_lines
+from utils.text_normalizer import normalizer  # 统一标准化
 from core.logger import logger
-
+from config.settings import CHILD_CHUNK_MAX_LEN
 
 class CsvProcessor(BaseFileProcessor):
-    # 分块大小：每批读100行，可根据文件大小调整（生产推荐 100~500）
-    CHUNK_SIZE = 100
 
-    def read(self, file_path: str) -> Optional[str]:
-        """
-        【生产级】分块读取CSV + 语义化转换
-        优点：低内存、支持超大CSV、不爆内存
-        """
+    MAX_READ_SIZE = 1024 * 1024
+
+    def read(self, file_path: str) -> str|None:
         try:
-            # ==========================================
-            # 关键：分块读取 CSV（迭代器，不加载全量数据）
-            # ==========================================
             chunk_iter = pd.read_csv(
                 file_path,
                 low_memory=True,
-                chunksize=self.CHUNK_SIZE,  # 分块核心
-                encoding_errors="ignore"  # 兼容乱码
+                chunksize=CHILD_CHUNK_MAX_LEN,
+                encoding_errors="ignore"
             )
-            semantic_lines = []
-            row_index = 0
-
-            # 迭代处理每一个块
+            lines = []
+            idx = 0
             for chunk in chunk_iter:
-                # 去除空行/空值
                 chunk = chunk.dropna(how="all")
-                columns = chunk.columns.tolist()
-
-                # 逐行语义化转换
+                cols = chunk.columns.tolist()
                 for _, row in chunk.iterrows():
-                    row_index += 1
-                    row_content = []
-                    for col in columns:
-                        value = str(row[col]).strip() if pd.notna(row[col]) else "无"
-                        row_content.append(f"{col}：{value}")
-
-                    # 生成带序号的语义行（对齐MD层级结构）
-                    semantic_line = f"【第{row_index}条数据】{'，'.join(row_content)}。"
-                    semantic_lines.append(semantic_line)
-
-            # 用空行分隔，符合标准化规则
-            return "\n\n".join(semantic_lines)
-
+                    idx += 1
+                    items = [f"{c}：{str(row[c]) if pd.notna(row[c]) else '无'}" for c in cols]
+                    lines.append(f"【第{idx}条】{'，'.join(items)}。")
+            text = "\n\n".join(lines)
+            if len(text) > self.MAX_READ_SIZE:
+                text = text[:self.MAX_READ_SIZE]
+                logger.warning(f"CSV截断: {file_path}")
+            return text
         except Exception as e:
-            logger.error(f"CSV分块读取失败: {file_path}", exc_info=True)
+            logger.error(f"CSV读取失败: {file_path}", exc_info=True)
             return None
 
-    def process(self, file_path: str) -> Optional[str]:
-        # ======================
-        # 你原有逻辑 完全不动
-        # ======================
+    def process(self, file_path: str) -> str|None:
         if not is_safe_file_path(file_path):
             return None
 
-        # 分块读取 + 语义化
         raw_text = self.read(file_path)
         if not raw_text:
             return None
 
-        # 清洗 + 去重
-        clean_txt = clean_text(raw_text)
+        # 统一标准化流程
+        norm_text = normalizer.clean(raw_text)
+        clean_txt = clean_text(norm_text)
         final_txt = deduplicate_lines(clean_txt)
 
-        # 保存结果
-        suffix = ".csv"
-        saved_path = save_cleaned_file(final_txt, suffix)
-        logger.info(f"✅ CSV处理完成 | 源文件:{file_path} | 输出:{saved_path}")
+        # 全部保存为 TXT
+        saved_path = save_cleaned_file(final_txt, origin_suffix=".txt")
+        logger.info(f"CSV处理完成: {saved_path}")
         return saved_path

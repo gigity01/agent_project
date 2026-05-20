@@ -1,18 +1,25 @@
 import re
-from core.singleton import singleton
 
-class StructureDetector(metaclass=singleton):
+
+class StructureDetector:
     """
     结构识别：标题/段落/代码块/表格
 
     """
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     # ====================== 1. 标题识别规则（不变） ======================
     TITLE_PATTERNS = [
-        re.compile(r'^#{1,6}\s+.+'),   # Markdown # 标题
-        re.compile(r'^\d+\.\s+.+'),    # 1. xxx 有序列表
-        re.compile(r'^第.+章.*'),      # 第1章 文档标题
-        re.compile(r'^=+\s*.+\s*=+$'), # === 标题 ===
-        re.compile(r'^[一二三四五六七八九十]+、.*') # 一、中文标题
+        re.compile(r'^#{1,6}\s+.+'),  # Markdown # 标题
+        re.compile(r'^\d+\.\s+.+'),  # 1. xxx 有序列表
+        re.compile(r'^第.+章.*'),  # 第1章 文档标题
+        re.compile(r'^=+\s*.+\s*=+$'),  # === 标题 ===
+        re.compile(r'^[一二三四五六七八九十]+、.*')  # 一、中文标题
     ]
 
     # ====================== 2. 代码块正则（不变） ======================
@@ -55,9 +62,9 @@ class StructureDetector(metaclass=singleton):
         # 步骤3：逐行解析剩余文本
         # ==========================================
         lines = temp_text.split("\n")
-        blocks = []              # 最终结构化块列表
-        current_section = []     # 当前正在收集的正文内容
-        current_path = []        # 当前标题层级路径
+        blocks = []  # 最终结构化块列表
+        current_section = []  # 当前正在收集的正文内容
+        current_path = []  # 当前标题层级路径
 
         for line in lines:
             line = line.strip()
@@ -140,6 +147,7 @@ class StructureDetector(metaclass=singleton):
             })
 
         return blocks
+
 
 # 全局单例对象（不变）
 detector = StructureDetector()
