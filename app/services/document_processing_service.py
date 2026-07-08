@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.config.settings import CLEANED_STORAGE_DIR
+from app.app_config.settings import CLEANED_STORAGE_DIR
 from app.repositories.document_repository import DocumentRepository
 from app.processors.factory import get_processor
 from app.schemas.document import DocumentProcessResponse

@@ -1,7 +1,7 @@
 import hashlib
 import re
 
-from config.settings import CHILD_CHUNK_MAX_LEN
+from app_config.settings import CHILD_CHUNK_MAX_LEN
 
 
 

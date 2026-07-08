@@ -1,6 +1,6 @@
 from openai import OpenAI
 
-from app.config.settings import (
+from app.app_config.settings import (
     DASHSCOPE_API_KEY,
     DASHSCOPE_BASE_URL,
     EMBEDDING_MODEL_NAME,

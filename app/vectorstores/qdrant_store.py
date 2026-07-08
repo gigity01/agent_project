@@ -3,7 +3,7 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
-from app.config.settings import (
+from app.app_config.settings import (
     QDRANT_URL,
     QDRANT_COLLECTION_NAME,
     EMBEDDING_VECTOR_SIZE,

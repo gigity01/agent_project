@@ -3,8 +3,8 @@ import hashlib
 
 from fastapi import HTTPException, UploadFile
 
-from app.config.settings import (
-    ALLOWED_FILE_EXTENSIONS,
+from app.app_config.settings import (
+    ALLOWED_EXTENSIONS,
     ALLOWED_CONTENT_TYPES,
 )
 
@@ -30,10 +30,10 @@ def get_safe_extension(filename: str) -> str:
 
     ext = filename.rsplit(".", 1)[-1].lower().strip()
 
-    if ext not in ALLOWED_FILE_EXTENSIONS:
+    if f".{ext}" not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"不支持的文件类型: {ext}"
+            detail=f"不支持的文件类型：{ext}"
         )
 
     return ext

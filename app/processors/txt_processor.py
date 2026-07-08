@@ -10,12 +10,12 @@ class TxtProcessor(BaseProcessor):
 
     def process(self, source_path: Path, cleaned_path: Path) -> ProcessResult:
 
-        self.validate_source_path(source_path)
+        source_path = self.validate_source_path(source_path)
+        cleaned_path = self.prepare_cleaned_path(cleaned_path)
 
         text = source_path.read_text(encoding="utf-8", errors="replace")
         cleaned_text = self._clean_text(text)
 
-        cleaned_path.parent.mkdir(parents=True, exist_ok=True)
         cleaned_path.write_text(cleaned_text, encoding="utf-8")
 
         return ProcessResult(

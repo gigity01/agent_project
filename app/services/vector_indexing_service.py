@@ -9,7 +9,7 @@ from app.repositories.child_chunk_repository import ChildChunkRepository
 from app.services.embedding_service import EmbeddingService
 from app.vectorstores.qdrant_store import QdrantVectorStore
 from app.schemas.vector_indexing import VectorIndexingResponse
-from app.config.settings import EMBEDDING_VECTOR_SIZE
+from app.app_config.settings import EMBEDDING_VECTOR_SIZE
 
 
 def index_document_vectors(
