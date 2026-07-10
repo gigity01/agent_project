@@ -5,7 +5,7 @@ from sqlalchemy import (
     Integer,
     ForeignKey,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.db.session import Base
@@ -44,6 +44,12 @@ class Document(Base):
     file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    artifacts = relationship(
+        "DocumentArtifact",
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
 
     created_at: Mapped[DateTime] = mapped_column(
         DateTime,

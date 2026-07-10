@@ -9,6 +9,7 @@ from app.db.session import Base
 
 from app.models.knowledge_base import KnowledgeBase
 from app.models.document import Document
+from app.models.document_artifact import DocumentArtifact
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

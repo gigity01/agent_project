@@ -14,6 +14,7 @@ from app.app_config.settings import (
     DOCUMENT_CODE_RANDOM_LENGTH,
 )
 from app.models.document import Document
+from app.policies.document_source_policy import normalize_source_type
 from app.repositories.document_repository import DocumentRepository
 from app.schemas.document import DocumentUploadFormData
 from core.observability.document_upload_logger import DocumentUploadLogger
@@ -54,15 +55,16 @@ async def save_uploaded_document(
 
     validate_content_type(file)
 
-    source_type = get_safe_extension(file.filename)
+    source_extension = get_safe_extension(file.filename)
+    source_type = normalize_source_type(source_extension)
     doc_code = generate_doc_code()
 
     actor_code = created_by_actor_code or DEFAULT_CREATED_BY_ACTOR_CODE
 
     RAW_EXTERNAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     RAW_LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    saved_filename = f"{doc_code}.{source_type}"
-    save_path = get_raw_storage_dir(source_type)
+    saved_filename = f"{doc_code}.{source_extension}"
+    save_path = get_raw_storage_dir(source_type) / saved_filename
     total_size = 0
     upload_logger = DocumentUploadLogger()
 
