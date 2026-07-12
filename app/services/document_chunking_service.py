@@ -46,7 +46,7 @@ def build_document_chunks(
     if document.cleaned_uri is None:
         raise HTTPException(status_code=400, detail="文档尚未处理，没有 cleaned_uri")
 
-    if document.status != "active":
+    if document.status != "processed":
         raise HTTPException(
             status_code=400,
             detail=f"当前文档状态不允许切块: {document.status}",

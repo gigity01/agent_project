@@ -16,7 +16,10 @@ from app.app_config.settings import (
     DOCUMENT_CODE_RANDOM_LENGTH,
 )
 from app.models.document import Document
-from app.policies.document_source_policy import normalize_source_type
+from app.policies.document_source_policy import (
+    normalize_source_type,
+    requires_external_processing,
+)
 from app.repositories.document_repository import DocumentRepository
 from app.schemas.document import DocumentUploadFormData
 from core.observability.document_upload_logger import DocumentUploadLogger
@@ -30,17 +33,11 @@ from app.utils.file_security import (
 
 READ_CHUNK_SIZE = 1024 * 1024
 
-EXTERNAL_PROCESS_SOURCE_TYPES = {"pdf", "ppt", "pptx", "doc", "docx"}
-
 def generate_doc_code() -> str:
     """生成带时间戳和随机后缀的文档业务编号。"""
     now = datetime.now().strftime("%Y%m%d%H%M%S")
     random_part = uuid4().hex[:DOCUMENT_CODE_RANDOM_LENGTH].upper()
     return f"{DOCUMENT_CODE_PREFIX}_{now}_{random_part}"
-
-def requires_external_processing(source_type: str) -> bool:
-    """判断源类型是否应保存到外部转换专用目录。"""
-    return source_type in EXTERNAL_PROCESS_SOURCE_TYPES
 
 def get_raw_storage_dir(source_type: str):
     """按处理路径返回原始文件的本地存储目录。"""

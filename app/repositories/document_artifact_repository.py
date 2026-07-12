@@ -13,7 +13,7 @@ class DocumentArtifactRepository:
         self.db = db
 
     def create(self, data: DocumentArtifactCreate) -> DocumentArtifact:
-        """依据创建请求写入派生产物，并返回已刷新实体。"""
+        """依据创建请求写入派生产物并 flush，由服务层决定何时提交。"""
         artifact = DocumentArtifact(
             document_id=data.document_id,
             artifact_code=data.artifact_code,
@@ -34,8 +34,7 @@ class DocumentArtifactRepository:
         )
 
         self.db.add(artifact)
-        self.db.commit()
-        self.db.refresh(artifact)
+        self.db.flush()
 
         return artifact
 
@@ -108,6 +107,6 @@ class DocumentArtifactRepository:
             synchronize_session=False,
         )
 
-        self.db.commit()
+        self.db.flush()
 
         return count

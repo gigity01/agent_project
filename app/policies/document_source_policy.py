@@ -8,8 +8,6 @@ EXTERNAL_PROCESS_SOURCE_TYPES = {"pdf", "ppt", "pptx", "doc", "docx"}
 SOURCE_TYPE_ALIASES = {
     "markdown": "md",
 }
-
-
 def normalize_source_type(source_type: str) -> str:
     """统一扩展名大小写、前导点和别名。"""
     normalized_source_type = source_type.lower().strip().lstrip(".")

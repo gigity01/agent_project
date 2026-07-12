@@ -52,16 +52,16 @@ class ArtifactResult(BaseModel):
     provider : str | None
     processor : str | None
 
-    file_size: str | None
-    char_count: str | None
-    line_count: str | None
+    file_size: int | None
+    char_count: int | None
+    line_count: int | None
     status: str | None
 
 
     metadata_json: dict[str,Any] | None
 
-    create_by_actor_code : str | None = None
+    created_by_actor_code: str | None = None
 
-    create_at: datetime
-    update_at: datetime
+    created_at: datetime
+    updated_at: datetime
 

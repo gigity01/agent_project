@@ -1,4 +1,4 @@
-"""编排原始文档清洗，并维护文档处理状态。"""
+"""编排原始文件准备、清洗与文档处理状态更新。"""
 
 from pathlib import Path
 
@@ -9,15 +9,18 @@ from app.app_config.settings import CLEANED_STORAGE_DIR
 from app.repositories.document_repository import DocumentRepository
 from app.processors.factory import get_processor
 from app.schemas.document import DocumentProcessResponse
+from app.services.document_source_prepare_service import prepare_process_source
+from core.observability.document_process_logger import DocumentProcessLogger
 
 
 def process_document(
     db: Session,
     document_id: int,
 ) -> DocumentProcessResponse:
-    """处理 draft 或 failed 文档，成功后将其置为 active。
+    """处理 draft 或 failed 文档，成功后将其置为 processed。
 
-    清洗失败会删除本次产生的文件，并将文档状态恢复为 failed。
+    复杂文件会先生成并登记二级 Markdown，再复用 MdProcessor；失败时回滚
+    Artifact 事务并清理本次生成的文件，客户端只收到通用错误信息。
     """
     repo = DocumentRepository(db)
 
@@ -45,42 +48,107 @@ def process_document(
             status_code=400,
             detail=f"原始路径不是有效文件: {document.source_uri}",
         )
-    CLEANED_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    cleaned_filename = f"{document.doc_code}.cleaned.{document.source_type}"
-    cleaned_path = CLEANED_STORAGE_DIR / cleaned_filename
-    repo.update_status(document, "indexing")
+    process_logger = DocumentProcessLogger()
+    process_logger.started(
+        document_id=document.id,
+        doc_code=document.doc_code,
+        source_type=document.source_type,
+    )
+    document.status = "processing"
+    db.commit()
+
+    prepared_source = None
+    cleaned_path = None
 
     try:
-        processor = get_processor(document.source_type)
+        prepared_source = prepare_process_source(
+            db=db,
+            document=document,
+            source_path=source_path,
+        )
+        CLEANED_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        cleaned_filename = (
+            f"{document.doc_code}.cleaned.{prepared_source.source_type}"
+        )
+        cleaned_path = CLEANED_STORAGE_DIR / cleaned_filename
+        processor = get_processor(prepared_source.source_type)
 
         processor.process(
-            source_path=source_path,
+            source_path=prepared_source.source_path,
             cleaned_path=cleaned_path,
         )
 
-        updated_document = repo.update_cleaned_uri(
-            document=document,
-            cleaned_uri=str(cleaned_path),
-            status="active",
+        document.cleaned_uri = str(cleaned_path)
+        document.status = "processed"
+        db.commit()
+        db.refresh(document)
+        process_logger.completed(
+            document_id=document.id,
+            doc_code=document.doc_code,
+            processed_source_type=prepared_source.source_type,
+            cleaned_uri=document.cleaned_uri,
         )
 
         return DocumentProcessResponse(
-            document_id=updated_document.id,
-            doc_code=updated_document.doc_code,
-            source_type=updated_document.source_type,
-            source_uri=updated_document.source_uri,
-            cleaned_uri=updated_document.cleaned_uri,
-            status=updated_document.status,
+            document_id=document.id,
+            doc_code=document.doc_code,
+            source_type=document.source_type,
+            source_uri=document.source_uri,
+            cleaned_uri=document.cleaned_uri,
+            status=document.status,
         )
-    except HTTPException:
-        cleaned_path.unlink(missing_ok=True)
-        repo.update_status(document, "failed")
+    except HTTPException as exc:
+        _mark_processing_failed(
+            db=db,
+            repo=repo,
+            document_id=document_id,
+            cleaned_path=cleaned_path,
+            prepared_source=prepared_source,
+        )
+        process_logger.failed(
+            document_id=document.id,
+            doc_code=document.doc_code,
+            error=exc,
+        )
         raise
 
-    except Exception as e:
-        cleaned_path.unlink(missing_ok=True)
-        repo.update_status(document, "failed")
+    except Exception as exc:
+        _mark_processing_failed(
+            db=db,
+            repo=repo,
+            document_id=document_id,
+            cleaned_path=cleaned_path,
+            prepared_source=prepared_source,
+        )
+        process_logger.failed(
+            document_id=document.id,
+            doc_code=document.doc_code,
+            error=exc,
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"文档处理失败: {str(e)}",
-        )
+            detail="文档处理失败，请稍后重试或联系管理员",
+        ) from exc
+
+
+def _mark_processing_failed(
+    *,
+    db: Session,
+    repo: DocumentRepository,
+    document_id: int,
+    cleaned_path: Path | None,
+    prepared_source,
+) -> None:
+    """回滚本次事务、清理临时文件，并将文档置为 failed。"""
+    db.rollback()
+
+    if cleaned_path is not None:
+        cleaned_path.unlink(missing_ok=True)
+
+    if prepared_source is not None:
+        prepared_source.cleanup_generated_file()
+
+    failed_document = repo.get_by_id(document_id)
+    if failed_document is not None:
+        failed_document.status = "failed"
+        db.commit()

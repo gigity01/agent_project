@@ -28,7 +28,7 @@ class DocumentArtifact(Base):
         index=True,
     )
 
-    artifact_code: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    artifact_code: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
 
     artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
     artifact_role: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -46,7 +46,12 @@ class DocumentArtifact(Base):
     char_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     line_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="created")
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="active",
+        server_default="active",
+    )
 
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
 

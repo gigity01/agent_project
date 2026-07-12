@@ -1,17 +1,10 @@
-"""按源类型选择本地清洗器或外部转换清洗器。"""
+"""按已准备完成的本地源类型选择清洗处理器。"""
 
 from fastapi import HTTPException
 
-from app.integrations.document_converter.docling_client import DoclingClient
-from app.policies.document_source_policy import (
-    EXTERNAL_PROCESS_SOURCE_TYPES,
-    LOCAL_PROCESS_SOURCE_TYPES,
-    get_expected_process_output_type,
-    normalize_source_type,
-)
+from app.policies.document_source_policy import normalize_source_type
 from app.processors.base import BaseProcessor
 from app.processors.csv_processor import CsvProcessor
-from app.processors.external_markdown_processor import ExternalMarkdownProcessor
 from app.processors.md_processor import MdProcessor
 from app.processors.txt_processor import TxtProcessor
 
@@ -26,12 +19,6 @@ PROCESSOR_MAP: dict[str, type[BaseProcessor]] = {
 def get_processor(source_type: str) -> BaseProcessor:
     """返回可处理指定源类型的处理器，不支持时抛出 HTTP 400。"""
     normalized_source_type = normalize_source_type(source_type)
-
-    if normalized_source_type in EXTERNAL_PROCESS_SOURCE_TYPES:
-        return ExternalMarkdownProcessor(
-            source_type=normalized_source_type,
-            client=DoclingClient(),
-        )
 
     processor_cls = PROCESSOR_MAP.get(normalized_source_type)
 
@@ -51,10 +38,7 @@ def get_processor_output_type(source_type: str) -> str:
     """返回指定源类型经处理后应落盘的文件类型。"""
     normalized_source_type = normalize_source_type(source_type)
 
-    if normalized_source_type in EXTERNAL_PROCESS_SOURCE_TYPES:
-        return "md"
-
-    if normalized_source_type in LOCAL_PROCESS_SOURCE_TYPES:
+    if normalized_source_type in PROCESSOR_MAP:
         return normalized_source_type
 
     raise HTTPException(
