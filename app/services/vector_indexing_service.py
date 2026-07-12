@@ -1,4 +1,4 @@
-# app/services/vector_indexing_service.py
+"""生成子块向量并将其写入 Qdrant 的业务编排服务。"""
 
 from fastapi import HTTPException
 from qdrant_client.models import PointStruct
@@ -16,6 +16,10 @@ def index_document_vectors(
     db: Session,
     document_id: int,
 ) -> VectorIndexingResponse:
+    """索引指定文档中所有待处理子块。
+
+    调用外部服务前先提交 indexing 状态；失败时尽力将本批子块标记为 failed。
+    """
     document_repo = DocumentRepository(db)
     chunk_repo = ChildChunkRepository(db)
 

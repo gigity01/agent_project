@@ -1,9 +1,10 @@
-# app/constants/document_artifact_role.py
+"""文档派生产物在处理流程中的角色枚举。"""
 
 from enum import StrEnum
 
 
 class DocumentArtifactRole(StrEnum):
+    """区分处理输入、输出、切块输入与调试产物。"""
     PROCESS_INPUT = "process_input"
     PROCESS_OUTPUT = "process_output"
     CHUNK_INPUT = "chunk_input"

@@ -1,3 +1,5 @@
+"""原始文档及其处理状态的 SQLAlchemy ORM 定义。"""
+
 from sqlalchemy import (
     BigInteger,
     String,
@@ -12,6 +14,7 @@ from app.db.session import Base
 
 
 class Document(Base):
+    """保存上传文件、清洗文件和文档生命周期元数据。"""
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

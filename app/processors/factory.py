@@ -1,4 +1,4 @@
-# app/processors/factory.py
+"""按源类型选择本地清洗器或外部转换清洗器。"""
 
 from fastapi import HTTPException
 
@@ -24,6 +24,7 @@ PROCESSOR_MAP: dict[str, type[BaseProcessor]] = {
 
 
 def get_processor(source_type: str) -> BaseProcessor:
+    """返回可处理指定源类型的处理器，不支持时抛出 HTTP 400。"""
     normalized_source_type = normalize_source_type(source_type)
 
     if normalized_source_type in EXTERNAL_PROCESS_SOURCE_TYPES:
@@ -47,6 +48,7 @@ def get_processor(source_type: str) -> BaseProcessor:
 
 
 def get_processor_output_type(source_type: str) -> str:
+    """返回指定源类型经处理后应落盘的文件类型。"""
     normalized_source_type = normalize_source_type(source_type)
 
     if normalized_source_type in EXTERNAL_PROCESS_SOURCE_TYPES:

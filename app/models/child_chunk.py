@@ -1,3 +1,5 @@
+"""用于向量化和检索的文档子块 SQLAlchemy ORM 定义。"""
+
 from datetime import datetime
 
 from sqlalchemy import BigInteger, String, DateTime, Integer, ForeignKey, Text
@@ -8,6 +10,7 @@ from app.db.session import Base
 
 
 class ChildChunk(Base):
+    """保存可独立向量化的文本片段及其索引状态。"""
     __tablename__ = "child_chunks"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

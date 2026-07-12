@@ -1,3 +1,5 @@
+"""新版知识库管理 API 的 FastAPI 路由入口。"""
+
 import app.models
 from datetime import datetime
 from typing import Optional, Literal
@@ -35,6 +37,7 @@ def document_upload_form(
     effective_at: Optional[datetime] = Form(None),
     expired_at: Optional[datetime] = Form(None),
 ) -> DocumentUploadFormData:
+    """将 multipart 表单字段组装为上传服务使用的元数据对象。"""
     return DocumentUploadFormData(
         title=title,
         kb_id=kb_id,
@@ -55,6 +58,7 @@ async def upload_document(
     meta: DocumentUploadFormData = Depends(document_upload_form),
     db: Session = Depends(get_db),
 ):
+    """接收原始文件并创建处于 draft 状态的文档记录。"""
     created_by_actor_code = "knowledge_operator_001"
 
     return await save_uploaded_document(
@@ -73,6 +77,7 @@ def trigger_document_processing(
     document_id: int,
     db: Session = Depends(get_db),
 ):
+    """触发指定文档的清洗或外部格式转换流程。"""
     return process_document(
         db=db,
         document_id=document_id,
@@ -86,6 +91,7 @@ def trigger_build_chunks(
     document_id: int,
     db: Session = Depends(get_db),
 ):
+    """基于已清洗的文本重建父块和子块。"""
     return build_document_chunks(
         db=db,
         document_id=document_id,
@@ -99,6 +105,7 @@ def trigger_vector_indexing(
     document_id: int,
     db: Session = Depends(get_db),
 ):
+    """为尚未索引的子块生成向量并写入向量库。"""
     return index_document_vectors(
         db=db,
         document_id=document_id,

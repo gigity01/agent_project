@@ -1,4 +1,4 @@
-# app/core/time.py
+"""生成日志时间戳的辅助函数。"""
 
 import time
 from datetime import datetime, timezone

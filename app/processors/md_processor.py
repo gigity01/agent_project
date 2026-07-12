@@ -1,4 +1,4 @@
-# app/processors/md_processor.py
+"""尽量保留 Markdown 标题和表格结构的清洗处理器。"""
 
 import re
 from pathlib import Path
@@ -7,6 +7,7 @@ from app.processors.base import BaseProcessor, ProcessResult
 
 
 class MdProcessor(BaseProcessor):
+    """对 Markdown 执行空白规范化，同时保留标题与表格语义。"""
     source_type = "md"
 
     HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
@@ -15,6 +16,7 @@ class MdProcessor(BaseProcessor):
     )
 
     def process(self, source_path: Path, cleaned_path: Path) -> ProcessResult:
+        """读取 Markdown、清洗并记录标题和表格数量。"""
         self.validate_source_path(source_path)
 
         text = source_path.read_text(encoding="utf-8", errors="replace")
@@ -34,6 +36,7 @@ class MdProcessor(BaseProcessor):
         )
 
     def _clean_markdown(self, text: str) -> tuple[str, dict]:
+        """规范正文、标题和连续表格行，返回清洗内容及统计信息。"""
         text = text.replace("\r\n", "\n").replace("\r", "\n")
 
         lines = text.split("\n")
@@ -95,6 +98,7 @@ class MdProcessor(BaseProcessor):
         return cleaned_text, metadata
 
     def _is_table_start(self, lines: list[str], index: int) -> bool:
+        """通过表头后的分隔行判断当前位置是否为 Markdown 表格。"""
         if index + 1 >= len(lines):
             return False
 
@@ -111,6 +115,7 @@ class MdProcessor(BaseProcessor):
         lines: list[str],
         start_index: int,
     ) -> tuple[list[str], int]:
+        """收集连续表格行，并返回下一段正文的起始下标。"""
         table_lines: list[str] = []
         index = start_index
 
@@ -129,6 +134,7 @@ class MdProcessor(BaseProcessor):
         return table_lines, index
 
     def _clean_table_line(self, line: str) -> str:
+        """统一单行表格单元格两侧的空白和竖线格式。"""
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
 
         return "| " + " | ".join(cells) + " |"

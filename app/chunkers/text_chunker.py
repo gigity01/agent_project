@@ -1,3 +1,5 @@
+"""将纯文本按段落构造父块，再按长度构造子块。"""
+
 from app.chunkers.base import (
     BaseChunker,
     ChunkBuildResult,
@@ -12,12 +14,14 @@ from app.chunkers.common import (
 
 
 class TextChunker(BaseChunker):
+    """纯文本切块策略。"""
     def build(
         self,
         text: str,
         document_title: str,
         business_scene: str | None,
     ) -> ChunkBuildResult:
+        """按空行划分父块，并为每个段落生成可检索子块。"""
         paragraphs = split_paragraphs(text)
 
         parents: list[ParentBlockData] = []

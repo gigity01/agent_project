@@ -1,3 +1,5 @@
+"""编排文件落盘、去重、文档建档和上传审计日志。"""
+
 from datetime import datetime
 from uuid import uuid4
 from fastapi import HTTPException, UploadFile
@@ -31,14 +33,17 @@ READ_CHUNK_SIZE = 1024 * 1024
 EXTERNAL_PROCESS_SOURCE_TYPES = {"pdf", "ppt", "pptx", "doc", "docx"}
 
 def generate_doc_code() -> str:
+    """生成带时间戳和随机后缀的文档业务编号。"""
     now = datetime.now().strftime("%Y%m%d%H%M%S")
     random_part = uuid4().hex[:DOCUMENT_CODE_RANDOM_LENGTH].upper()
     return f"{DOCUMENT_CODE_PREFIX}_{now}_{random_part}"
 
 def requires_external_processing(source_type: str) -> bool:
+    """判断源类型是否应保存到外部转换专用目录。"""
     return source_type in EXTERNAL_PROCESS_SOURCE_TYPES
 
 def get_raw_storage_dir(source_type: str):
+    """按处理路径返回原始文件的本地存储目录。"""
     if requires_external_processing(source_type):
         return RAW_EXTERNAL_STORAGE_DIR
 
@@ -50,6 +55,10 @@ async def save_uploaded_document(
     meta: DocumentUploadFormData,
     created_by_actor_code: str | None = None,
 ) -> Document:
+    """保存上传文件、校验内容去重，并创建 draft 状态文档。
+
+    任一步骤失败时会清理已落盘的原始文件，并写入对应审计日志。
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="必须上传文件")
 

@@ -1,3 +1,5 @@
+"""通过 DashScope OpenAI 兼容接口批量生成文本向量。"""
+
 from openai import OpenAI
 
 from app.app_config.settings import (
@@ -8,17 +10,10 @@ from app.app_config.settings import (
 )
 
 class EmbeddingService:
-    """
-      Qwen / DashScope embedding service.
-
-      输入:
-          list[str]
-
-      输出:
-          list[list[float]]
-      """
+    """封装 Qwen / DashScope embedding 服务的客户端和批量调用。"""
 
     def __init__(self) -> None:
+        """校验配置并创建 OpenAI 兼容客户端。"""
         if not DASHSCOPE_API_KEY:
             raise RuntimeError("DASHSCOPE_API_KEY 未配置")
 
@@ -28,6 +23,7 @@ class EmbeddingService:
         )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """按服务端批量限制为文本列表生成向量。"""
         if not texts:
             return []
 
@@ -43,6 +39,7 @@ class EmbeddingService:
         return all_vectors
 
     def _batch_texts(self, texts: list[str]) -> list[list[str]]:
+        """按配置的最大批量大小分组文本。"""
         return [
             texts[i:i + EMBEDDING_BATCH_SIZE]
             for i in range(0, len(texts), EMBEDDING_BATCH_SIZE)

@@ -1,3 +1,5 @@
+"""按 Markdown 标题层级构造章节父块和子块。"""
+
 import re
 
 from app.chunkers.base import (
@@ -30,6 +32,7 @@ class MarkdownChunker(BaseChunker):
         document_title: str,
         business_scene: str | None,
     ) -> ChunkBuildResult:
+        """解析标题路径，并按章节生成父块与长度受限的子块。"""
         text = normalize_text(text)
         lines = text.split("\n")
 
@@ -73,6 +76,7 @@ class MarkdownChunker(BaseChunker):
         )
 
     def _parse_sections(self, lines: list[str]) -> list[dict]:
+        """维护标题栈，将连续正文归属到当前章节。"""
         heading_stack: list[tuple[int, str]] = []
         current_title: str | None = None
         current_path: list[str] = []

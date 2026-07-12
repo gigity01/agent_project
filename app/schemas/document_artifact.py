@@ -1,9 +1,12 @@
+"""文档派生产物创建与读取接口使用的 Pydantic 模型。"""
+
 from datetime import datetime
 
 from pydantic import Field,ConfigDict,BaseModel
 from typing import Any
 
 class DocumentArtifactCreate(BaseModel):
+    """创建文档派生产物所需的持久化字段。"""
 
     document_id : int
     artifact_code: str
@@ -32,6 +35,7 @@ class DocumentArtifactCreate(BaseModel):
 
 
 class ArtifactResult(BaseModel):
+    """派生产物对外返回的完整视图。"""
     model_config = ConfigDict(from_attributes=True)
     id: int
     document_id: int

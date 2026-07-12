@@ -1,3 +1,5 @@
+"""知识库主表的 SQLAlchemy ORM 定义。"""
+
 from sqlalchemy import BigInteger, String, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -6,6 +8,7 @@ from app.db.session import Base
 
 
 class KnowledgeBase(Base):
+    """保存知识库的业务标识、检索范围和向量 collection 配置。"""
     __tablename__ = "knowledge_bases"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

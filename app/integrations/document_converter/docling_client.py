@@ -1,3 +1,5 @@
+"""Docling HTTP 服务的文件转 Markdown 客户端。"""
+
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,7 @@ from app.schemas.markdownconvert import MarkdownConvertResult
 
 
 class DoclingClient:
+    """封装 Docling 转换请求、响应校验和异常转换。"""
     provider = "docling"
 
     def __init__(
@@ -15,6 +18,7 @@ class DoclingClient:
         base_url: str = DOCLING_SERVER_URL,
         timeout_seconds: int = 100,
     ) -> None:
+        """配置转换服务根地址与请求超时时间。"""
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
@@ -26,6 +30,7 @@ class DoclingClient:
         do_ocr: bool = False,
         table_mode: str = "fast",
     ) -> MarkdownConvertResult:
+        """上传文件至 Docling，并返回非空的 Markdown 转换结果。"""
         self._validate_source_path(source_path)
 
         normalized_source_type = self._normalize_format(source_type)
@@ -76,6 +81,7 @@ class DoclingClient:
             do_ocr: bool = False,
             table_mode: str = "fast",
     ) -> dict[str, Any]:
+        """发送 multipart 转换请求，并将网络或响应错误包装为运行时异常。"""
         url = f"{self.base_url}/v1/convert/file"
 
         try:
@@ -121,6 +127,7 @@ class DoclingClient:
 
 
     def _validate_source_path(self, source_path: Path) -> None:
+        """确认待上传给转换服务的路径是存在的普通文件。"""
         if not source_path.exists():
             raise FileNotFoundError(f"源文件不存在: {source_path}")
 
@@ -128,4 +135,5 @@ class DoclingClient:
             raise ValueError(f"源路径不是有效文件: {source_path}")
 
     def _normalize_format(self, source_type: str) -> str:
+        """去除扩展名前导点并归一化大小写。"""
         return source_type.lower().lstrip(".")

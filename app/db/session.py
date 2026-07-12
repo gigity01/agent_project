@@ -1,3 +1,5 @@
+"""SQLAlchemy 引擎、会话工厂与 FastAPI 依赖注入。"""
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -18,6 +20,7 @@ Base = declarative_base()
 
 
 def get_db():
+    """按请求提供数据库会话，并在请求结束时确保关闭。"""
     db = session_local()
     try:
         yield db

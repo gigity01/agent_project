@@ -11,7 +11,7 @@
 # =======================================================
 
 
-# app/main_config/settings.py
+"""本地结构化日志的目录配置。"""
 
 from pathlib import Path
 

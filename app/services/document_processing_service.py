@@ -1,3 +1,5 @@
+"""编排原始文档清洗，并维护文档处理状态。"""
+
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -13,6 +15,10 @@ def process_document(
     db: Session,
     document_id: int,
 ) -> DocumentProcessResponse:
+    """处理 draft 或 failed 文档，成功后将其置为 active。
+
+    清洗失败会删除本次产生的文件，并将文档状态恢复为 failed。
+    """
     repo = DocumentRepository(db)
 
     document = repo.get_by_id(document_id)

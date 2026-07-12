@@ -1,3 +1,5 @@
+"""切块器共享的文本标准化、切分和向量文本组装函数。"""
+
 import hashlib
 import re
 
@@ -7,6 +9,7 @@ from app.app_config.settings import CHILD_CHUNK_MAX_LEN
 
 
 def normalize_text(text: str) -> str:
+    """统一换行和空白字符，避免格式差异影响切块结果。"""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -14,10 +17,12 @@ def normalize_text(text: str) -> str:
 
 
 def md5_text(text: str) -> str:
+    """计算文本内容哈希，用于父块去重或变更识别。"""
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
 def split_paragraphs(text: str) -> list[str]:
+    """按空行划分非空段落。"""
     text = normalize_text(text)
     paragraphs = re.split(r"\n\s*\n", text)
     return [p.strip() for p in paragraphs if p.strip()]
@@ -122,6 +127,7 @@ def build_embedding_text(
     section_path: list[str] | None,
     content: str,
 ) -> str:
+    """将章节上下文拼入待向量化文本，提升检索语义完整性。"""
     if section_path:
         return f"标题路径：{'>'.join(section_path)}\n正文：{content}"
 

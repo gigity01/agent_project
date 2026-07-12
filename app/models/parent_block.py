@@ -1,3 +1,5 @@
+"""文档父级语义块的 SQLAlchemy ORM 定义。"""
+
 from datetime import datetime
 
 from sqlalchemy import BigInteger, String, DateTime, Integer, ForeignKey, JSON
@@ -9,6 +11,7 @@ from app.db.session import Base
 
 
 class ParentBlock(Base):
+    """保存段落或 Markdown 章节等较大的语义单元。"""
     __tablename__ = "parent_blocks"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

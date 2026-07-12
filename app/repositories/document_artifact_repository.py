@@ -1,3 +1,5 @@
+"""文档派生产物 ORM 模型的查询与状态更新封装。"""
+
 from sqlalchemy.orm import Session
 
 from app.models.document_artifact import DocumentArtifact
@@ -5,10 +7,13 @@ from app.schemas.document_artifact import DocumentArtifactCreate
 
 
 class DocumentArtifactRepository:
+    """管理文档派生产物记录及其当前有效版本。"""
     def __init__(self, db: Session) -> None:
+        """绑定当前数据库会话。"""
         self.db = db
 
     def create(self, data: DocumentArtifactCreate) -> DocumentArtifact:
+        """依据创建请求写入派生产物，并返回已刷新实体。"""
         artifact = DocumentArtifact(
             document_id=data.document_id,
             artifact_code=data.artifact_code,
@@ -35,6 +40,7 @@ class DocumentArtifactRepository:
         return artifact
 
     def get_by_id(self, artifact_id: int) -> DocumentArtifact | None:
+        """按主键查询派生产物。"""
         return (
             self.db.query(DocumentArtifact)
             .filter(DocumentArtifact.id == artifact_id)
@@ -42,6 +48,7 @@ class DocumentArtifactRepository:
         )
 
     def get_by_code(self, artifact_code: str) -> DocumentArtifact | None:
+        """按业务编号查询派生产物。"""
         return (
             self.db.query(DocumentArtifact)
             .filter(DocumentArtifact.artifact_code == artifact_code)
@@ -56,6 +63,7 @@ class DocumentArtifactRepository:
         artifact_role: str | None = None,
         artifact_format: str | None = None,
     ) -> DocumentArtifact | None:
+        """查询指定条件下最新的有效派生产物。"""
         query = (
             self.db.query(DocumentArtifact)
             .filter(DocumentArtifact.document_id == document_id)
@@ -79,6 +87,7 @@ class DocumentArtifactRepository:
         artifact_role: str | None = None,
         artifact_format: str | None = None,
     ) -> int:
+        """将同类有效派生产物置为 superseded，并返回更新数量。"""
         query = (
             self.db.query(DocumentArtifact)
             .filter(DocumentArtifact.document_id == document_id)

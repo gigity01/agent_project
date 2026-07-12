@@ -1,9 +1,10 @@
-# app/constants/document_status.py
+"""上传生命周期日志使用的文档阶段枚举。"""
 
 from enum import Enum
 
 
 class DocumentStatus(str, Enum):
+    """表示文档在上传、处理、切块和索引流程中的阶段。"""
     UPLOADED = "uploaded"      # 已上传：源文件已保存
     PROCESSING = "processing"  # 处理中：清洗 / 转换 / 解析中
     CHUNKING = "chunking"      # 切块中：文档正在切分

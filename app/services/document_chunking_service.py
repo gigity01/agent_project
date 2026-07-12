@@ -1,3 +1,5 @@
+"""将已清洗文档持久化为父块和待索引子块。"""
+
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,10 +17,12 @@ from app.schemas.chunking import BuildChunksResponse
 
 
 def generate_parent_code(doc_code: str, block_index: int) -> str:
+    """为文档内的父块生成可追踪的业务编号。"""
     return f"PB_{doc_code}_{block_index:04d}_{uuid4().hex[:6].upper()}"
 
 
 def generate_chunk_code(doc_code: str, parent_index: int, chunk_index: int) -> str:
+    """为父块内的子块生成可追踪的业务编号。"""
     return f"CK_{doc_code}_{parent_index:04d}_{chunk_index:04d}_{uuid4().hex[:6].upper()}"
 
 
@@ -26,6 +30,10 @@ def build_document_chunks(
     db: Session,
     document_id: int,
 ) -> BuildChunksResponse:
+    """根据清洗文本重建当前文档的父块和子块。
+
+    同一文档重复构建时，会在同一事务中先删除旧子块，再删除旧父块。
+    """
     document_repo = DocumentRepository(db)
     parent_repo = ParentBlockRepository(db)
     child_repo = ChildChunkRepository(db)

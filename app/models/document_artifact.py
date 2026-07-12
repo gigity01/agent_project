@@ -1,4 +1,4 @@
-# app/models/document_artifact.py
+"""文档处理过程中产生的派生文件 ORM 定义。"""
 
 from sqlalchemy import (
     BigInteger,
@@ -16,6 +16,7 @@ from app.db.session import Base
 
 
 class DocumentArtifact(Base):
+    """记录转换文本、布局结果等可追溯的文档派生产物。"""
     __tablename__ = "document_artifacts"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

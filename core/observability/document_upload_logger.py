@@ -1,4 +1,4 @@
-# app/observability/document_upload_logger.py
+"""记录文档上传各阶段结构化审计事件。"""
 
 from fastapi import HTTPException
 
@@ -9,9 +9,11 @@ from core.observability.jsonl_event_writer import JsonlEventWriter
 from app.constants.document_status import DocumentStatus
 
 class DocumentUploadLogger:
+    """聚合一次上传任务的耗时、阶段和统一日志字段。"""
 
 
     def __init__(self) -> None:
+        """初始化上传计时器和按日写入的 JSONL 日志器。"""
         self.started_at_ms = now_ms()
         self.writer = JsonlEventWriter(
             log_dir=DOCUMENT_UPLOAD_LOG_DIR,
@@ -21,6 +23,7 @@ class DocumentUploadLogger:
 
 
     def _write(self, *, event: str, level: str, message: str, **fields) -> None:
+        """将公共上传上下文字段与事件特有字段合并后写入日志。"""
         payload = {
             "event": event,
             "level": level,
@@ -34,6 +37,7 @@ class DocumentUploadLogger:
 
     @property
     def duration_ms(self) -> int:
+        """返回当前上传任务自创建日志器以来的耗时。"""
         return now_ms() - self.started_at_ms
 
     def started(
@@ -49,6 +53,7 @@ class DocumentUploadLogger:
             saved_filename: str,
             created_by_actor_code: str,
     ) -> None:
+        """记录文件开始上传时的业务上下文。"""
         self._write(
             level="info",
             event="document_upload_started",
@@ -72,6 +77,7 @@ class DocumentUploadLogger:
             source_uri: str,
             file_size: int,
     ) -> None:
+        """记录原始文件成功写入本地存储的事件。"""
         self._write(
 
             level="info",
@@ -91,6 +97,7 @@ class DocumentUploadLogger:
             kb_id: int,
             content_hash: str,
     ) -> None:
+        """记录文件内容哈希计算完成的事件。"""
         self._write(
 
             level="info",
@@ -109,6 +116,7 @@ class DocumentUploadLogger:
             content_hash: str,
             duplicated_document: Document,
     ) -> None:
+        """记录因同知识库内容重复而拒绝上传的业务事件。"""
         self._write(
 
             level="warning",
@@ -127,6 +135,7 @@ class DocumentUploadLogger:
             *,
             document: Document,
     ) -> None:
+        """记录文档元数据持久化成功的完成事件。"""
         self._write(
 
             level="info",
@@ -164,6 +173,7 @@ class DocumentUploadLogger:
             file_size: int,
             cleanup_success: bool,
     ) -> None:
+        """记录由输入校验或业务规则导致的上传失败。"""
         self._write(
 
             level="warning",
@@ -200,6 +210,7 @@ class DocumentUploadLogger:
             file_size: int,
             cleanup_success: bool,
     ) -> None:
+        """记录未预期异常导致的上传失败及清理结果。"""
         self._write(
 
             level="exception",
