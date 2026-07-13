@@ -7,18 +7,19 @@ from app.models.document import Document
 
 class DocumentRepository:
     """集中处理文档记录的创建、查询和状态更新。"""
+
     def __init__(self, db: Session):
         """绑定当前请求或任务使用的数据库会话。"""
         self.db = db
 
     def create(self, document: Document) -> Document:
-        """持久化文档并刷新以取得数据库生成字段。"""
+        """加入当前事务并刷新实体，由服务层决定提交或回滚。"""
         self.db.add(document)
-        self.db.commit()
+        self.db.flush()
         self.db.refresh(document)
         return document
 
-    def get_by_id(self, document_id: int) :
+    def get_by_id(self, document_id: int) -> Document | None:
         """按主键查询单个文档。"""
         return (
             self.db.query(Document)
@@ -27,10 +28,10 @@ class DocumentRepository:
         )
 
     def get_by_hash_in_kb(
-            self,
-            kb_id: int,
-            content_hash: str,
-    ) :
+        self,
+        kb_id: int,
+        content_hash: str,
+    ) -> Document | None:
         """在知识库内查询未删除、未归档、未替换的同内容文档。"""
         return (
             self.db.query(Document)
@@ -43,25 +44,23 @@ class DocumentRepository:
         )
 
     def update_status(
-            self,
-            document: Document,
-            status: str,
+        self,
+        document: Document,
+        status: str,
     ) -> Document:
-        """更新文档状态并立即提交。"""
+        """在当前事务中更新文档状态，不主动提交。"""
         document.status = status
-        self.db.commit()
-        self.db.refresh(document)
+        self.db.flush()
         return document
 
     def update_cleaned_uri(
-            self,
-            document: Document,
-            cleaned_uri: str,
-            status: str = "active",
+        self,
+        document: Document,
+        cleaned_uri: str,
+        status: str,
     ) -> Document:
-        """写入清洗文件路径并更新文档状态。"""
+        """在当前事务中写入清洗文件路径和状态，不主动提交。"""
         document.cleaned_uri = cleaned_uri
         document.status = status
-        self.db.commit()
-        self.db.refresh(document)
+        self.db.flush()
         return document
