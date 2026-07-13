@@ -58,6 +58,7 @@ def process_document(
         doc_code=document.doc_code,
         source_type=document.source_type,
     )
+    # 先提交 processing 状态，便于并发调用者和审计日志观察到任务已开始。
     document.status = DocumentStatus.PROCESSING.value
     db.commit()
 
@@ -102,6 +103,7 @@ def process_document(
             status=document.status,
         )
     except HTTPException as exc:
+        # 保留预期的客户端错误语义，同时回滚本次处理副作用。
         _mark_processing_failed(
             db=db,
             repo=repo,

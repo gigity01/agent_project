@@ -67,6 +67,8 @@ async def save_uploaded_document(
 
     actor_code = created_by_actor_code or DEFAULT_CREATED_BY_ACTOR_CODE
 
+    # 两个目录都会预创建：选择由 source_type 决定，避免在校验通过后因目录
+    # 不存在而中断上传流程。
     RAW_EXTERNAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     RAW_LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     saved_filename = f"{doc_code}.{source_extension}"
@@ -114,6 +116,8 @@ async def save_uploaded_document(
             file_size=total_size,
         )
 
+        # 先完整落盘再计算哈希，保证去重比较的是实际保存的字节，而非分块读取的
+        # 中间状态。
         content_hash = calculate_file_hash(save_path)
 
         upload_logger.hash_calculated(
@@ -124,6 +128,7 @@ async def save_uploaded_document(
 
         repo = DocumentRepository(db)
 
+        # 去重范围限定在知识库内：不同知识库可各自维护相同原件。
         duplicated = repo.get_by_hash_in_kb(
             kb_id=meta.kb_id,
             content_hash=content_hash,
@@ -166,12 +171,14 @@ async def save_uploaded_document(
         )
 
         created_document = repo.create(document)
-
+        db.commit()
+        db.refresh(created_document)
         upload_logger.completed(document=created_document)
 
         return created_document
 
     except HTTPException as exc:
+        # 业务拒绝（格式、大小、重复等）同样可能已创建临时原件，必须清理。
         cleanup_success = cleanup_file(save_path)
         upload_logger.failed_by_http_exception(
             exc=exc,

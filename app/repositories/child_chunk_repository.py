@@ -44,7 +44,11 @@ class ChildChunkRepository:
         )
 
     def mark_indexing(self, chunks: list[ChildChunk]) -> None:
-        """将本批子块切换为 indexing 状态。"""
+        """将本批子块切换为 indexing 状态。
+
+        调用方需在发起外部 Embedding 请求前提交该状态，以便进程中断后能识别
+        已离开 pending 队列、需要人工或任务系统补偿的批次。
+        """
         for chunk in chunks:
             chunk.vector_status = "indexing"
 

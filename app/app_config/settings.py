@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Final
 
 from app.constants.document_status import DocumentStatus
+from main_config import environment
 
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
@@ -39,9 +40,10 @@ def _get_required_env(name: str) -> str:
     return value
 
 
-_load_local_env_file()
+environment.load_local_env_files(PROJECT_ROOT)
 
-# 文件上传与派生产物存储。
+# 文件上传与派生产物存储。路径保留为相对路径，由调用服务在项目根目录启动
+# 时解析；原始文件与外部转换得到的中间文本分目录存放，便于失败补偿和追溯。
 BASE_STORAGE_DIR: Final[Path] = Path("storage")
 RAW_STORAGE_DIR: Final[Path] = BASE_STORAGE_DIR / "raw"
 RAW_LOCAL_STORAGE_DIR: Final[Path] = RAW_STORAGE_DIR / "local"
@@ -75,25 +77,53 @@ DEFAULT_CREATED_BY_ACTOR_CODE: Final[str] = "knowledge_operator_001"
 DOCUMENT_CODE_PREFIX: Final[str] = "DOC"
 DOCUMENT_CODE_RANDOM_LENGTH: Final[int] = 8
 
-# 数据库与检索服务。
-SQLALCHEMY_DATABASE_URL: Final[str] = _get_required_env("SQLALCHEMY_DATABASE_URL")
+# 数据库与检索服务。连接地址可由部署环境覆盖，默认值仅适用于本地开发。
+SQLALCHEMY_DATABASE_URL: Final[str] = environment.get_required_env(
+    "SQLALCHEMY_DATABASE_URL"
+)
 CHILD_CHUNK_MAX_LEN: Final[int] = 600
-QDRANT_URL: Final[str] = "http://127.0.0.1:6333"
-QDRANT_COLLECTION_NAME: Final[str] = "knowledge_chunks"
+QDRANT_URL: Final[str] = environment.get_env(
+    "QDRANT_URL",
+    "http://127.0.0.1:6333",
+)
+QDRANT_COLLECTION_NAME: Final[str] = environment.get_env(
+    "QDRANT_COLLECTION_NAME",
+    "knowledge_chunks",
+)
 
-# DashScope / Qwen Embedding。
-DASHSCOPE_API_KEY: Final[str] = _get_required_env("DASHSCOPE_API_KEY")
-DASHSCOPE_BASE_URL: Final[str] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-EMBEDDING_MODEL_NAME: Final[str] = "text-embedding-v3"
-EMBEDDING_VECTOR_SIZE: Final[int] = 1024
-EMBEDDING_BATCH_SIZE: Final[int] = 10
+# DashScope / Qwen Embedding。向量维度必须与既有 Qdrant collection 一致，
+# 修改 EMBEDDING_VECTOR_SIZE 前需要重建或迁移 collection。
+DASHSCOPE_API_KEY: Final[str] = environment.get_required_env("DASHSCOPE_API_KEY")
+DASHSCOPE_BASE_URL: Final[str] = environment.get_env(
+    "DASHSCOPE_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+EMBEDDING_MODEL_NAME: Final[str] = environment.get_env(
+    "EMBEDDING_MODEL_NAME",
+    "text-embedding-v3",
+)
+EMBEDDING_VECTOR_SIZE: Final[int] = environment.get_int_env(
+    "EMBEDDING_VECTOR_SIZE",
+    1024,
+)
+EMBEDDING_BATCH_SIZE: Final[int] = environment.get_int_env(
+    "EMBEDDING_BATCH_SIZE",
+    10,
+)
 
-# 文档转换服务。
+# 文档转换服务。复杂办公文件先转换为 Markdown，之后复用本地 Markdown
+# 处理器，避免各格式分别维护清洗和切块逻辑。
 DOCING_SOURCE_TYPES: Final[set[str]] = {"pdf", "doc", "docx", "ppt", "pptx"}
 LOCAL_MARKDOWN_SOURCE_TYPES: Final[set[str]] = {"md"}
 LOCAL_TEXT_SOURCE_TYPES: Final[set[str]] = {"txt"}
 LOCAL_TABLE_SOURCE_TYPES: Final[set[str]] = {"csv"}
-DOCLING_SERVER_URL: Final[str] = "http://115.29.238.225:5001"
+DOCLING_SERVER_URL: Final[str] = environment.get_env(
+    "DOCLING_SERVER_URL",
+    "http://115.29.238.225:5001",
+)
 DOCLING_CONVERT_ENDPOINT: Final[str] = f"{DOCLING_SERVER_URL}/v1/convert/file"
-DOCLING_TIMEOUT_SECONDS: Final[int] = 180
-DOCLING_OUTPUT_TYPE: Final[str] = "md"
+DOCLING_TIMEOUT_SECONDS: Final[int] = environment.get_int_env(
+    "DOCLING_TIMEOUT_SECONDS",
+    180,
+)
+DOCLING_OUTPUT_TYPE: Final[str] = environment.get_env("DOCLING_OUTPUT_TYPE", "md")

@@ -63,6 +63,7 @@ class MdProcessor(BaseProcessor):
 
             blank_line_count = 0
 
+            # 表格按完整块处理，防止逐行空白清洗破坏列分隔符和表格连续性。
             if self._is_table_start(lines, index):
                 table_lines, next_index = self._collect_table_block(lines, index)
                 cleaned_lines.extend(table_lines)
@@ -119,6 +120,7 @@ class MdProcessor(BaseProcessor):
         table_lines: list[str] = []
         index = start_index
 
+        # 仅连续收集含竖线的行；遇到空行或普通正文后交回外层循环继续处理。
         while index < len(lines):
             line = lines[index].strip()
 

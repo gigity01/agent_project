@@ -47,6 +47,8 @@ def document_upload_form(
         effective_at=effective_at,
         expired_at=expired_at,
     )
+# 启动时输出已导入的 ORM 表，便于本地确认 Alembic/模型注册是否完整；
+# 它不是数据库建表操作，也不应作为生产环境的审计日志来源。
 print("REGISTERED TABLES:", list(Base.metadata.tables.keys()))
 
 @app.post(
@@ -77,7 +79,11 @@ def trigger_document_processing(
     document_id: int,
     db: Session = Depends(get_db),
 ):
-    """触发指定文档的清洗或外部格式转换流程。"""
+    """触发指定文档的清洗或外部格式转换流程。
+
+    成功后文档从 ``uploaded`` 进入 ``processed``，并产生后续切块所需的
+    ``cleaned_uri``；切块与向量索引由独立端点触发，避免长任务相互耦合。
+    """
     return process_document(
         db=db,
         document_id=document_id,
@@ -91,7 +97,11 @@ def trigger_build_chunks(
     document_id: int,
     db: Session = Depends(get_db),
 ):
-    """基于已清洗的文本重建父块和子块。"""
+    """基于已清洗的文本重建父块和子块。
+
+    该步骤会替换同一文档的旧块数据，必须在处理完成后调用，向量索引则在
+    块数据落库后单独执行。
+    """
     return build_document_chunks(
         db=db,
         document_id=document_id,
@@ -105,7 +115,10 @@ def trigger_vector_indexing(
     document_id: int,
     db: Session = Depends(get_db),
 ):
-    """为尚未索引的子块生成向量并写入向量库。"""
+    """为尚未索引的子块生成向量并写入向量库。
+
+    只处理 ``pending`` 子块，因而重复调用可用于补偿失败或新增的索引任务。
+    """
     return index_document_vectors(
         db=db,
         document_id=document_id,

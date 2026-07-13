@@ -1,4 +1,7 @@
-"""create document artifacts table
+"""创建文档派生产物表。
+
+该表将二级文本、布局结果等可追溯产物与原始 Document 分离保存，支持同类
+产物版本替换，同时保留历史记录供审计。
 
 Revision ID: a473f5174f52
 Revises: f9ea202ef500
@@ -20,6 +23,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    """创建派生产物表及其按文档、类型和状态查询所需的索引。"""
     op.create_table(
         "document_artifacts",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
@@ -110,6 +114,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """按创建的逆序删除索引和派生产物表。"""
     op.drop_index("idx_document_artifacts_provider", table_name="document_artifacts")
     op.drop_index("idx_document_artifacts_status", table_name="document_artifacts")
     op.drop_index("idx_document_artifacts_document_type_role", table_name="document_artifacts")

@@ -30,6 +30,7 @@ class DocumentArtifact(Base):
 
     artifact_code: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
 
+    # type/role/format 共同区分产物用途，例如处理输入用的 Markdown 二级文本。
     artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
     artifact_role: Mapped[str] = mapped_column(String(50), nullable=False)
     artifact_format: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -53,6 +54,7 @@ class DocumentArtifact(Base):
         server_default="active",
     )
 
+    # 转换服务返回的告警等非固定字段放入 JSON，避免为供应商细节扩展主表字段。
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
 
     created_by_actor_code: Mapped[str | None] = mapped_column(String(80), nullable=True)

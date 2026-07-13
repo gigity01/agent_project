@@ -18,7 +18,11 @@ class QdrantVectorStore:
         self.collection_name = QDRANT_COLLECTION_NAME
 
     def ensure_collection(self) -> None:
-        """仅在 collection 不存在时按当前向量维度创建它。"""
+        """仅在 collection 不存在时按当前向量维度创建它。
+
+        该方法不会修改已有 collection 的 schema；维度或距离度量变更必须通过
+        专门的迁移/重建流程处理，避免破坏已索引向量。
+        """
         if self.client.collection_exists(
             collection_name=self.collection_name
         ):

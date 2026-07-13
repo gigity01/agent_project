@@ -18,6 +18,7 @@ class Document(Base):
     """保存上传文件、清洗文件和文档生命周期元数据。"""
     __tablename__ = "documents"
 
+    # 稳定业务编号用于文件名、审计日志和外部引用；数值主键仅用于数据库关联。
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     doc_code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
 
@@ -27,6 +28,7 @@ class Document(Base):
 
     title: Mapped[str] = mapped_column(String(255), nullable=False)
 
+    # ``source_uri`` 指向原件，``cleaned_uri`` 指向可直接切块的标准化文本。
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
     source_uri: Mapped[str] = mapped_column(String(500), nullable=False)
     cleaned_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -34,6 +36,7 @@ class Document(Base):
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
+    # 状态由上传、处理、切块和索引服务推进；不要只依靠某个 URI 是否为空判断。
     status: Mapped[str] = mapped_column(
         String(30),
         nullable=False,

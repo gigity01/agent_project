@@ -13,7 +13,11 @@ class DocumentRepository:
         self.db = db
 
     def create(self, document: Document) -> Document:
-        """加入当前事务并刷新实体，由服务层决定提交或回滚。"""
+        """持久化文档并刷新以取得数据库生成字段。
+
+        仓储层只 ``flush``，不 ``commit``；上传服务据此把文件落盘、去重和建档
+        置于同一个由服务层控制的事务边界内。
+        """
         self.db.add(document)
         self.db.flush()
         self.db.refresh(document)
@@ -48,7 +52,7 @@ class DocumentRepository:
         document: Document,
         status: str,
     ) -> Document:
-        """在当前事务中更新文档状态，不主动提交。"""
+        """在当前事务中更新文档状态；调用方负责决定提交或回滚。"""
         document.status = status
         self.db.flush()
         return document
@@ -59,7 +63,7 @@ class DocumentRepository:
         cleaned_uri: str,
         status: str,
     ) -> Document:
-        """在当前事务中写入清洗文件路径和状态，不主动提交。"""
+        """在当前事务中写入清洗路径和状态；调用方负责提交或回滚。"""
         document.cleaned_uri = cleaned_uri
         document.status = status
         self.db.flush()

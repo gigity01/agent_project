@@ -42,6 +42,8 @@ def index_document_vectors(
     chunk_ids = [chunk.id for chunk in chunks]
 
     try:
+        # 外部 Embedding/Qdrant 调用无法加入数据库事务，先持久化 indexing 状态，
+        # 失败时再尽力转为 failed，供后续补偿任务识别。
         chunk_repo.mark_indexing(chunks)
         db.commit()
 
@@ -63,6 +65,7 @@ def index_document_vectors(
 
         points: list[PointStruct] = []
 
+        # Qdrant point id 与关系库子块主键一一对应，便于跨存储定位和幂等 upsert。
         for chunk, vector in zip(chunks, vectors):
             point_id = int(chunk.id)
 
@@ -107,6 +110,8 @@ def index_document_vectors(
         )
 
     except Exception as e:
+        # 这里的失败标记是补偿动作；若补偿本身失败，保留原异常并让运维从日志中
+        # 发现仍处于 indexing 的块。
         db.rollback()
 
         try:

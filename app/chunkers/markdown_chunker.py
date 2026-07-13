@@ -89,6 +89,8 @@ class MarkdownChunker(BaseChunker):
 
             content = "\n".join(current_content_lines).strip()
 
+            # 标题本身不作为可检索父块：只有带正文的章节才落入结果，避免产生
+            # 无内容的向量任务。
             if current_title and content:
                 sections.append(
                     {
@@ -109,6 +111,8 @@ class MarkdownChunker(BaseChunker):
                 level = len(match.group(1))
                 title = match.group(2).strip()
 
+                # 栈只保留当前标题的祖先；同级或更深标题出现时，先移除已结束的
+                # 分支，再由剩余栈构造稳定的 section_path。
                 while heading_stack and heading_stack[-1][0] >= level:
                     heading_stack.pop()
 

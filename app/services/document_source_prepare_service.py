@@ -46,6 +46,7 @@ def prepare_process_source(
     """
     source_type = normalize_source_type(document.source_type)
 
+    # 本地可处理格式不生成二级产物，避免无意义复制并保留原件作为处理输入。
     if not requires_external_processing(source_type):
         return PreparedProcessSource(
             source_path=source_path,
@@ -65,6 +66,7 @@ def prepare_process_source(
         secondary_path.write_text(markdown_result.markdown, encoding="utf-8")
         artifact_repository = DocumentArtifactRepository(db)
 
+        # 同一用途只保留一个 active 产物，旧版本仍留在库中用于审计和回溯。
         artifact_repository.mark_active_as_superseded(
             document_id=document.id,
             artifact_type="secondary_text",
@@ -91,6 +93,7 @@ def prepare_process_source(
             )
         )
     except Exception:
+        # 文件系统不受数据库事务管理；持久化失败时显式删除本次新生成的孤儿文件。
         secondary_path.unlink(missing_ok=True)
         raise
 

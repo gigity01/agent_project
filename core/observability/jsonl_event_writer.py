@@ -14,12 +14,17 @@ class JsonlEventWriter:
         self.file_prefix = file_prefix
 
     def write(self, event: dict[str, Any]) -> None:
-        """为事件补充创建时间并以单行 JSON 追加写入。"""
+        """为事件补充创建时间并以单行 JSON 追加写入。
+
+        每个事件独占一行，便于日志采集器流式读取和故障时跳过损坏行；未知对象
+        通过 ``default=str`` 降级序列化，确保审计日志不会反向阻断业务流程。
+        """
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
 
         log_path = self._get_log_path()
 
+        # 调用方显式提供的事件时间优先，避免异步补写日志时覆盖真实发生时间。
         event.setdefault("created_at", now_utc_iso())
 
         with log_path.open("a", encoding="utf-8") as file:

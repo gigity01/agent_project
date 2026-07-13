@@ -1,4 +1,4 @@
-"""add document original filename and file size
+"""登记已手工添加的原始文件名和文件大小字段。
 
 Revision ID: f9ea202ef500
 Revises: da90f1ff6fb9
@@ -19,11 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Schema already changed manually:
-    # documents.original_filename
-    # documents.file_size
+    # 字段已在此迁移生成前由人工变更，故只记录历史而不重复执行 DDL。
     pass
 
 
 def downgrade() -> None:
+    """不回滚已手工维护的字段，避免迁移脚本误删生产数据。"""
     pass

@@ -23,12 +23,14 @@ class ChildChunk(Base):
     domain_code: Mapped[str] = mapped_column(String(100), nullable=False)
     business_scene: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # ``chunk_index`` 只在同一父块内排序；全局顺序由父块的 ``block_index`` 决定。
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunk_type: Mapped[str] = mapped_column(String(50), nullable=False, default="text")
 
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_text: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # 向量状态将关系库的任务状态与 Qdrant 写入结果关联，支持失败后按块重试。
     token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     vector_status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     qdrant_point_id: Mapped[str | None] = mapped_column(String(100), nullable=True)

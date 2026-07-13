@@ -84,6 +84,7 @@ def split_text_to_child_chunks(
 
 
 def _split_long_sentence(text: str, max_len: int) -> list[str]:
+    """优先在空格处分割超长句；无空格语言则交由硬切分保证长度上限。"""
     parts = text.split(" ")
 
     if len(parts) <= 1:
@@ -116,6 +117,7 @@ def _split_long_sentence(text: str, max_len: int) -> list[str]:
 
 
 def _hard_split(text: str, max_len: int) -> list[str]:
+    """在没有可用语义边界时按字符数切分，作为最后的长度保护。"""
     return [
         text[i:i + max_len].strip()
         for i in range(0, len(text), max_len)
@@ -128,6 +130,8 @@ def build_embedding_text(
     content: str,
 ) -> str:
     """将章节上下文拼入待向量化文本，提升检索语义完整性。"""
+    # 父块正文仍保存原始内容；这里只为检索向量补入章节语境，避免同名术语
+    # 在不同章节中被编码为难以区分的孤立片段。
     if section_path:
         return f"标题路径：{'>'.join(section_path)}\n正文：{content}"
 

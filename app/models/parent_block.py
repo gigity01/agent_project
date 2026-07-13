@@ -22,10 +22,12 @@ class ParentBlock(Base):
     domain_code: Mapped[str] = mapped_column(String(100), nullable=False)
     business_scene: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # 父块保留完整段落/章节语义，子块才是实际向量化和检索的最小单元。
     block_type: Mapped[str] = mapped_column(String(50), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     section_path: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
+    # content_hash 用于发现同一文档重建时内容是否变化，section_path 保留标题语境。
     content: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(CHAR(32), nullable=True)
 
