@@ -5,7 +5,11 @@ from typing import Any
 
 import requests
 
-from app.app_config.settings import DOCLING_OUTPUT_TYPE, DOCLING_SERVER_URL
+from app.app_config.settings import (
+    DOCLING_CONVERT_ENDPOINT,
+    DOCLING_OUTPUT_TYPE,
+    DOCLING_TIMEOUT_SECONDS,
+)
 from app.schemas.markdownconvert import MarkdownConvertResult
 
 
@@ -15,11 +19,11 @@ class DoclingClient:
 
     def __init__(
         self,
-        base_url: str = DOCLING_SERVER_URL,
-        timeout_seconds: int = 100,
+        convert_endpoint: str = DOCLING_CONVERT_ENDPOINT,
+        timeout_seconds: int = DOCLING_TIMEOUT_SECONDS,
     ) -> None:
-        """配置转换服务根地址与请求超时时间。"""
-        self.base_url = base_url.rstrip("/")
+        """配置转换服务地址与请求超时时间。"""
+        self.convert_endpoint = convert_endpoint.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     def convert_to_markdown(
@@ -82,7 +86,7 @@ class DoclingClient:
             table_mode: str = "fast",
     ) -> dict[str, Any]:
         """发送 multipart 转换请求，并将网络或响应错误包装为运行时异常。"""
-        url = f"{self.base_url}/v1/convert/file"
+        url = self.convert_endpoint
 
         try:
             with source_path.open("rb") as file:

@@ -13,6 +13,7 @@ from app.repositories.parent_block_repository import ParentBlockRepository
 from app.repositories.child_chunk_repository import ChildChunkRepository
 from app.chunkers.factory import get_chunker
 from app.chunkers.common import md5_text
+from app.policies.document_source_policy import get_expected_process_output_type
 from app.schemas.chunking import BuildChunksResponse
 
 
@@ -62,7 +63,8 @@ def build_document_chunks(
 
     text = cleaned_path.read_text(encoding="utf-8", errors="ignore")
 
-    chunker = get_chunker(document.source_type)
+    chunk_source_type = get_expected_process_output_type(document.source_type)
+    chunker = get_chunker(chunk_source_type)
 
     result = chunker.build(
         text=text,

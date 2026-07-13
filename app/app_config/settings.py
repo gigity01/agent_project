@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Final
 
+from app.constants.document_status import DocumentStatus
+
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 ENV_FILE: Final[Path] = PROJECT_ROOT / ".env"
@@ -67,7 +69,7 @@ ALLOWED_CONTENT_TYPES: Final[set[str]] = {
 }
 
 # 文档默认值与编号规则。
-DEFAULT_DOCUMENT_STATUS: Final[str] = "draft"
+DEFAULT_DOCUMENT_STATUS: Final[str] = DocumentStatus.UPLOADED.value
 DEFAULT_DOCUMENT_VERSION: Final[int] = 1
 DEFAULT_CREATED_BY_ACTOR_CODE: Final[str] = "knowledge_operator_001"
 DOCUMENT_CODE_PREFIX: Final[str] = "DOC"
@@ -92,6 +94,6 @@ LOCAL_MARKDOWN_SOURCE_TYPES: Final[set[str]] = {"md"}
 LOCAL_TEXT_SOURCE_TYPES: Final[set[str]] = {"txt"}
 LOCAL_TABLE_SOURCE_TYPES: Final[set[str]] = {"csv"}
 DOCLING_SERVER_URL: Final[str] = "http://115.29.238.225:5001"
-DOCLING_CONVERT_ENDPOINT: Final[str] = f"{DOCLING_SERVER_URL}/convert"
+DOCLING_CONVERT_ENDPOINT: Final[str] = f"{DOCLING_SERVER_URL}/v1/convert/file"
 DOCLING_TIMEOUT_SECONDS: Final[int] = 180
 DOCLING_OUTPUT_TYPE: Final[str] = "md"

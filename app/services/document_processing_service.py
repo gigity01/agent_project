@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.app_config.settings import CLEANED_STORAGE_DIR
+from app.constants.document_status import DocumentStatus
 from app.repositories.document_repository import DocumentRepository
 from app.processors.factory import get_processor
 from app.schemas.document import DocumentProcessResponse
@@ -29,7 +30,10 @@ def process_document(
     if not document:
         raise HTTPException(status_code=404, detail="文档不存在")
 
-    if document.status not in ["draft", "failed"]:
+    if document.status not in {
+        DocumentStatus.UPLOADED.value,
+        DocumentStatus.FAILED.value,
+    }:
         raise HTTPException(
             status_code=400,
             detail=f"当前文档状态不允许处理: {document.status}",
@@ -54,7 +58,7 @@ def process_document(
         doc_code=document.doc_code,
         source_type=document.source_type,
     )
-    document.status = "processing"
+    document.status = DocumentStatus.PROCESSING.value
     db.commit()
 
     prepared_source = None
@@ -79,7 +83,7 @@ def process_document(
         )
 
         document.cleaned_uri = str(cleaned_path)
-        document.status = "processed"
+        document.status = DocumentStatus.PROCESSED.value
         db.commit()
         db.refresh(document)
         process_logger.completed(
@@ -150,5 +154,5 @@ def _mark_processing_failed(
 
     failed_document = repo.get_by_id(document_id)
     if failed_document is not None:
-        failed_document.status = "failed"
+        failed_document.status = DocumentStatus.FAILED.value
         db.commit()

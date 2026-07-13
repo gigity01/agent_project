@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.constants.document_status import DocumentStatus
 
 
 class Document(Base):
@@ -33,7 +34,11 @@ class Document(Base):
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=DocumentStatus.UPLOADED.value,
+    )
     replaced_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     risk_level: Mapped[str | None] = mapped_column(String(30), nullable=True)
