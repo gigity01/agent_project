@@ -1,16 +1,22 @@
 """编排原始文件准备、清洗与文档处理状态更新。"""
 
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.app_config.settings import CLEANED_STORAGE_DIR
 from app.constants.document_status import DocumentStatus
+from app.repositories.document_artifact_repository import (
+    DocumentArtifactRepository,
+)
 from app.repositories.document_repository import DocumentRepository
 from app.processors.factory import get_processor
+from app.schemas.document_artifact import DocumentArtifactCreate
 from app.schemas.document import DocumentProcessResponse
 from app.services.document_source_prepare_service import prepare_process_source
+from app.utils.file_security import calculate_file_hash
 from core.observability.document_process_logger import DocumentProcessLogger
 
 
@@ -78,9 +84,38 @@ def process_document(
         cleaned_path = CLEANED_STORAGE_DIR / cleaned_filename
         processor = get_processor(prepared_source.source_type)
 
-        processor.process(
+        process_result = processor.process(
             source_path=prepared_source.source_path,
             cleaned_path=cleaned_path,
+        )
+
+        artifact_repository = DocumentArtifactRepository(db)
+        artifact_repository.mark_active_as_superseded(
+            document_id=document.id,
+            artifact_type="cleaned_text",
+            artifact_role="process_output",
+            artifact_format=process_result.source_type,
+        )
+        artifact_repository.create(
+            DocumentArtifactCreate(
+                document_id=document.id,
+                artifact_code=_generate_cleaned_artifact_code(
+                    document.doc_code,
+                    process_result.source_type,
+                ),
+                artifact_type="cleaned_text",
+                artifact_role="process_output",
+                artifact_format=process_result.source_type,
+                artifact_uri=str(cleaned_path),
+                artifact_hash=calculate_file_hash(cleaned_path),
+                processor=processor.__class__.__name__,
+                file_size=cleaned_path.stat().st_size,
+                char_count=process_result.char_count,
+                line_count=process_result.line_count,
+                status="active",
+                metadata=process_result.metadata,
+                created_by_actor_code=document.created_by_actor_code,
+            )
         )
 
         document.cleaned_uri = str(cleaned_path)
@@ -158,3 +193,15 @@ def _mark_processing_failed(
     if failed_document is not None:
         failed_document.status = DocumentStatus.FAILED.value
         db.commit()
+
+
+def _generate_cleaned_artifact_code(
+    doc_code: str,
+    artifact_format: str,
+) -> str:
+    """生成不超过 Artifact 字段长度的唯一 cleaned 产物编号。"""
+    suffix = (
+        f"_ART_CLEANED_{artifact_format.upper()}_"
+        f"{uuid4().hex[:12].upper()}"
+    )
+    return f"{doc_code[:100 - len(suffix)]}{suffix}"

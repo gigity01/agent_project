@@ -1,29 +1,38 @@
-"""尽量保留 Markdown 标题和表格结构的清洗处理器。"""
+"""Markdown 文本规范化与 ATX 标题路径提取处理器。"""
 
 import re
 from pathlib import Path
+from typing import Any
 
 from app.processors.base import BaseProcessor, ProcessResult
 
 
 class MdProcessor(BaseProcessor):
-    """对 Markdown 执行空白规范化，同时保留标题与表格语义。"""
+    """低风险清理 Markdown，并提取 ATX 标题层级元信息。"""
+
     source_type = "md"
 
-    HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
-    TABLE_SEPARATOR_PATTERN = re.compile(
-        r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$"
+    HEADING_PATTERN = re.compile(
+        r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)\s*$"
     )
 
-    def process(self, source_path: Path, cleaned_path: Path) -> ProcessResult:
-        """读取 Markdown、清洗并记录标题和表格数量。"""
-        self.validate_source_path(source_path)
+    def process(
+        self,
+        source_path: Path,
+        cleaned_path: Path,
+    ) -> ProcessResult:
+        """严格读取 UTF-8 Markdown，规范文本并记录标题区段。"""
+        source_path = self.validate_source_path(source_path)
+        cleaned_path = self.prepare_cleaned_path(cleaned_path)
 
-        text = source_path.read_text(encoding="utf-8", errors="replace")
+        text = source_path.read_text(
+            encoding="utf-8-sig",
+            errors="strict",
+        )
 
-        cleaned_text, metadata = self._clean_markdown(text)
+        cleaned_text = self._normalize_text(text)
+        sections = self._extract_sections(cleaned_text)
 
-        cleaned_path.parent.mkdir(parents=True, exist_ok=True)
         cleaned_path.write_text(cleaned_text, encoding="utf-8")
 
         return ProcessResult(
@@ -32,111 +41,113 @@ class MdProcessor(BaseProcessor):
             source_type=self.source_type,
             char_count=len(cleaned_text),
             line_count=len(cleaned_text.splitlines()),
-            metadata=metadata,
+            metadata={
+                "encoding": "utf-8",
+                "heading_count": sum(
+                    1
+                    for section in sections
+                    if section["heading_line"] is not None
+                ),
+                "section_count": len(sections),
+                "sections": sections,
+                "cleaning_strategy": (
+                    "normalize_markdown_text_extract_heading_paths"
+                ),
+            },
         )
 
-    def _clean_markdown(self, text: str) -> tuple[str, dict]:
-        """规范正文、标题和连续表格行，返回清洗内容及统计信息。"""
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    def _normalize_text(self, text: str) -> str:
+        """保留行首空白，规范换行、空行和 ATX 标题格式。"""
+        text = (
+            text.replace("\x00", "")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+        )
 
-        lines = text.split("\n")
         cleaned_lines: list[str] = []
 
-        heading_count = 0
-        table_count = 0
-        blank_line_count = 0
+        for raw_line in text.split("\n"):
+            line = raw_line.rstrip()
 
-        index = 0
-
-        while index < len(lines):
-            line = lines[index].rstrip()
-            stripped_line = line.strip()
-
-            if not stripped_line:
-                blank_line_count += 1
-
-                if blank_line_count <= 1:
+            if not line.strip():
+                if cleaned_lines and cleaned_lines[-1] != "":
                     cleaned_lines.append("")
-
-                index += 1
                 continue
 
-            blank_line_count = 0
-
-            # 表格按完整块处理，防止逐行空白清洗破坏列分隔符和表格连续性。
-            if self._is_table_start(lines, index):
-                table_lines, next_index = self._collect_table_block(lines, index)
-                cleaned_lines.extend(table_lines)
-                cleaned_lines.append("")
-
-                table_count += 1
-                index = next_index
-                continue
-
-            heading_match = self.HEADING_PATTERN.match(stripped_line)
+            heading_match = self.HEADING_PATTERN.match(line)
 
             if heading_match:
-                heading_count += 1
-
-                heading_marks = heading_match.group(1)
-                heading_text = heading_match.group(2).strip()
-
-                cleaned_lines.append(f"{heading_marks} {heading_text}")
-                index += 1
+                marks = heading_match.group(1)
+                title = heading_match.group(2).strip()
+                cleaned_lines.append(f"{marks} {title}")
                 continue
 
-            cleaned_lines.append(stripped_line)
-            index += 1
+            cleaned_lines.append(line)
 
-        cleaned_text = "\n".join(cleaned_lines).strip() + "\n"
+        while cleaned_lines and cleaned_lines[0] == "":
+            cleaned_lines.pop(0)
 
-        metadata = {
-            "heading_count": heading_count,
-            "table_count": table_count,
-            "cleaning_strategy": "markdown_structure_preserved",
-        }
+        while cleaned_lines and cleaned_lines[-1] == "":
+            cleaned_lines.pop()
 
-        return cleaned_text, metadata
+        cleaned_text = "\n".join(cleaned_lines)
 
-    def _is_table_start(self, lines: list[str], index: int) -> bool:
-        """通过表头后的分隔行判断当前位置是否为 Markdown 表格。"""
-        if index + 1 >= len(lines):
-            return False
+        if cleaned_text:
+            cleaned_text += "\n"
 
-        current_line = lines[index].strip()
-        next_line = lines[index + 1].strip()
+        return cleaned_text
 
-        if "|" not in current_line:
-            return False
+    def _extract_sections(self, text: str) -> list[dict[str, Any]]:
+        """按 ATX 标题切分区段，并记录标题路径与清洗后行范围。"""
+        lines = text.splitlines()
 
-        return bool(self.TABLE_SEPARATOR_PATTERN.match(next_line))
+        if not lines:
+            return []
 
-    def _collect_table_block(
-        self,
-        lines: list[str],
-        start_index: int,
-    ) -> tuple[list[str], int]:
-        """收集连续表格行，并返回下一段正文的起始下标。"""
-        table_lines: list[str] = []
-        index = start_index
+        sections: list[dict[str, Any]] = []
+        heading_stack: list[tuple[int, str]] = []
+        current_section: dict[str, Any] | None = None
 
-        # 仅连续收集含竖线的行；遇到空行或普通正文后交回外层循环继续处理。
-        while index < len(lines):
-            line = lines[index].strip()
+        for line_number, line in enumerate(lines, start=1):
+            match = self.HEADING_PATTERN.match(line)
 
-            if not line:
-                break
+            if match:
+                if current_section is not None:
+                    current_section["end_line"] = line_number - 1
+                    sections.append(current_section)
 
-            if "|" not in line:
-                break
+                level = len(match.group(1))
+                title = match.group(2).strip()
 
-            table_lines.append(self._clean_table_line(line))
-            index += 1
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
 
-        return table_lines, index
+                heading_stack.append((level, title))
 
-    def _clean_table_line(self, line: str) -> str:
-        """统一单行表格单元格两侧的空白和竖线格式。"""
-        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+                current_section = {
+                    "level": level,
+                    "title": title,
+                    "section_path": [
+                        item_title for _, item_title in heading_stack
+                    ],
+                    "heading_line": line_number,
+                    "start_line": line_number,
+                    "end_line": line_number,
+                }
+                continue
 
-        return "| " + " | ".join(cells) + " |"
+            if current_section is None and line.strip():
+                current_section = {
+                    "level": None,
+                    "title": None,
+                    "section_path": [],
+                    "heading_line": None,
+                    "start_line": line_number,
+                    "end_line": line_number,
+                }
+
+        if current_section is not None:
+            current_section["end_line"] = len(lines)
+            sections.append(current_section)
+
+        return sections
