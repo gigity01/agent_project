@@ -16,7 +16,7 @@ from app.processors.factory import get_processor
 from app.schemas.document_artifact import DocumentArtifactCreate
 from app.schemas.document import DocumentProcessResponse
 from app.services.document_source_prepare_service import prepare_process_source
-from app.utils.file_security import calculate_file_hash
+from app.app_utils.file_security import calculate_file_hash
 from core.observability.document_process_logger import DocumentProcessLogger
 
 

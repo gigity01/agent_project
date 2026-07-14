@@ -16,7 +16,7 @@ from app.policies.document_source_policy import (
 )
 from app.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.schemas.document_artifact import DocumentArtifactCreate
-from app.utils.file_security import calculate_file_hash
+from app.app_utils.file_security import calculate_file_hash
 
 
 @dataclass(frozen=True)

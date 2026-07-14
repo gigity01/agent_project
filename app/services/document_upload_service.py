@@ -23,8 +23,8 @@ from app.policies.document_source_policy import (
 from app.repositories.document_repository import DocumentRepository
 from app.schemas.document import DocumentUploadFormData
 from core.observability.document_upload_logger import DocumentUploadLogger
-from utils.file_cleanup import cleanup_file
-from app.utils.file_security import (
+from main_utils.file_cleanup import cleanup_file
+from app.app_utils.file_security import (
     get_safe_extension,
     validate_content_type,
     calculate_file_hash,

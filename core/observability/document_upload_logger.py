@@ -4,7 +4,7 @@ from fastapi import HTTPException
 
 from app.models.document import Document
 from main_config.settings import DOCUMENT_UPLOAD_LOG_DIR
-from utils.times import now_ms
+from main_utils.times import now_ms
 from core.observability.jsonl_event_writer import JsonlEventWriter
 from app.constants.document_status import DocumentStatus
 

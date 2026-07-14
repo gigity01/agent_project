@@ -1,10 +1,18 @@
 """记录文档处理流程的结构化 JSONL 审计事件。"""
 
+import sys
+from pathlib import Path
+
+# Add project root to sys.path so that imports like "main_utils.times" and "core.*" resolve correctly
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 from typing import Any
 
 from core.observability.jsonl_event_writer import JsonlEventWriter
 from main_config.settings import DOCUMENT_PROCESS_LOG_DIR
-from utils.times import now_ms
+from main_utils.times import now_ms
+from app.services.document_upload_service import save_uploaded_document
 
 
 class DocumentProcessLogger:
