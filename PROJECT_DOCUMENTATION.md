@@ -285,7 +285,6 @@ flowchart TD
 | `ALLOWED_FILE_EXTENSIONS` | `txt`、`md`、`pdf`、`csv` |
 | `ALLOWED_CONTENT_TYPES` | text、csv、pdf、octet-stream 等 |
 | `SQLALCHEMY_DATABASE_URL` | MySQL 连接串 |
-| `CHILD_CHUNK_MAX_LEN` | `600` |
 | `QDRANT_URL` | `http://127.0.0.1:6333` |
 | `QDRANT_COLLECTION_NAME` | `knowledge_chunks` |
 | `DASHSCOPE_BASE_URL` | OpenAI-compatible DashScope endpoint |

@@ -49,7 +49,6 @@ DOCUMENT_CODE_RANDOM_LENGTH: Final[int] = 8
 SQLALCHEMY_DATABASE_URL: Final[str] = environment.get_required_env(
     "SQLALCHEMY_DATABASE_URL"
 )
-CHILD_CHUNK_MAX_LEN: Final[int] = 600
 QDRANT_URL: Final[str] = environment.get_env(
     "QDRANT_URL",
     "http://127.0.0.1:6333",

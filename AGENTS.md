@@ -97,7 +97,9 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 
 - `TextChunker`：先按段落生成父块，再按长度生成子块。
 - `MarkdownChunker`：按标题层级维护 `section_path`，以章节生成父块。
-- 子块默认最大长度由 `CHILD_CHUNK_MAX_LEN` 控制，当前为 600 字符。
+- `CsvChunker`：一条记录对应一个子块，父块按最多 50 条记录和 12,000 字符组批。
+- 文本/Markdown 子块最大 600 字符；CSV 子块最大 8,000 字符，限制统一定义在 `app/chunkers/common.py`。
+- 当前只允许 `processed` 文档切块；成功后文档状态更新为 `chunked`，暂不允许重复切块。
 - 重建时先删除旧 child chunks，再删除旧 parent blocks，并在同一事务写入新结果。
 - 子块初始 `vector_status` 为 `pending`。
 
@@ -125,9 +127,9 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 | `pdf` | 是 | Docling → MD | 是 | 依赖外部 Docling |
 | `doc` / `docx` | 是 | Docling → MD | 是 | 依赖外部 Docling |
 | `ppt` / `pptx` | 是 | Docling → MD | 是 | 依赖外部 Docling |
-| `csv` | 是 | 是 | 否 | `CsvProcessor` 已完成标准化；`CsvChunker` 尚未实现 |
+| `csv` | 是 | 是 | 是 | 一条记录对应一个子块，支持带换行的引号字段 |
 
-不要把上传白名单等同于端到端可用能力。尤其是 CSV，目前会在后续流程失败。
+不要把上传白名单等同于端到端可用能力；新增格式时仍需同步检查 Processor、Chunker 和准备流程。
 
 ## 生命周期状态
 
@@ -140,8 +142,9 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
 ```
 
 此外定义了 `expired`。但当前实现尚未完整推进这条状态链：上传/处理服务实际使用
-`uploaded`、`processing`、`processed`、`failed`；切块和向量索引服务没有把 Document
-更新为 `chunking/chunked/indexing/indexed`，后半段进度主要体现在子块状态中。
+`uploaded`、`processing`、`processed`、`failed`；切块成功后直接更新为 `chunked`，
+尚未使用中间状态 `chunking`；向量索引服务没有把 Document 更新为 `indexing/indexed`，
+索引进度主要体现在子块状态中。
 
 修改状态逻辑时必须使用 `DocumentStatus`，并同步检查各服务的准入条件和响应模型，
 不要把“枚举中已定义”误认为“业务流程已接入”。
@@ -153,7 +156,7 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
 - SQLAlchemy engine/session/Base：`app/db/session.py`
 - ORM 模型：`app/models/`
 - Repository：`app/repositories/`
-- Alembic 当前迁移头：`a473f5174f52`
+- Alembic 当前迁移头：`c5f12a3e9b71`
 
 Repository 原则：
 

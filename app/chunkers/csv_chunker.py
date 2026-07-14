@@ -116,6 +116,21 @@ class CsvChunker(BaseChunker):
                     batch_start_row = source_row_index
                     child.chunk_index = 0
 
+                    candidate_content = self._build_parent_content(
+                        headers=headers,
+                        row_start=batch_start_row,
+                        row_end=source_row_index,
+                        records=[record],
+                    )
+
+                if (
+                    not batch_records
+                    and len(candidate_content) > CSV_PARENT_MAX_CHARS
+                ):
+                    raise ValueError(
+                        f"CSV 第 {source_row_index} 条记录超过父块大小限制"
+                    )
+
                 batch_records.append(record)
                 batch_children.append(child)
 
@@ -163,8 +178,8 @@ class CsvChunker(BaseChunker):
                 section_path=None,
                 content=parent_content,
                 block_index=block_index,
-                semantic_group_index=0,
-                segment_index=block_index,
+                semantic_group_index=block_index,
+                segment_index=0,
             )
         )
         children_by_parent_index[block_index] = children

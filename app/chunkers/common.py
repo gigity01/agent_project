@@ -8,15 +8,16 @@ CHILD_CHUNK_MAX_CHARS = 600
 
 CSV_PARENT_MAX_ROWS = 50
 CSV_PARENT_MAX_CHARS = 12_000
-CSV_CHILD_MAX_CHARS = 16_000
+CSV_CHILD_MAX_CHARS = 8_000
 
 
 def normalize_text(text: str) -> str:
-    """统一换行和空白字符，避免格式差异影响切块结果。"""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    """仅统一换行符并移除首尾空白，不改写 cleaned 正文格式。"""
+    return (
+        text.replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .strip()
+    )
 
 
 def md5_text(text: str) -> str:
@@ -73,8 +74,10 @@ def split_text_to_child_chunks(
             chunks.extend(_split_long_sentence(sentence, max_len))
             continue
 
-        if len(current) + len(sentence) <= max_len:
-            current += sentence
+        candidate = sentence if not current else f"{current} {sentence}"
+
+        if len(candidate) <= max_len:
+            current = candidate
         else:
             if current.strip():
                 chunks.append(current.strip())

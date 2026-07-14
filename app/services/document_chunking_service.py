@@ -34,10 +34,7 @@ def build_document_chunks(
     db: Session,
     document_id: int,
 ) -> BuildChunksResponse:
-    """根据清洗文本重建当前文档的父块和子块。
-
-    同一文档重复构建时，会在同一事务中先删除旧子块，再删除旧父块。
-    """
+    """为 processed 文档构建并持久化父块和子块。"""
     document_repo = DocumentRepository(db)
     artifact_repo = DocumentArtifactRepository(db)
     parent_repo = ParentBlockRepository(db)
@@ -48,10 +45,7 @@ def build_document_chunks(
     if document is None:
         raise HTTPException(status_code=404, detail="文档不存在")
 
-    if document.status not in {
-        DocumentStatus.PROCESSED.value,
-        DocumentStatus.CHUNKED.value,
-    }:
+    if document.status != DocumentStatus.PROCESSED.value:
         raise HTTPException(
             status_code=400,
             detail=f"当前文档状态不允许切块: {document.status}",
