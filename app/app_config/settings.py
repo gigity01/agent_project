@@ -1,6 +1,5 @@
 """应用的文件存储、外部服务与处理参数配置。"""
 
-import os
 from pathlib import Path
 from typing import Final
 
@@ -9,38 +8,7 @@ from main_config import environment
 
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
-ENV_FILE: Final[Path] = PROJECT_ROOT / ".env"
-
-
-def _load_local_env_file() -> None:
-    """读取本地 `.env`，且不覆盖已由部署环境注入的变量。"""
-    if not ENV_FILE.is_file():
-        return
-
-    for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.removeprefix("export ").strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-
-        if key:
-            os.environ.setdefault(key, value)
-
-
-def _get_required_env(name: str) -> str:
-    """读取必填环境变量，并在缺失时给出不包含敏感值的错误。"""
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"缺少必填环境变量: {name}")
-    return value
-
-
-environment.load_local_env_files(PROJECT_ROOT)
+environment.load_local_env_file(PROJECT_ROOT)
 
 # 文件上传与派生产物存储。路径保留为相对路径，由调用服务在项目根目录启动
 # 时解析；原始文件与外部转换得到的中间文本分目录存放，便于失败补偿和追溯。

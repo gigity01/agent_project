@@ -1,8 +1,19 @@
 """定义文本切块器的输入、输出数据结构和统一接口。"""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
+
+@dataclass(frozen=True)
+class ChunkBuildInput:
+    """切块器读取 cleaned 文件和处理产物元信息所需的统一输入。"""
+
+    cleaned_path: Path
+    document_title: str
+    business_scene: str | None
+    process_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -13,7 +24,9 @@ class ParentBlockData:
     section_path: list[str] | None
     content: str
     block_index: int
-    metadata: dict | None = None
+    semantic_group_index: int
+    segment_index: int
+
 
 @dataclass
 class ChildChunkData:
@@ -21,8 +34,8 @@ class ChildChunkData:
     content: str
     embedding_text: str
     chunk_index: int
-    section_path: list[str] | None
-    metadata: dict | None = None
+    section_path: list[str] | None = None
+    source_row_index: int | None = None
     chunk_type: str = "text"
 
 
@@ -38,9 +51,7 @@ class BaseChunker(ABC):
     @abstractmethod
     def build(
         self,
-        text: str,
-        document_title: str,
-        business_scene: str | None,
+        input_data: ChunkBuildInput,
     ) -> ChunkBuildResult:
-        """将清洗后的文本转换为父块和子块。"""
-        pass
+        """读取 cleaned 文件并转换为父块和子块。"""
+        raise NotImplementedError

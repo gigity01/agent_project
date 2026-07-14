@@ -293,7 +293,7 @@ flowchart TD
 | `EMBEDDING_VECTOR_SIZE` | `1024` |
 | `EMBEDDING_BATCH_SIZE` | `10` |
 
-注意：当前数据库连接串和 DashScope API key 写在源码中，存在泄露风险。建议迁移到 `.env` 或部署环境变量，并避免提交真实密钥。
+数据库连接串和 DashScope API key 必须由部署环境或项目根目录的 `.env` 提供；`.env` 已被 Git 忽略，不应提交真实密钥。
 
 ## 8. 依赖
 
@@ -367,14 +367,9 @@ py -m alembic upgrade head
 
 建议改为基于项目根或 `app` 目录的绝对路径。
 
-### 10.5 配置与密钥管理风险
+### 10.5 配置与密钥管理
 
-源码中存在明文 MySQL 密码、DashScope API key。建议：
-
-- 使用 `.env`。
-- 通过 Pydantic Settings 或环境变量读取。
-- 提供 `.env.example`。
-- 立即轮换已经提交过的真实密钥。
+应用统一从系统环境或项目根目录的 `.env` 读取配置，仓库只提交不含真实值的 `.env.example`。真实数据库连接串、API Key 和 Token 不得提交或写入日志。
 
 ### 10.6 缺少依赖清单和自动化验证
 

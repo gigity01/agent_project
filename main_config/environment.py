@@ -4,34 +4,26 @@ import os
 from pathlib import Path
 
 
-def load_local_env_files(project_root: Path) -> None:
-    """读取本地环境文件，且不覆盖调用前系统已注入的变量。
-
-    按 ``.env``、``.env.local`` 的顺序加载：后者可覆盖前者的本地值；但两者
-    都不能覆盖进程启动时由容器、CI 或系统环境注入的值。
-    """
+def load_local_env_file(project_root: Path) -> None:
+    """读取项目根目录的 ``.env``，且不覆盖系统已注入的变量。"""
     system_environment_keys = set(os.environ)
+    env_file = project_root / ".env"
+    if not env_file.is_file():
+        return
 
-    for filename in (".env", ".env.local"):
-        env_file = project_root / filename
-        if not env_file.is_file():
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
             continue
 
-        for raw_line in env_file.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
 
-            key, value = line.split("=", 1)
-            key = key.removeprefix("export ").strip()
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-
-            # ``system_environment_keys`` 在加载前快照，故 .env.local 可以覆盖
-            # .env，而部署系统显式提供的变量始终具有最高优先级。
-            if key and key not in system_environment_keys:
-                os.environ[key] = value
+        if key and key not in system_environment_keys:
+            os.environ[key] = value
 
 
 def get_required_env(name: str) -> str:

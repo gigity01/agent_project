@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, String, DateTime, Integer, ForeignKey, Text
+from sqlalchemy import BigInteger, String, DateTime, Integer, ForeignKey, Index, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -26,6 +26,8 @@ class ChildChunk(Base):
     # ``chunk_index`` 只在同一父块内排序；全局顺序由父块的 ``block_index`` 决定。
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunk_type: Mapped[str] = mapped_column(String(50), nullable=False, default="text")
+    section_path: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    source_row_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -50,3 +52,17 @@ class ChildChunk(Base):
         onupdate=func.now(),
     )
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+Index(
+    "idx_child_chunks_parent_chunk_index",
+    ChildChunk.parent_id,
+    ChildChunk.chunk_index,
+)
+
+Index(
+    "idx_child_chunks_doc_vector_status",
+    ChildChunk.doc_id,
+    ChildChunk.vector_status,
+    ChildChunk.status,
+)

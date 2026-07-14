@@ -23,3 +23,21 @@ class ParentBlockRepository:
             .filter(ParentBlock.doc_id == doc_id)
             .delete(synchronize_session=False)
         )
+
+    def list_by_semantic_group(
+        self,
+        *,
+        doc_id: int,
+        semantic_group_index: int,
+    ) -> list[ParentBlock]:
+        """按组内顺序返回指定文档中一个完整有效语义单元的父块。"""
+        return (
+            self.db.query(ParentBlock)
+            .filter(
+                ParentBlock.doc_id == doc_id,
+                ParentBlock.semantic_group_index == semantic_group_index,
+                ParentBlock.status == "active",
+            )
+            .order_by(ParentBlock.segment_index.asc())
+            .all()
+        )

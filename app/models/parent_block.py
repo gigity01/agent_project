@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, String, DateTime, Integer, ForeignKey, JSON
+from sqlalchemy import BigInteger, String, DateTime, Integer, ForeignKey, Index, JSON
 from sqlalchemy.dialects.mysql import MEDIUMTEXT, CHAR
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -32,6 +32,16 @@ class ParentBlock(Base):
     content_hash: Mapped[str | None] = mapped_column(CHAR(32), nullable=True)
 
     block_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    semantic_group_index: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+    segment_index: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
@@ -46,3 +56,17 @@ class ParentBlock(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+Index(
+    "idx_parent_blocks_doc_group_segment",
+    ParentBlock.doc_id,
+    ParentBlock.semantic_group_index,
+    ParentBlock.segment_index,
+)
+
+Index(
+    "idx_parent_blocks_doc_block_index",
+    ParentBlock.doc_id,
+    ParentBlock.block_index,
+)

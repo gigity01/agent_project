@@ -3,9 +3,12 @@
 import hashlib
 import re
 
-from app.app_config.settings import CHILD_CHUNK_MAX_LEN
+PARENT_BLOCK_MAX_CHARS = 4_000
+CHILD_CHUNK_MAX_CHARS = 600
 
-
+CSV_PARENT_MAX_ROWS = 50
+CSV_PARENT_MAX_CHARS = 12_000
+CSV_CHILD_MAX_CHARS = 16_000
 
 
 def normalize_text(text: str) -> str:
@@ -30,7 +33,7 @@ def split_paragraphs(text: str) -> list[str]:
 
 def split_text_to_child_chunks(
     text: str,
-    max_len: int = CHILD_CHUNK_MAX_LEN,
+    max_len: int = CHILD_CHUNK_MAX_CHARS,
 ) -> list[str]:
     """
     v1 子块切分规则：
@@ -81,6 +84,62 @@ def split_text_to_child_chunks(
         chunks.append(current.strip())
 
     return chunks
+
+
+def split_text_to_parent_segments(
+    text: str,
+    max_chars: int = PARENT_BLOCK_MAX_CHARS,
+) -> list[str]:
+    """优先按段落切分父块，并为超长单段提供字符上限保护。"""
+    text = text.strip()
+
+    if not text:
+        return []
+
+    if len(text) <= max_chars:
+        return [text]
+
+    paragraphs = [
+        item.strip()
+        for item in text.split("\n\n")
+        if item.strip()
+    ]
+
+    segments: list[str] = []
+    current_parts: list[str] = []
+    current_length = 0
+
+    for paragraph in paragraphs:
+        separator_length = 2 if current_parts else 0
+        addition_length = separator_length + len(paragraph)
+
+        if current_parts and current_length + addition_length > max_chars:
+            segments.append("\n\n".join(current_parts))
+            current_parts = []
+            current_length = 0
+
+        if len(paragraph) <= max_chars:
+            separator_length = 2 if current_parts else 0
+            current_parts.append(paragraph)
+            current_length += separator_length + len(paragraph)
+            continue
+
+        if current_parts:
+            segments.append("\n\n".join(current_parts))
+            current_parts = []
+            current_length = 0
+
+        segments.extend(
+            split_text_to_child_chunks(
+                paragraph,
+                max_len=max_chars,
+            )
+        )
+
+    if current_parts:
+        segments.append("\n\n".join(current_parts))
+
+    return segments
 
 
 def _split_long_sentence(text: str, max_len: int) -> list[str]:

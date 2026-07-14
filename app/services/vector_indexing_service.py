@@ -73,6 +73,8 @@ def index_document_vectors(
                 "chunk_id": chunk.id,
                 "chunk_code": chunk.chunk_code,
                 "parent_id": chunk.parent_id,
+                "section_path": chunk.section_path,
+                "source_row_index": chunk.source_row_index,
                 "doc_id": chunk.doc_id,
                 "kb_id": chunk.kb_id,
                 "domain_code": chunk.domain_code,

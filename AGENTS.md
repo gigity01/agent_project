@@ -177,9 +177,8 @@ Repository 原则：
 环境变量优先级：
 
 1. 进程启动前由系统、容器或 CI 注入的变量。
-2. `.env.local`。
-3. `.env`。
-4. 代码中的非敏感默认值。
+2. 项目根目录的 `.env`。
+3. 代码中的非敏感默认值。
 
 必填配置至少包括：
 
@@ -188,7 +187,7 @@ Repository 原则：
 
 可覆盖配置包括 Qdrant、DashScope endpoint/model、Embedding 维度与批量大小、Docling 地址/超时/输出格式和日志目录。
 
-禁止读取、打印、写入计划、提交或日志记录 `.env`、`.env.local`、数据库密码、API Key、Token 或其他真实凭据。只允许维护不含真实值的 `.env.example`。
+禁止读取、打印、写入计划、提交或日志记录 `.env`、数据库密码、API Key、Token 或其他真实凭据。只允许维护不含真实值的 `.env.example`。
 
 ## 存储与运行时文件
 

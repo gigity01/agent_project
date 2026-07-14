@@ -10,7 +10,7 @@ from pathlib import Path
 from main_config import environment
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-environment.load_local_env_files(BASE_DIR)
+environment.load_local_env_file(BASE_DIR)
 
 # 优先接受部署环境给出的绝对路径；相对路径始终以项目根目录为基准，
 # 从而不受启动命令所在工作目录影响。

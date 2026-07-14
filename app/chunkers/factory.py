@@ -3,6 +3,7 @@
 from fastapi import HTTPException
 
 from app.chunkers.base import BaseChunker
+from app.chunkers.csv_chunker import CsvChunker
 from app.chunkers.text_chunker import TextChunker
 from app.chunkers.markdown_chunker import MarkdownChunker
 from app.policies.document_source_policy import normalize_source_type
@@ -13,6 +14,7 @@ def get_chunker(source_type: str) -> BaseChunker:
     chunkers: dict[str, BaseChunker] = {
         "txt": TextChunker(),
         "md": MarkdownChunker(),
+        "csv": CsvChunker(),
     }
 
     normalized_source_type = normalize_source_type(source_type)

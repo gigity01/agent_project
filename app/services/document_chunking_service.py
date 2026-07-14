@@ -6,13 +6,16 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.parent_block import ParentBlock
+from app.chunkers.base import ChunkBuildInput
+from app.chunkers.common import md5_text
+from app.chunkers.factory import get_chunker
+from app.constants.document_status import DocumentStatus
 from app.models.child_chunk import ChildChunk
+from app.models.parent_block import ParentBlock
+from app.repositories.child_chunk_repository import ChildChunkRepository
+from app.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.parent_block_repository import ParentBlockRepository
-from app.repositories.child_chunk_repository import ChildChunkRepository
-from app.chunkers.factory import get_chunker
-from app.chunkers.common import md5_text
 from app.policies.document_source_policy import get_expected_process_output_type
 from app.schemas.chunking import BuildChunksResponse
 
@@ -36,6 +39,7 @@ def build_document_chunks(
     同一文档重复构建时，会在同一事务中先删除旧子块，再删除旧父块。
     """
     document_repo = DocumentRepository(db)
+    artifact_repo = DocumentArtifactRepository(db)
     parent_repo = ParentBlockRepository(db)
     child_repo = ChildChunkRepository(db)
 
@@ -44,38 +48,63 @@ def build_document_chunks(
     if document is None:
         raise HTTPException(status_code=404, detail="文档不存在")
 
-    if document.cleaned_uri is None:
-        raise HTTPException(status_code=400, detail="文档尚未处理，没有 cleaned_uri")
-
-    if document.status != "processed":
+    if document.status not in {
+        DocumentStatus.PROCESSED.value,
+        DocumentStatus.CHUNKED.value,
+    }:
         raise HTTPException(
             status_code=400,
             detail=f"当前文档状态不允许切块: {document.status}",
         )
 
-    cleaned_path = Path(document.cleaned_uri)
+    cleaned_artifact = artifact_repo.get_latest_active(
+        document_id=document.id,
+        artifact_type="cleaned_text",
+        artifact_role="process_output",
+    )
+
+    if cleaned_artifact is not None:
+        cleaned_path = Path(cleaned_artifact.artifact_uri)
+        chunk_source_type = cleaned_artifact.artifact_format
+        process_metadata = cleaned_artifact.metadata_json or {}
+    else:
+        # 兼容 Artifact 表接入前已经处理完成、仅保留 cleaned_uri 的旧记录。
+        if document.cleaned_uri is None:
+            raise HTTPException(status_code=400, detail="文档尚未处理")
+
+        cleaned_path = Path(document.cleaned_uri)
+        chunk_source_type = get_expected_process_output_type(
+            document.source_type
+        )
+        process_metadata = {}
 
     if not cleaned_path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"cleaned 文件不存在: {document.cleaned_uri}",
+            detail=f"cleaned 文件不存在: {cleaned_path}",
         )
 
-    text = cleaned_path.read_text(encoding="utf-8", errors="ignore")
+    if not cleaned_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"cleaned 路径不是有效文件: {cleaned_path}",
+        )
 
-    chunk_source_type = get_expected_process_output_type(document.source_type)
     chunker = get_chunker(chunk_source_type)
 
-    result = chunker.build(
-        text=text,
-        document_title=document.title,
-        business_scene=document.business_scene,
-    )
-
-    if not result.parents:
-        raise HTTPException(status_code=400, detail="未生成任何 parent block")
-
     try:
+        result = chunker.build(
+            ChunkBuildInput(
+                cleaned_path=cleaned_path,
+                document_title=document.title,
+                business_scene=document.business_scene,
+                process_metadata=process_metadata,
+            )
+        )
+
+        if not result.parents:
+            raise HTTPException(status_code=400, detail="未生成任何 parent block")
+
         # 重建策略：同一个 doc 重新 build 时，先删旧 child，再删旧 parent。
         child_repo.delete_by_doc_id(document.id)
         parent_repo.delete_by_doc_id(document.id)
@@ -99,6 +128,8 @@ def build_document_chunks(
                 content=parent_data.content,
                 content_hash=md5_text(parent_data.content),
                 block_index=parent_data.block_index,
+                semantic_group_index=parent_data.semantic_group_index,
+                segment_index=parent_data.segment_index,
                 status="active",
                 version=document.version,
             )
@@ -125,6 +156,8 @@ def build_document_chunks(
                     business_scene=document.business_scene,
                     chunk_index=child_data.chunk_index,
                     chunk_type=child_data.chunk_type,
+                    section_path=child_data.section_path,
+                    source_row_index=child_data.source_row_index,
                     content=child_data.content,
                     embedding_text=child_data.embedding_text,
                     token_count=None,
@@ -138,6 +171,7 @@ def build_document_chunks(
                 child_repo.create(child_chunk)
                 child_count += 1
 
+        document.status = DocumentStatus.CHUNKED.value
         db.commit()
 
         return BuildChunksResponse(
@@ -148,6 +182,10 @@ def build_document_chunks(
             child_count=child_count,
             status="success",
         )
+
+    except HTTPException:
+        db.rollback()
+        raise
 
     except Exception as e:
         db.rollback()
