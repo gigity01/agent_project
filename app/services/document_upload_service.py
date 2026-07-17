@@ -1,8 +1,10 @@
 """编排文件落盘、去重、文档建档和上传审计日志。"""
 
+import logging
 from datetime import datetime
 from uuid import uuid4
 from fastapi import HTTPException, UploadFile
+from sqlalchemy.exc import IntegrityError
 
 from app.app_config.settings import (
     RAW_LOCAL_STORAGE_DIR,
@@ -14,13 +16,15 @@ from app.app_config.settings import (
     DOCUMENT_CODE_PREFIX,
     DOCUMENT_CODE_RANDOM_LENGTH,
 )
+from app.constants.document_lifecycle_status import DocumentLifecycleStatus
+from app.constants.document_storage_status import DocumentStorageStatus
 from app.db.uow import SQLAlchemyUnitOfWork
 from app.models.document import Document
 from app.policies.document_source_policy import (
     normalize_source_type,
     requires_external_processing,
 )
-from app.schemas.document import DocumentUploadFormData
+from app.schemas.document import DocumentResponse, DocumentUploadFormData
 from core.observability.document_upload_logger import DocumentUploadLogger
 from main_utils.file_cleanup import cleanup_file
 from app.app_utils.file_security import (
@@ -31,12 +35,57 @@ from app.app_utils.file_security import (
 
 
 READ_CHUNK_SIZE = 1024 * 1024
+DOCUMENT_CONTENT_UNIQUE_CONSTRAINT = "uq_documents_kb_active_content_hash"
+logger = logging.getLogger(__name__)
+
+
+def is_duplicate_content_error(exc: IntegrityError) -> bool:
+    """判断完整性错误是否来自知识库内的内容唯一约束。"""
+    error_message = str(exc.orig).lower()
+    return (
+        DOCUMENT_CONTENT_UNIQUE_CONSTRAINT.lower() in error_message
+        or (
+            "documents.kb_id" in error_message
+            and "documents.active_content_hash" in error_message
+        )
+    )
+
+
+def safe_log_completed(
+    upload_logger: DocumentUploadLogger,
+    document: Document,
+) -> None:
+    """尽力记录上传完成事件，不让观测故障破坏已提交的主营业务。"""
+    try:
+        upload_logger.completed(document=document)
+    except Exception:
+        logger.exception(
+            "文档上传已提交，但完成事件写入失败",
+            extra={
+                "document_id": document.id,
+                "doc_code": document.doc_code,
+            },
+        )
+
+
+def get_initial_lifecycle_status(effective_at: datetime | None) -> str:
+    """根据生效时间确定新文档初始业务生命周期。"""
+    if effective_at is None:
+        return DocumentLifecycleStatus.ACTIVE.value
+
+    now = datetime.now(tz=effective_at.tzinfo)
+    if effective_at > now:
+        return DocumentLifecycleStatus.SCHEDULED.value
+
+    return DocumentLifecycleStatus.ACTIVE.value
+
 
 def generate_doc_code() -> str:
     """生成带时间戳和随机后缀的文档业务编号。"""
     now = datetime.now().strftime("%Y%m%d%H%M%S")
     random_part = uuid4().hex[:DOCUMENT_CODE_RANDOM_LENGTH].upper()
     return f"{DOCUMENT_CODE_PREFIX}_{now}_{random_part}"
+
 
 def get_raw_storage_dir(source_type: str):
     """按处理路径返回原始文件的本地存储目录。"""
@@ -45,11 +94,12 @@ def get_raw_storage_dir(source_type: str):
 
     return RAW_LOCAL_STORAGE_DIR
 
+
 async def save_uploaded_document(
     file: UploadFile,
     meta: DocumentUploadFormData,
     created_by_actor_code: str | None = None,
-) -> Document:
+) -> DocumentResponse:
     """保存上传文件、校验内容去重，并创建 draft 状态文档。
 
     任一步骤失败时会清理已落盘的原始文件，并写入对应审计日志。
@@ -72,6 +122,7 @@ async def save_uploaded_document(
     saved_filename = f"{doc_code}.{source_extension}"
     save_path = get_raw_storage_dir(source_type) / saved_filename
     total_size = 0
+    db_committed = False
     upload_logger = DocumentUploadLogger()
 
     upload_logger.started(
@@ -126,7 +177,7 @@ async def save_uploaded_document(
 
         with SQLAlchemyUnitOfWork() as uow:
             # 去重范围限定在知识库内：不同知识库可各自维护相同原件。
-            duplicated = uow.documents.get_by_hash_in_kb(
+            duplicated = uow.documents.get_active_by_hash_in_kb(
                 kb_id=meta.kb_id,
                 content_hash=content_hash,
             )
@@ -142,7 +193,7 @@ async def save_uploaded_document(
 
                 raise HTTPException(
                     status_code=409,
-                    detail=f"该知识库下已存在相同内容文档: {duplicated.doc_code}",
+                    detail=f"已存在相同有效文件: {duplicated.doc_code}",
                 )
 
             document = Document(
@@ -157,6 +208,9 @@ async def save_uploaded_document(
                 source_uri=str(save_path),
                 cleaned_uri=None,
                 content_hash=content_hash,
+                active_content_hash=content_hash,
+                lifecycle_status=get_initial_lifecycle_status(meta.effective_at),
+                storage_status=DocumentStorageStatus.ACTIVE.value,
                 version=DEFAULT_DOCUMENT_VERSION,
                 status=DEFAULT_DOCUMENT_STATUS,
                 replaced_by=None,
@@ -167,18 +221,30 @@ async def save_uploaded_document(
                 indexed_at=None,
             )
 
-            created_document = uow.documents.create(document)
-            uow.commit()
+            try:
+                created_document = uow.documents.create(document)
+                created_response = DocumentResponse.model_validate(created_document)
 
-            # sessionmaker 默认在 commit 后过期 ORM 属性；关闭 Session 前刷新，
-            # 确保返回给 FastAPI 的实体可在上下文外安全序列化。
-            uow.session.refresh(created_document)
+                # commit 必须是 UoW 内最后一个数据库动作。
+                uow.commit()
+            except IntegrityError as exc:
+                if is_duplicate_content_error(exc):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="该知识库中已存在相同有效文件",
+                    ) from exc
+                raise
 
-        upload_logger.completed(document=created_document)
+            db_committed = True
 
-        return created_document
+        safe_log_completed(upload_logger, created_document)
+
+        return created_response
 
     except HTTPException as exc:
+        if db_committed:
+            raise
+
         # 业务拒绝（格式、大小、重复等）同样可能已创建临时原件，必须清理。
         cleanup_success = cleanup_file(save_path)
         upload_logger.failed_by_http_exception(
@@ -197,6 +263,13 @@ async def save_uploaded_document(
         raise
 
     except Exception as exc:
+        if db_committed:
+            logger.exception(
+                "文档上传已提交，后续操作失败但保留原始文件",
+                extra={"doc_code": doc_code},
+            )
+            raise
+
         cleanup_success = cleanup_file(save_path)
 
         upload_logger.failed_by_unexpected_exception(

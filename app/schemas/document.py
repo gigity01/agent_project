@@ -38,6 +38,9 @@ class DocumentResponse(BaseModel):
     cleaned_uri: str | None
 
     content_hash: str
+    active_content_hash: str | None
+    lifecycle_status: str
+    storage_status: str
     version: int
     status: str
     replaced_by: int | None

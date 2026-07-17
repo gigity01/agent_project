@@ -14,7 +14,12 @@ engine = create_engine(
     echo=False,
 
 )
-session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+session_local = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
 
 Base = declarative_base()
 

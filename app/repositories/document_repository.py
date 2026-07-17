@@ -31,18 +31,17 @@ class DocumentRepository:
             .first()
         )
 
-    def get_by_hash_in_kb(
+    def get_active_by_hash_in_kb(
         self,
         kb_id: int,
         content_hash: str,
     ) -> Document | None:
-        """在知识库内查询未删除、未归档、未替换的同内容文档。"""
+        """查询仍占用知识库上传去重槽位的同内容文档。"""
         return (
             self.db.query(Document)
             .filter(
                 Document.kb_id == kb_id,
-                Document.content_hash == content_hash,
-                Document.status.notin_(["deleted", "archived", "replaced"]),
+                Document.active_content_hash == content_hash,
             )
             .first()
         )
