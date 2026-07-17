@@ -58,13 +58,11 @@ print("REGISTERED TABLES:", list(Base.metadata.tables.keys()))
 async def upload_document(
     file: UploadFile = File(...),
     meta: DocumentUploadFormData = Depends(document_upload_form),
-    db: Session = Depends(get_db),
 ):
     """接收原始文件并创建处于 draft 状态的文档记录。"""
     created_by_actor_code = "knowledge_operator_001"
 
     return await save_uploaded_document(
-        db=db,
         file=file,
         meta=meta,
         created_by_actor_code=created_by_actor_code,

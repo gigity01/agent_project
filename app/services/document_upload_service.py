@@ -3,7 +3,6 @@
 from datetime import datetime
 from uuid import uuid4
 from fastapi import HTTPException, UploadFile
-from sqlalchemy.orm import Session
 
 from app.app_config.settings import (
     RAW_LOCAL_STORAGE_DIR,
@@ -15,12 +14,12 @@ from app.app_config.settings import (
     DOCUMENT_CODE_PREFIX,
     DOCUMENT_CODE_RANDOM_LENGTH,
 )
+from app.db.uow import SQLAlchemyUnitOfWork
 from app.models.document import Document
 from app.policies.document_source_policy import (
     normalize_source_type,
     requires_external_processing,
 )
-from app.repositories.document_repository import DocumentRepository
 from app.schemas.document import DocumentUploadFormData
 from core.observability.document_upload_logger import DocumentUploadLogger
 from main_utils.file_cleanup import cleanup_file
@@ -47,7 +46,6 @@ def get_raw_storage_dir(source_type: str):
     return RAW_LOCAL_STORAGE_DIR
 
 async def save_uploaded_document(
-    db: Session,
     file: UploadFile,
     meta: DocumentUploadFormData,
     created_by_actor_code: str | None = None,
@@ -126,53 +124,56 @@ async def save_uploaded_document(
             content_hash=content_hash,
         )
 
-        repo = DocumentRepository(db)
-
-        # 去重范围限定在知识库内：不同知识库可各自维护相同原件。
-        duplicated = repo.get_by_hash_in_kb(
-            kb_id=meta.kb_id,
-            content_hash=content_hash,
-        )
-
-        if duplicated:
-
-            upload_logger.duplicate_detected(
-                doc_code=doc_code,
+        with SQLAlchemyUnitOfWork() as uow:
+            # 去重范围限定在知识库内：不同知识库可各自维护相同原件。
+            duplicated = uow.documents.get_by_hash_in_kb(
                 kb_id=meta.kb_id,
                 content_hash=content_hash,
-                duplicated_document=duplicated,
             )
 
-            raise HTTPException(
-                status_code=409,
-                detail=f"该知识库下已存在相同内容文档: {duplicated.doc_code}",
+            if duplicated:
+
+                upload_logger.duplicate_detected(
+                    doc_code=doc_code,
+                    kb_id=meta.kb_id,
+                    content_hash=content_hash,
+                    duplicated_document=duplicated,
+                )
+
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"该知识库下已存在相同内容文档: {duplicated.doc_code}",
+                )
+
+            document = Document(
+                doc_code=doc_code,
+                kb_id=meta.kb_id,
+                domain_code=meta.domain_code,
+                business_scene=meta.business_scene,
+                title=meta.title,
+                original_filename=file.filename,
+                file_size=total_size,
+                source_type=source_type,
+                source_uri=str(save_path),
+                cleaned_uri=None,
+                content_hash=content_hash,
+                version=DEFAULT_DOCUMENT_VERSION,
+                status=DEFAULT_DOCUMENT_STATUS,
+                replaced_by=None,
+                risk_level=meta.risk_level,
+                effective_at=meta.effective_at,
+                expired_at=meta.expired_at,
+                created_by_actor_code=actor_code,
+                indexed_at=None,
             )
 
-        document = Document(
-            doc_code=doc_code,
-            kb_id=meta.kb_id,
-            domain_code=meta.domain_code,
-            business_scene=meta.business_scene,
-            title=meta.title,
-            original_filename=file.filename,
-            file_size=total_size,
-            source_type=source_type,
-            source_uri=str(save_path),
-            cleaned_uri=None,
-            content_hash=content_hash,
-            version=DEFAULT_DOCUMENT_VERSION,
-            status=DEFAULT_DOCUMENT_STATUS,
-            replaced_by=None,
-            risk_level=meta.risk_level,
-            effective_at=meta.effective_at,
-            expired_at=meta.expired_at,
-            created_by_actor_code=actor_code,
-            indexed_at=None,
-        )
+            created_document = uow.documents.create(document)
+            uow.commit()
 
-        created_document = repo.create(document)
-        db.commit()
-        db.refresh(created_document)
+            # sessionmaker 默认在 commit 后过期 ORM 属性；关闭 Session 前刷新，
+            # 确保返回给 FastAPI 的实体可在上下文外安全序列化。
+            uow.session.refresh(created_document)
+
         upload_logger.completed(document=created_document)
 
         return created_document
