@@ -1,14 +1,5 @@
-# app/db/unit_of_work.py
-
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from types import TracebackType
-from typing import Self
-
-from sqlalchemy.orm import Session
-
-
-SessionFactory = Callable[[], Session]
 
 
 class AbstractUnitOfWork(ABC):
@@ -22,24 +13,17 @@ class AbstractUnitOfWork(ABC):
     """
 
     @abstractmethod
-    def __enter__(self) -> Self:
+    def __enter__(self) -> "AbstractUnitOfWork":
         raise NotImplementedError
 
+    @abstractmethod
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
-        try:
-            # 无论是否发生异常，都回滚尚未提交的事务。
-            # 已经 commit 的事务再次 rollback 不会撤销已提交内容。
-            self.rollback()
-        finally:
-            self.close()
-
-        # False 表示不吞掉异常。
-        return False
+        raise NotImplementedError
 
     @abstractmethod
     def flush(self) -> None:
