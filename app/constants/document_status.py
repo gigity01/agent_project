@@ -14,4 +14,3 @@ class DocumentStatus(str, Enum):
     INDEXING = "indexing"
     INDEXED = "indexed"
     FAILED = "failed"
-    EXPIRED = "expired"

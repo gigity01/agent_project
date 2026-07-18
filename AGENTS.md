@@ -141,10 +141,11 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
                                           任一失败阶段 -> failed
 ```
 
-此外定义了 `expired`。但当前实现尚未完整推进这条状态链：上传/处理服务实际使用
-`uploaded`、`processing`、`processed`、`failed`；切块成功后直接更新为 `chunked`，
-尚未使用中间状态 `chunking`；向量索引服务没有把 Document 更新为 `indexing/indexed`，
-索引进度主要体现在子块状态中。
+业务有效性由独立的 `DocumentLifecycleStatus` 表示，包括 `scheduled`、`active`、
+`expired`、`replaced` 和 `deleted`；`DocumentStatus` 不再承载业务过期语义。当前实现尚未
+完整推进处理状态链：上传/处理服务实际使用 `uploaded`、`processing`、`processed`、
+`failed`；切块成功后直接更新为 `chunked`，尚未使用中间状态 `chunking`；向量索引服务
+没有把 Document 更新为 `indexing/indexed`，索引进度主要体现在子块状态中。
 
 修改状态逻辑时必须使用 `DocumentStatus`，并同步检查各服务的准入条件和响应模型，
 不要把“枚举中已定义”误认为“业务流程已接入”。
