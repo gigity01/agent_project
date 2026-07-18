@@ -2,6 +2,8 @@
 
 from sqlalchemy.orm import Session
 
+from app.constants.document_lifecycle_status import DocumentLifecycleStatus
+from app.constants.document_storage_status import DocumentStorageStatus
 from app.models.document import Document
 
 
@@ -46,6 +48,15 @@ class DocumentRepository:
             .first()
         )
 
+    def get_by_id_for_update(self, document_id: int) -> Document | None:
+        """按主键查询并锁定文档，直至当前事务结束。"""
+        return (
+            self.db.query(Document)
+            .filter(Document.id == document_id)
+            .with_for_update()
+            .first()
+        )
+
     def update_status(
         self,
         document: Document,
@@ -65,5 +76,23 @@ class DocumentRepository:
         """在当前事务中写入清洗路径和状态；调用方负责提交或回滚。"""
         document.cleaned_uri = cleaned_uri
         document.status = status
+        self.db.flush()
+        return document
+
+    def deactivate(
+        self,
+        document: Document,
+        lifecycle_status: str,
+        *,
+        replaced_by: int | None = None,
+    ) -> Document:
+        """标记文档业务失效、释放去重 Hash，并进入待归档状态。"""
+        document.lifecycle_status = lifecycle_status
+        document.active_content_hash = None
+        document.storage_status = DocumentStorageStatus.ARCHIVING.value
+
+        if lifecycle_status == DocumentLifecycleStatus.REPLACED.value:
+            document.replaced_by = replaced_by
+
         self.db.flush()
         return document

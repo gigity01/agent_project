@@ -7,7 +7,7 @@ Create Date: 2026-07-17 00:00:00.000000
 """
 from typing import Sequence, Union
 
-from alembic import context, op
+from alembic import op
 import sqlalchemy as sa
 
 
@@ -46,55 +46,9 @@ def upgrade() -> None:
     op.execute(
         """
         UPDATE documents
-        SET lifecycle_status = CASE
-            WHEN status = 'scheduled' THEN 'scheduled'
-            WHEN status = 'expired' THEN 'expired'
-            WHEN status = 'replaced' THEN 'replaced'
-            WHEN status = 'deleted' THEN 'deleted'
-            ELSE 'active'
-        END
+        SET active_content_hash = content_hash
         """
     )
-    op.execute(
-        """
-        UPDATE documents
-        SET storage_status = CASE
-            WHEN status = 'archived' THEN 'archived'
-            ELSE 'active'
-        END
-        """
-    )
-    op.execute(
-        """
-        UPDATE documents
-        SET active_content_hash = CASE
-            WHEN lifecycle_status IN ('active', 'scheduled')
-                THEN content_hash
-            ELSE NULL
-        END
-        """
-    )
-
-    if not context.is_offline_mode():
-        duplicate = op.get_bind().execute(
-            sa.text(
-                """
-                SELECT kb_id, active_content_hash, COUNT(*) AS duplicate_count
-                FROM documents
-                WHERE active_content_hash IS NOT NULL
-                GROUP BY kb_id, active_content_hash
-                HAVING COUNT(*) > 1
-                LIMIT 1
-                """
-            )
-        ).first()
-        if duplicate is not None:
-            raise RuntimeError(
-                "存在重复的有效文档 Hash，请先清理后再执行迁移；"
-                f"kb_id={duplicate.kb_id}, "
-                f"hash={duplicate.active_content_hash}, "
-                f"count={duplicate.duplicate_count}"
-            )
 
     op.create_unique_constraint(
         "uq_documents_kb_active_content_hash",
