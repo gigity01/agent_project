@@ -21,6 +21,9 @@ class _Field:
     def __eq__(self, other):
         return ("eq", self.name, other)
 
+    def __ne__(self, other):
+        return ("ne", self.name, other)
+
     def in_(self, values):
         return ("in", self.name, tuple(values))
 
@@ -90,6 +93,12 @@ class _Query:
     def all(self):
         return self.result
 
+    def first(self):
+        return self.result[0] if self.result else None
+
+    def count(self):
+        return len(self.result)
+
 
 class _Session:
     def __init__(self, query: _Query) -> None:
@@ -153,6 +162,28 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
 
         self.assertEqual(repository.list_by_ids_for_update(7, []), [])
         self.assertEqual(session.queried_models, [])
+
+    def test_exists_by_doc_id_and_vector_status_scopes_active_chunks(self) -> None:
+        query = _Query([SimpleNamespace(id=1)])
+        repository = self.repository_module.ChildChunkRepository(_Session(query))
+
+        self.assertTrue(
+            repository.exists_by_doc_id_and_vector_status(7, "indexing")
+        )
+        self.assertIn(("eq", "doc_id", 7), query.filters)
+        self.assertIn(("eq", "status", "active"), query.filters)
+        self.assertIn(("eq", "vector_status", "indexing"), query.filters)
+
+    def test_count_active_not_indexed_scopes_document_and_status(self) -> None:
+        query = _Query([SimpleNamespace(id=1), SimpleNamespace(id=2)])
+        repository = self.repository_module.ChildChunkRepository(_Session(query))
+
+        result = repository.count_active_not_indexed_by_doc_id(7)
+
+        self.assertEqual(result, 2)
+        self.assertIn(("eq", "doc_id", 7), query.filters)
+        self.assertIn(("eq", "status", "active"), query.filters)
+        self.assertIn(("ne", "vector_status", "indexed"), query.filters)
 
     def test_batch_indexed_and_failed_updates_only_flush(self) -> None:
         session = _Session(_Query([]))

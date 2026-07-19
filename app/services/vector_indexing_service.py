@@ -183,6 +183,15 @@ def _claim_indexing(document_id: int) -> IndexingContext:
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
             raise HTTPException(status_code=409, detail="文档不在活跃存储区")
 
+        if uow.child_chunks.exists_by_doc_id_and_vector_status(
+            document.id,
+            "indexing",
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="文档存在未完成的索引任务，请先执行恢复操作",
+            )
+
         chunks = uow.child_chunks.list_indexable_by_doc_id(
             document.id,
             set(INDEXABLE_VECTOR_STATUSES),
@@ -279,6 +288,12 @@ def _complete_indexing(
             raise IndexingAbortedError("索引子块状态已经变化")
 
         uow.child_chunks.mark_indexed_many(chunks)
+        remaining_count = (
+            uow.child_chunks.count_active_not_indexed_by_doc_id(document.id)
+        )
+        if remaining_count > 0:
+            raise IndexingAbortedError("文档仍存在未完成索引的子块")
+
         document.status = DocumentStatus.INDEXED.value
         document.indexed_at = datetime.now()
         uow.flush()

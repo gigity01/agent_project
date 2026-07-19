@@ -105,6 +105,30 @@ class _ChildChunkRepository:
         self.mark_indexing_calls: list[list[int]] = []
         self.mark_indexed_calls: list[list[int]] = []
         self.mark_failed_calls: list[list[int]] = []
+        self.exists_vector_status_calls: list[tuple[int, str]] = []
+        self.count_not_indexed_calls: list[int] = []
+
+    def exists_by_doc_id_and_vector_status(
+        self,
+        document_id: int,
+        vector_status: str,
+    ) -> bool:
+        self.exists_vector_status_calls.append((document_id, vector_status))
+        return any(
+            chunk.doc_id == document_id
+            and chunk.status == "active"
+            and chunk.vector_status == vector_status
+            for chunk in self.chunks
+        )
+
+    def count_active_not_indexed_by_doc_id(self, document_id: int) -> int:
+        self.count_not_indexed_calls.append(document_id)
+        return sum(
+            chunk.doc_id == document_id
+            and chunk.status == "active"
+            and chunk.vector_status != "indexed"
+            for chunk in self.chunks
+        )
 
     def list_indexable_by_doc_id(self, document_id: int, statuses: set[str]):
         self.list_indexable_calls.append((document_id, statuses))
@@ -343,6 +367,27 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(indexed_chunk.vector_status, "indexed")
         self.assertEqual(factory.instances[0].commit_count, 1)
 
+    def test_claim_rejects_active_chunk_left_indexing(self) -> None:
+        document = _document(status=DocumentStatus.FAILED.value)
+        chunks = [
+            _chunk(1, vector_status="failed"),
+            _chunk(2, vector_status="indexing"),
+        ]
+        factory = self._use(document, chunks)
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service._claim_indexing(document.id)
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(
+            raised.exception.detail,
+            "文档存在未完成的索引任务，请先执行恢复操作",
+        )
+        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertEqual(chunks[0].vector_status, "failed")
+        self.assertEqual(chunks[1].vector_status, "indexing")
+        self.assertEqual(factory.instances[0].commit_count, 0)
+
     def test_inactive_or_archiving_document_cannot_be_claimed(self) -> None:
         scenarios = [
             (DocumentLifecycleStatus.DELETED.value, "active"),
@@ -536,6 +581,40 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(document.status, DocumentStatus.FAILED.value)
         self.assertEqual(vector_store.delete_calls, [[1, 2]])
         self.assertTrue(all(chunk.vector_status == "failed" for chunk in chunks))
+
+    def test_completion_requires_every_active_chunk_indexed(self) -> None:
+        document = _document()
+        chunks = [
+            _chunk(1, vector_status="failed"),
+            _chunk(2, vector_status="indexed"),
+        ]
+        factory = self._use(document, chunks)
+        embedding = _EmbeddingClient(factory)
+
+        def leave_stale_indexing(points) -> None:
+            chunks[1].vector_status = "indexing"
+
+        vector_store = _VectorStore(factory, on_upsert=leave_stale_indexing)
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service.index_document_vectors(
+                document.id,
+                embedding_client=embedding,
+                vector_store=vector_store,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(
+            raised.exception.detail,
+            "文档仍存在未完成索引的子块",
+        )
+        self.assertNotEqual(document.status, DocumentStatus.INDEXED.value)
+        self.assertEqual(vector_store.delete_calls, [[1]])
+        self.assertEqual(factory.instances[1].commit_count, 0)
+        self.assertEqual(
+            factory.instances[1].child_chunks.count_not_indexed_calls,
+            [document.id],
+        )
 
 
 if __name__ == "__main__":

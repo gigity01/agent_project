@@ -49,6 +49,35 @@ class ChildChunkRepository:
             is not None
         )
 
+    def exists_by_doc_id_and_vector_status(
+        self,
+        doc_id: int,
+        vector_status: str,
+    ) -> bool:
+        """判断文档是否存在指定向量状态的 active 子块。"""
+        return (
+            self.db.query(ChildChunk.id)
+            .filter(
+                ChildChunk.doc_id == doc_id,
+                ChildChunk.status == "active",
+                ChildChunk.vector_status == vector_status,
+            )
+            .first()
+            is not None
+        )
+
+    def count_active_not_indexed_by_doc_id(self, doc_id: int) -> int:
+        """统计文档中尚未完成向量索引的 active 子块。"""
+        return (
+            self.db.query(ChildChunk.id)
+            .filter(
+                ChildChunk.doc_id == doc_id,
+                ChildChunk.status == "active",
+                ChildChunk.vector_status != "indexed",
+            )
+            .count()
+        )
+
     def list_indexable_by_doc_id(
         self,
         doc_id: int,
