@@ -99,7 +99,7 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 - `MarkdownChunker`：按标题层级维护 `section_path`，以章节生成父块。
 - `CsvChunker`：一条记录对应一个子块，父块按最多 50 条记录和 12,000 字符组批。
 - 文本/Markdown 子块最大 600 字符；CSV 子块最大 8,000 字符，限制统一定义在 `app/chunkers/common.py`。
-- `processed` 文档可以领取切块任务；`failed` 文档在仍有 cleaned 产物时可以重试。
+- `processed` 文档可以领取切块任务；`failed` 文档只有在仍有 cleaned 产物且不存在 active ChildChunk 时才可重试，已有切块结果的失败文档必须走后续索引重试。
 - 领取成功后先提交 `chunking`，事务外生成父子块，最终短事务复核三状态轴并更新为 `chunked`；暂不允许 `chunked` 文档重复切块。
 - 重建时先删除旧 child chunks，再删除旧 parent blocks，并在同一事务写入新结果。
 - 子块初始 `vector_status` 为 `pending`。

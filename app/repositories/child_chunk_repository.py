@@ -36,6 +36,18 @@ class ChildChunkRepository:
             .delete(synchronize_session=False)
         )
 
+    def exists_by_doc_id(self, doc_id: int) -> bool:
+        """判断文档是否仍有 active 子块，不改变任何持久化状态。"""
+        return (
+            self.db.query(ChildChunk.id)
+            .filter(
+                ChildChunk.doc_id == doc_id,
+                ChildChunk.status == "active",
+            )
+            .first()
+            is not None
+        )
+
     def list_pending_by_doc_id(self, doc_id: int):
         """按父块和块序号稳定返回等待向量化的有效子块。"""
         return (

@@ -119,6 +119,14 @@ def _claim_chunking(document_id: int) -> ChunkingContext:
             raise HTTPException(status_code=409, detail="失效文档不能切块")
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
             raise HTTPException(status_code=409, detail="文档不在活跃存储区")
+        if (
+            document.status == DocumentStatus.FAILED.value
+            and uow.child_chunks.exists_by_doc_id(document.id)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="文档已有切块结果，不能通过切块接口重试",
+            )
 
         cleaned_artifact = uow.document_artifacts.get_latest_active(
             document_id=document.id,
@@ -183,10 +191,52 @@ def _execute_chunking(
             process_metadata=context.process_metadata,
         )
     )
+    _validate_chunk_build_result(chunks)
+
+    return ChunkingExecutionResult(context=context, chunks=chunks)
+
+
+def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
+    """拒绝无法安全持久化或无法进入向量索引阶段的切块结果。"""
     if not chunks.parents:
         raise HTTPException(status_code=400, detail="未生成任何 parent block")
 
-    return ChunkingExecutionResult(context=context, chunks=chunks)
+    parent_indices = [parent.block_index for parent in chunks.parents]
+    parent_index_set = set(parent_indices)
+    if len(parent_indices) != len(parent_index_set):
+        raise HTTPException(
+            status_code=500,
+            detail="切块结果包含重复的 parent block_index",
+        )
+
+    child_count = sum(
+        len(children)
+        for children in chunks.children_by_parent_index.values()
+    )
+    if child_count == 0:
+        raise HTTPException(status_code=400, detail="未生成任何 child chunk")
+
+    if set(chunks.children_by_parent_index) - parent_index_set:
+        raise HTTPException(
+            status_code=500,
+            detail="切块结果引用了不存在的 parent block",
+        )
+
+    for children in chunks.children_by_parent_index.values():
+        chunk_indices = [child.chunk_index for child in children]
+        if len(chunk_indices) != len(set(chunk_indices)):
+            raise HTTPException(
+                status_code=500,
+                detail="切块结果包含重复的 chunk_index",
+            )
+        if any(
+            not child.embedding_text or not child.embedding_text.strip()
+            for child in children
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="切块结果包含空的 embedding_text",
+            )
 
 
 def _complete_chunking(

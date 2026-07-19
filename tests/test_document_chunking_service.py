@@ -156,8 +156,10 @@ class _ParentBlockRepository:
 
 
 class _ChildChunkRepository:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], existing_chunks: bool) -> None:
         self.events = events
+        self.existing_chunks = existing_chunks
+        self.exists_calls: list[int] = []
         self.created: list[SimpleNamespace] = []
 
     def delete_by_doc_id(self, document_id: int) -> None:
@@ -168,18 +170,26 @@ class _ChildChunkRepository:
         self.created.extend(children)
         return children
 
+    def exists_by_doc_id(self, document_id: int) -> bool:
+        self.exists_calls.append(document_id)
+        return self.existing_chunks
+
 
 class _UnitOfWork:
     def __init__(
         self,
         documents: dict[int, SimpleNamespace],
         artifact,
+        existing_chunks: bool,
     ) -> None:
         self.events: list[str] = []
         self.documents = _DocumentRepository(documents)
         self.document_artifacts = _ArtifactRepository(artifact)
         self.parent_blocks = _ParentBlockRepository(self.events)
-        self.child_chunks = _ChildChunkRepository(self.events)
+        self.child_chunks = _ChildChunkRepository(
+            self.events,
+            existing_chunks,
+        )
         self.flush_count = 0
         self.commit_count = 0
         self.rollback_count = 0
@@ -203,13 +213,23 @@ class _UnitOfWork:
 
 
 class _UnitOfWorkFactory:
-    def __init__(self, documents: dict[int, SimpleNamespace], artifact) -> None:
+    def __init__(
+        self,
+        documents: dict[int, SimpleNamespace],
+        artifact,
+        existing_chunks: bool,
+    ) -> None:
         self.documents = documents
         self.artifact = artifact
+        self.existing_chunks = existing_chunks
         self.instances: list[_UnitOfWork] = []
 
     def __call__(self) -> _UnitOfWork:
-        uow = _UnitOfWork(self.documents, self.artifact)
+        uow = _UnitOfWork(
+            self.documents,
+            self.artifact,
+            self.existing_chunks,
+        )
         self.instances.append(uow)
         return uow
 
@@ -304,10 +324,13 @@ class DocumentChunkingServiceTest(unittest.TestCase):
         self,
         document: SimpleNamespace,
         artifact=None,
+        *,
+        existing_chunks: bool = False,
     ) -> _UnitOfWorkFactory:
         factory = _UnitOfWorkFactory(
             {document.id: document},
             artifact,
+            existing_chunks,
         )
         self.service.SQLAlchemyUnitOfWork = factory
         return factory
@@ -335,7 +358,30 @@ class DocumentChunkingServiceTest(unittest.TestCase):
 
         self.assertEqual(document.status, DocumentStatus.CHUNKING.value)
         self.assertEqual(context.cleaned_path, Path("legacy.md"))
+        self.assertEqual(factory.instances[0].child_chunks.exists_calls, [1])
         self.assertEqual(factory.instances[0].commit_count, 1)
+
+    def test_failed_document_with_existing_chunks_cannot_retry(self) -> None:
+        document = _document(status=DocumentStatus.FAILED.value)
+        factory = self._use_document(
+            document,
+            _artifact(),
+            existing_chunks=True,
+        )
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service._claim_chunking(document.id)
+
+        claim_uow = factory.instances[0]
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(
+            raised.exception.detail,
+            "文档已有切块结果，不能通过切块接口重试",
+        )
+        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertEqual(claim_uow.child_chunks.exists_calls, [document.id])
+        self.assertEqual(claim_uow.document_artifacts.calls, [])
+        self.assertEqual(claim_uow.commit_count, 0)
 
     def test_scheduled_document_can_be_claimed(self) -> None:
         document = _document(
@@ -425,6 +471,67 @@ class DocumentChunkingServiceTest(unittest.TestCase):
         self.assertEqual(len(factory.instances), 2)
         self.assertEqual(factory.instances[0].commit_count, 1)
         self.assertEqual(factory.instances[1].commit_count, 1)
+
+    def test_invalid_chunk_build_results_are_rejected(self) -> None:
+        duplicate_parent = _chunk_result()
+        duplicate_parent.parents.append(
+            _ParentBlockData(
+                block_type="section",
+                title="Duplicate",
+                section_path=["Duplicate"],
+                content="Duplicate parent",
+                block_index=0,
+                semantic_group_index=2,
+                segment_index=0,
+            )
+        )
+
+        no_children = _chunk_result()
+        no_children.children_by_parent_index = {}
+
+        unknown_parent = _chunk_result()
+        unknown_parent.children_by_parent_index[99] = [
+            _ChildChunkData(
+                content="Unknown",
+                embedding_text="Unknown child",
+                chunk_index=0,
+            )
+        ]
+
+        duplicate_child = _chunk_result()
+        duplicate_child.children_by_parent_index[0].append(
+            _ChildChunkData(
+                content="Duplicate child",
+                embedding_text="Duplicate child",
+                chunk_index=0,
+            )
+        )
+
+        empty_embedding = _chunk_result()
+        empty_embedding.children_by_parent_index[0][0].embedding_text = "   "
+
+        scenarios = [
+            (
+                duplicate_parent,
+                500,
+                "切块结果包含重复的 parent block_index",
+            ),
+            (no_children, 400, "未生成任何 child chunk"),
+            (
+                unknown_parent,
+                500,
+                "切块结果引用了不存在的 parent block",
+            ),
+            (duplicate_child, 500, "切块结果包含重复的 chunk_index"),
+            (empty_embedding, 500, "切块结果包含空的 embedding_text"),
+        ]
+        for chunks, status_code, detail in scenarios:
+            with self.subTest(detail=detail):
+                with self.assertRaises(self.service.HTTPException) as raised:
+                    self.service._validate_chunk_build_result(chunks)
+
+                self.assertEqual(raised.exception.status_code, status_code)
+                self.assertEqual(raised.exception.detail, detail)
 
     def test_completion_replaces_and_batches_blocks_in_one_uow(self) -> None:
         document = _document(status=DocumentStatus.CHUNKING.value)
