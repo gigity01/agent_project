@@ -5,9 +5,7 @@ from datetime import datetime
 from typing import Optional, Literal
 from app.db.session import Base
 from fastapi import FastAPI, UploadFile, File, Form, Depends
-from sqlalchemy.orm import Session
 
-from app.db.session import get_db
 from app.schemas.document import (
     DocumentUploadFormData,
     DocumentResponse,
@@ -107,14 +105,12 @@ def trigger_build_chunks(
 )
 def trigger_vector_indexing(
     document_id: int,
-    db: Session = Depends(get_db),
 ):
     """为尚未索引的子块生成向量并写入向量库。
 
-    只处理 ``pending`` 子块，因而重复调用可用于补偿失败或新增的索引任务。
+    只处理 ``pending`` 或 ``failed`` 子块；已索引子块不会重复生成向量。
     """
     return index_document_vectors(
-        db=db,
         document_id=document_id,
     )
 

@@ -1,7 +1,12 @@
 """Qdrant collection 初始化与向量点写入封装。"""
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import (
+    Distance,
+    PointIdsList,
+    PointStruct,
+    VectorParams,
+)
 
 from app.app_config.settings import (
     QDRANT_URL,
@@ -46,5 +51,16 @@ class QdrantVectorStore:
         self.client.upsert(
             collection_name=self.collection_name,
             points=points,
+            wait=True,
+        )
+
+    def delete_points(self, point_ids: list[int]) -> None:
+        """按稳定 Point ID 尽力删除一批已写入向量。"""
+        if not point_ids:
+            return
+
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=PointIdsList(points=point_ids),
             wait=True,
         )

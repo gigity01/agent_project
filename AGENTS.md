@@ -110,12 +110,13 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 
 入口：`app/services/vector_indexing_service.py`
 
-- 仅查询 `status=active` 且 `vector_status=pending` 的子块。
-- 调用外部服务前先提交 `indexing` 状态，避免长数据库事务。
+- 领取事务只查询 `status=active` 且 `vector_status=pending/failed` 的子块，已索引子块不会重复生成向量。
+- 领取时以行锁把 Document 和本次子块推进到 `indexing` 并提交，外部 Embedding/Qdrant 调用不占用数据库事务。
 - 使用 DashScope OpenAI-compatible Embedding API。
-- 校验向量数量和 `EMBEDDING_VECTOR_SIZE`。
+- Service 按 `EMBEDDING_BATCH_SIZE` 分批执行，并校验每批向量数量和 `EMBEDDING_VECTOR_SIZE`。
 - Qdrant point id 与 `child_chunks.id` 一一对应，重试时可幂等 upsert。
-- 成功后标记为 `indexed`；失败时尽力补偿为 `failed`。
+- 最终短事务会重新检查 Document 三状态轴并锁定本次子块，成功后同时把 ChildChunk 和 Document 标记为 `indexed`。
+- 失败时以独立短事务把本次 `indexing` 状态补偿为 `failed`；已经尝试写入的 Point 会尽力按稳定 ID 删除。
 
 数据库、Embedding 服务和 Qdrant 无法组成单一事务。必须考虑“Qdrant 已写入但数据库状态更新失败”等跨存储不一致场景。
 
@@ -145,8 +146,8 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
 业务有效性由独立的 `DocumentLifecycleStatus` 表示，包括 `scheduled`、`active`、
 `expired`、`replaced` 和 `deleted`；`DocumentStatus` 不再承载业务过期语义。当前实现尚未
 完整推进处理状态链：上传/处理服务实际使用 `uploaded`、`processing`、`processed`、
-`failed`；切块服务已经使用 `chunking` 领取状态并在完成事务中更新为 `chunked`；向量索引服务
-没有把 Document 更新为 `indexing/indexed`，索引进度主要体现在子块状态中。
+`failed`；切块和向量索引服务已经分别接入 `chunking/chunked` 与 `indexing/indexed`
+中间状态，并在外部耗时工作前后使用独立短事务。
 
 修改状态逻辑时必须使用 `DocumentStatus`，并同步检查各服务的准入条件和响应模型，
 不要把“枚举中已定义”误认为“业务流程已接入”。
@@ -229,7 +230,7 @@ Repository 原则：
 ## 容易遗漏的约束
 
 - `app/main.py` 导入 `app.models` 是为了确保 ORM 表注册完整。
-- `QdrantVectorStore.ensure_collection()` 只创建不存在的 collection，不迁移已有 collection schema。
+- `QdrantVectorStore.ensure_collection()` 只创建不存在的 collection，不迁移已有 collection schema；补偿删除按稳定 Point ID 执行。
 - 修改 Embedding 模型或维度前，必须评估 Qdrant collection 重建/迁移。
 - Markdown 标题本身没有正文时不会生成可检索父块。
 - `embedding_text` 会加入章节路径，但父块正文仍保留清洗后的原始内容。
