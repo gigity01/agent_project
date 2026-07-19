@@ -19,6 +19,15 @@ class ChildChunkRepository:
         self.db.flush()
         return child_chunk
 
+    def create_many(self, child_chunks: list[ChildChunk]) -> list[ChildChunk]:
+        """批量加入子块并统一 flush；事务提交仍由调用方负责。"""
+        if not child_chunks:
+            return []
+
+        self.db.add_all(child_chunks)
+        self.db.flush()
+        return child_chunks
+
     def delete_by_doc_id(self, doc_id: int) -> None:
         """删除指定文档的全部子块，不在此处提交事务。"""
         (

@@ -99,7 +99,8 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 - `MarkdownChunker`：按标题层级维护 `section_path`，以章节生成父块。
 - `CsvChunker`：一条记录对应一个子块，父块按最多 50 条记录和 12,000 字符组批。
 - 文本/Markdown 子块最大 600 字符；CSV 子块最大 8,000 字符，限制统一定义在 `app/chunkers/common.py`。
-- 当前只允许 `processed` 文档切块；成功后文档状态更新为 `chunked`，暂不允许重复切块。
+- `processed` 文档可以领取切块任务；`failed` 文档在仍有 cleaned 产物时可以重试。
+- 领取成功后先提交 `chunking`，事务外生成父子块，最终短事务复核三状态轴并更新为 `chunked`；暂不允许 `chunked` 文档重复切块。
 - 重建时先删除旧 child chunks，再删除旧 parent blocks，并在同一事务写入新结果。
 - 子块初始 `vector_status` 为 `pending`。
 
@@ -144,7 +145,7 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
 业务有效性由独立的 `DocumentLifecycleStatus` 表示，包括 `scheduled`、`active`、
 `expired`、`replaced` 和 `deleted`；`DocumentStatus` 不再承载业务过期语义。当前实现尚未
 完整推进处理状态链：上传/处理服务实际使用 `uploaded`、`processing`、`processed`、
-`failed`；切块成功后直接更新为 `chunked`，尚未使用中间状态 `chunking`；向量索引服务
+`failed`；切块服务已经使用 `chunking` 领取状态并在完成事务中更新为 `chunked`；向量索引服务
 没有把 Document 更新为 `indexing/indexed`，索引进度主要体现在子块状态中。
 
 修改状态逻辑时必须使用 `DocumentStatus`，并同步检查各服务的准入条件和响应模型，

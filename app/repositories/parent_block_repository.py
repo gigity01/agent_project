@@ -16,6 +16,18 @@ class ParentBlockRepository:
         self.db.flush()
         return parent_block
 
+    def create_many(
+        self,
+        parent_blocks: list[ParentBlock],
+    ) -> list[ParentBlock]:
+        """批量加入父块并统一 flush；事务提交仍由调用方负责。"""
+        if not parent_blocks:
+            return []
+
+        self.db.add_all(parent_blocks)
+        self.db.flush()
+        return parent_blocks
+
     def delete_by_doc_id(self, doc_id: int) -> None:
         """删除指定文档的全部父块，不在此处提交事务。"""
         (

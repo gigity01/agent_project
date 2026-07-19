@@ -91,7 +91,6 @@ def trigger_document_processing(
 )
 def trigger_build_chunks(
     document_id: int,
-    db: Session = Depends(get_db),
 ):
     """基于已清洗的文本重建父块和子块。
 
@@ -99,7 +98,6 @@ def trigger_build_chunks(
     块数据落库后单独执行。
     """
     return build_document_chunks(
-        db=db,
         document_id=document_id,
     )
 
