@@ -75,7 +75,6 @@ async def upload_document(
 )
 def trigger_document_processing(
     document_id: int,
-    db: Session = Depends(get_db),
 ):
     """触发指定文档的清洗或外部格式转换流程。
 
@@ -83,7 +82,6 @@ def trigger_document_processing(
     ``cleaned_uri``；切块与向量索引由独立端点触发，避免长任务相互耦合。
     """
     return process_document(
-        db=db,
         document_id=document_id,
     )
 
