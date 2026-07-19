@@ -1,5 +1,7 @@
 """文档 ORM 模型的数据库访问封装。"""
 
+from collections.abc import Iterable
+
 from sqlalchemy.orm import Session
 
 from app.constants.document_lifecycle_status import DocumentLifecycleStatus
@@ -55,6 +57,23 @@ class DocumentRepository:
             .filter(Document.id == document_id)
             .with_for_update()
             .first()
+        )
+
+    def get_by_ids_for_update(
+        self,
+        document_ids: Iterable[int],
+    ) -> list[Document]:
+        """按主键升序锁定多份文档，避免替代操作形成循环等待。"""
+        ordered_ids = sorted(set(document_ids))
+        if not ordered_ids:
+            return []
+
+        return (
+            self.db.query(Document)
+            .filter(Document.id.in_(ordered_ids))
+            .order_by(Document.id)
+            .with_for_update()
+            .all()
         )
 
     def update_status(

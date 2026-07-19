@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,11 +69,22 @@ class _DocumentRepository:
     def __init__(self, documents: dict[int, SimpleNamespace]) -> None:
         self.documents = documents
         self.locked_ids: list[int] = []
+        self.batch_lock_calls: list[tuple[int, ...]] = []
         self.deactivate_calls: list[tuple[int, str, int | None]] = []
 
     def get_by_id_for_update(self, document_id: int):
         self.locked_ids.append(document_id)
         return self.documents.get(document_id)
+
+    def get_by_ids_for_update(self, document_ids):
+        ordered_ids = tuple(sorted(set(document_ids)))
+        self.batch_lock_calls.append(ordered_ids)
+        self.locked_ids.extend(ordered_ids)
+        return [
+            self.documents[document_id]
+            for document_id in ordered_ids
+            if document_id in self.documents
+        ]
 
     def deactivate(
         self,
@@ -119,6 +131,8 @@ def _document(
     active_content_hash: str | None = "hash-a",
     storage_status: str = DocumentStorageStatus.ACTIVE.value,
     replaced_by: int | None = None,
+    effective_at: datetime | None = None,
+    expired_at: datetime | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=document_id,
@@ -128,6 +142,8 @@ def _document(
         active_content_hash=active_content_hash,
         storage_status=storage_status,
         replaced_by=replaced_by,
+        effective_at=effective_at,
+        expired_at=expired_at,
     )
 
 
@@ -172,22 +188,23 @@ class DocumentLifecycleServiceTest(unittest.TestCase):
                 self.assertEqual(uow.commit_count, 1)
 
     def test_replace_locks_and_validates_replacement_in_same_transaction(self) -> None:
-        document = _document(1, kb_id=7)
-        replacement = _document(2, kb_id=7)
+        document = _document(2, kb_id=7)
+        replacement = _document(1, kb_id=7)
         uow = self._use_documents(document, replacement)
 
         response = self.service.deactivate_document(
-            1,
+            2,
             DocumentLifecycleStatus.REPLACED,
-            replaced_by=2,
+            replaced_by=1,
         )
 
         self.assertEqual(uow.documents.locked_ids, [1, 2])
+        self.assertEqual(uow.documents.batch_lock_calls, [(1, 2)])
         self.assertEqual(document.lifecycle_status, "replaced")
-        self.assertEqual(document.replaced_by, 2)
+        self.assertEqual(document.replaced_by, 1)
         self.assertIsNone(document.active_content_hash)
         self.assertEqual(document.storage_status, "archiving")
-        self.assertEqual(response.replaced_by, 2)
+        self.assertEqual(response.replaced_by, 1)
         self.assertEqual(uow.commit_count, 1)
 
     def test_same_reason_is_idempotent_without_new_write(self) -> None:
@@ -206,12 +223,38 @@ class DocumentLifecycleServiceTest(unittest.TestCase):
                 )
                 uow = self._use_documents(document)
 
-                response = self.service.deactivate_document(1, reason)
+                response = self.service.deactivate_document(
+                    1,
+                    reason,
+                    replaced_by=document.replaced_by,
+                )
 
                 self.assertEqual(response.lifecycle_status, reason.value)
                 self.assertEqual(uow.documents.deactivate_calls, [])
                 self.assertEqual(uow.commit_count, 0)
                 self.assertEqual(uow.rollback_count, 1)
+
+    def test_replaced_idempotency_rejects_different_target(self) -> None:
+        document = _document(
+            1,
+            lifecycle_status=DocumentLifecycleStatus.REPLACED.value,
+            active_content_hash=None,
+            storage_status=DocumentStorageStatus.ARCHIVING.value,
+            replaced_by=2,
+        )
+        uow = self._use_documents(document, _document(3))
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service.deactivate_document(
+                1,
+                DocumentLifecycleStatus.REPLACED,
+                replaced_by=3,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail, "文档已经被其他文档替代")
+        self.assertEqual(uow.documents.deactivate_calls, [])
+        self.assertEqual(uow.commit_count, 0)
 
     def test_different_deactivation_reason_returns_conflict(self) -> None:
         document = _document(
@@ -262,6 +305,7 @@ class DocumentLifecycleServiceTest(unittest.TestCase):
         self.assertEqual(factory_calls, 0)
 
     def test_replace_rejects_missing_or_invalid_replacement(self) -> None:
+        now = datetime.now(timezone.utc)
         scenarios = [
             (None, (), 400),
             (2, (), 404),
@@ -280,6 +324,26 @@ class DocumentLifecycleServiceTest(unittest.TestCase):
                         lifecycle_status=DocumentLifecycleStatus.SCHEDULED.value,
                     ),
                 ),
+                409,
+            ),
+            (
+                2,
+                (
+                    _document(
+                        2,
+                        storage_status=DocumentStorageStatus.ARCHIVED.value,
+                    ),
+                ),
+                409,
+            ),
+            (
+                2,
+                (_document(2, effective_at=now + timedelta(minutes=5)),),
+                409,
+            ),
+            (
+                2,
+                (_document(2, expired_at=now - timedelta(minutes=5)),),
                 409,
             ),
         ]

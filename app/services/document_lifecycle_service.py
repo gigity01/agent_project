@@ -1,8 +1,11 @@
 """文档业务失效事务编排。"""
 
+from datetime import datetime
+
 from fastapi import HTTPException
 
 from app.constants.document_lifecycle_status import DocumentLifecycleStatus
+from app.constants.document_storage_status import DocumentStorageStatus
 from app.constants.document_status import DocumentStatus
 from app.db.uow import SQLAlchemyUnitOfWork
 from app.models.document import Document
@@ -49,6 +52,29 @@ def _validate_replacement(
             status_code=409,
             detail="替代文档不是业务有效文档",
         )
+    if replacement.storage_status != DocumentStorageStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=409,
+            detail="替代文档不在活跃存储区",
+        )
+    if (
+        replacement.effective_at is not None
+        and replacement.effective_at
+        > datetime.now(tz=replacement.effective_at.tzinfo)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="替代文档尚未生效",
+        )
+    if (
+        replacement.expired_at is not None
+        and replacement.expired_at
+        <= datetime.now(tz=replacement.expired_at.tzinfo)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="替代文档已经到期",
+        )
 
 
 def deactivate_document(
@@ -62,11 +88,36 @@ def deactivate_document(
         raise ValueError("不支持的失效原因")
 
     with SQLAlchemyUnitOfWork() as uow:
-        document = uow.documents.get_by_id_for_update(document_id)
+        replacement = None
+        if (
+            reason == DocumentLifecycleStatus.REPLACED
+            and replaced_by is not None
+            and replaced_by != document_id
+        ):
+            locked_documents = uow.documents.get_by_ids_for_update(
+                (document_id, replaced_by)
+            )
+            documents_by_id = {
+                locked_document.id: locked_document
+                for locked_document in locked_documents
+            }
+            document = documents_by_id.get(document_id)
+            replacement = documents_by_id.get(replaced_by)
+        else:
+            document = uow.documents.get_by_id_for_update(document_id)
+
         if document is None:
             raise HTTPException(status_code=404, detail="文档不存在")
 
         if document.lifecycle_status == reason.value:
+            if (
+                reason == DocumentLifecycleStatus.REPLACED
+                and document.replaced_by != replaced_by
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="文档已经被其他文档替代",
+                )
             return DocumentResponse.model_validate(document)
 
         if document.lifecycle_status in INACTIVE_LIFECYCLE_STATUSES:
@@ -89,7 +140,6 @@ def deactivate_document(
             if replaced_by == document.id:
                 raise HTTPException(status_code=400, detail="文档不能替代自身")
 
-            replacement = uow.documents.get_by_id_for_update(replaced_by)
             if replacement is None:
                 raise HTTPException(status_code=404, detail="替代文档不存在")
             _validate_replacement(document, replacement)
