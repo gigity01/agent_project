@@ -75,43 +75,117 @@ def _load_service_module():
         "app.chunkers.common": types.ModuleType("app.chunkers.common"),
         "app.chunkers.factory": types.ModuleType("app.chunkers.factory"),
         "app.db.uow": types.ModuleType("app.db.uow"),
-        "app.models.child_chunk": types.ModuleType("app.models.child_chunk"),
-        "app.models.parent_block": types.ModuleType("app.models.parent_block"),
+        "app.models.child_chunk": types.ModuleType(
+            "app.models.child_chunk"
+        ),
+        "app.models.parent_block": types.ModuleType(
+            "app.models.parent_block"
+        ),
         "app.policies.document_source_policy": types.ModuleType(
             "app.policies.document_source_policy"
         ),
-        "app.schemas.chunking": types.ModuleType("app.schemas.chunking"),
+        "app.schemas.chunking": types.ModuleType(
+            "app.schemas.chunking"
+        ),
     }
-    replacements["fastapi"].HTTPException = _HTTPException
-    replacements["app.chunkers.base"].ChunkBuildInput = _ChunkBuildInput
-    replacements["app.chunkers.base"].ChunkBuildResult = _ChunkBuildResult
-    replacements["app.chunkers.base"].ParentBlockData = _ParentBlockData
-    replacements["app.chunkers.base"].ChildChunkData = _ChildChunkData
-    replacements["app.chunkers.common"].md5_text = lambda text: f"md5:{text}"
-    replacements["app.chunkers.factory"].get_chunker = lambda source_type: None
-    replacements["app.db.uow"].SQLAlchemyUnitOfWork = object
-    replacements["app.models.child_chunk"].ChildChunk = _KeywordModel
-    replacements["app.models.parent_block"].ParentBlock = _KeywordModel
-    replacements[
-        "app.policies.document_source_policy"
-    ].get_expected_process_output_type = lambda source_type: source_type
-    replacements["app.schemas.chunking"].BuildChunksResponse = _KeywordModel
 
-    originals = {name: sys.modules.get(name) for name in replacements}
+    setattr(
+        replacements["fastapi"],
+        "HTTPException",
+        _HTTPException,
+    )
+
+    setattr(
+        replacements["app.chunkers.base"],
+        "ChunkBuildInput",
+        _ChunkBuildInput,
+    )
+    setattr(
+        replacements["app.chunkers.base"],
+        "ChunkBuildResult",
+        _ChunkBuildResult,
+    )
+    setattr(
+        replacements["app.chunkers.base"],
+        "ParentBlockData",
+        _ParentBlockData,
+    )
+    setattr(
+        replacements["app.chunkers.base"],
+        "ChildChunkData",
+        _ChildChunkData,
+    )
+
+    setattr(
+        replacements["app.chunkers.common"],
+        "md5_text",
+        lambda text: f"md5:{text}",
+    )
+
+    setattr(
+        replacements["app.chunkers.factory"],
+        "get_chunker",
+        lambda source_type: None,
+    )
+
+    setattr(
+        replacements["app.db.uow"],
+        "SQLAlchemyUnitOfWork",
+        object,
+    )
+
+    setattr(
+        replacements["app.models.child_chunk"],
+        "ChildChunk",
+        _KeywordModel,
+    )
+
+    setattr(
+        replacements["app.models.parent_block"],
+        "ParentBlock",
+        _KeywordModel,
+    )
+
+    setattr(
+        replacements["app.policies.document_source_policy"],
+        "get_expected_process_output_type",
+        lambda source_type: source_type,
+    )
+
+    setattr(
+        replacements["app.schemas.chunking"],
+        "BuildChunksResponse",
+        _KeywordModel,
+    )
+
+    originals = {
+        name: sys.modules.get(name)
+        for name in replacements
+    }
+
     sys.modules.update(replacements)
+
     try:
         spec = importlib.util.spec_from_file_location(
             "document_chunking_service_under_test",
             SERVICE_PATH,
         )
+
         if spec is None or spec.loader is None:
             raise RuntimeError("无法加载待测试的文档切块 Service")
+
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+
         return module
+
     finally:
-        sys.modules.pop("document_chunking_service_under_test", None)
+        sys.modules.pop(
+            "document_chunking_service_under_test",
+            None,
+        )
+
         for name, original in originals.items():
             if original is None:
                 sys.modules.pop(name, None)
@@ -315,10 +389,10 @@ class DocumentChunkingServiceTest(unittest.TestCase):
         cls.service = _load_service_module()
 
     def setUp(self) -> None:
-        self.original_uow = self.service.SQLAlchemyUnitOfWork
+        self.original_uow = getattr(self.service, "SQLAlchemyUnitOfWork")
 
     def tearDown(self) -> None:
-        self.service.SQLAlchemyUnitOfWork = self.original_uow
+        setattr(self.service, "SQLAlchemyUnitOfWork", self.original_uow)
 
     def _use_document(
         self,
@@ -332,7 +406,7 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             artifact,
             existing_chunks,
         )
-        self.service.SQLAlchemyUnitOfWork = factory
+        setattr(self.service, "SQLAlchemyUnitOfWork", factory)
         return factory
 
     def test_processed_document_can_be_claimed(self) -> None:
@@ -451,7 +525,8 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             factory = self._use_document(document, _artifact(str(cleaned_path)))
 
             class FailingChunker:
-                def build(inner_self, input_data):
+                @staticmethod
+                def build(input_data):
                     self.assertFalse(
                         any(uow.active for uow in factory.instances)
                     )
@@ -589,7 +664,8 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             factory = self._use_document(document, _artifact(str(cleaned_path)))
 
             class DeletingChunker:
-                def build(inner_self, input_data):
+                @staticmethod
+                def build(input_data):
                     document.lifecycle_status = DocumentLifecycleStatus.DELETED.value
                     document.storage_status = DocumentStorageStatus.ARCHIVING.value
                     document.active_content_hash = None

@@ -1,9 +1,9 @@
 """文档派生产物的类型枚举。"""
 
-from enum import StrEnum
+from enum import Enum
 
 
-class DocumentArtifactType(StrEnum):
+class DocumentArtifactType(str, Enum):
     """区分二级文本、清洗文本、布局与多媒体提取产物。"""
     SECONDARY_TEXT = "secondary_text"
     CLEANED_TEXT = "cleaned_text"
