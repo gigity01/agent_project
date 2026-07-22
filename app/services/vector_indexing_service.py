@@ -19,8 +19,8 @@ from app.constants.document_storage_status import DocumentStorageStatus
 from app.db.uow import SQLAlchemyUnitOfWork
 from app.schemas.vector_indexing import VectorIndexingResponse
 from app.services.document_failure_state import (
-    FailureStateResult,
-    NO_FAILURE_STATE_CHANGE,
+    IndexFailureStateResult,
+    NO_INDEX_FAILURE_STATE_CHANGE,
 )
 from app.services.embedding_service import EmbeddingService
 from app.vectorstores.qdrant_store import QdrantVectorStore
@@ -466,26 +466,32 @@ def _fail_indexing(
     document_id: int,
     chunk_ids: tuple[int, ...],
     error: Exception,
-) -> FailureStateResult:
+) -> IndexFailureStateResult:
     """以独立短事务把本次 indexing Document/Chunk 标记为 failed。"""
     del error
     with SQLAlchemyUnitOfWork() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
         if document is None:
-            return NO_FAILURE_STATE_CHANGE
+            return NO_INDEX_FAILURE_STATE_CHANGE
 
         status_before = document.status
         chunks = uow.child_chunks.list_by_ids_for_update(
             document.id,
             chunk_ids,
         )
+        chunk_statuses_before = [chunk.vector_status for chunk in chunks]
         uow.child_chunks.mark_failed(chunks)
+        chunk_state_updated_count = sum(
+            chunk_status_before != chunk.vector_status
+            for chunk_status_before, chunk in zip(chunk_statuses_before, chunks)
+        )
         if document.status == DocumentStatus.INDEXING.value:
             document.status = DocumentStatus.FAILED.value
         uow.flush()
         uow.commit()
-        return FailureStateResult(
-            state_updated=status_before != document.status,
+        return IndexFailureStateResult(
+            document_state_updated=status_before != document.status,
+            chunk_state_updated_count=chunk_state_updated_count,
             status_before=status_before,
             status_after=document.status,
         )
@@ -504,9 +510,9 @@ def _handle_indexing_failure(
     operation: str | None = None,
     batch_index: int | None = None,
     batch_size: int | None = None,
-) -> FailureStateResult:
+) -> IndexFailureStateResult:
     """不掩盖原异常地执行数据库失败登记和 Qdrant Point 补偿。"""
-    failure_result = NO_FAILURE_STATE_CHANGE
+    failure_result = NO_INDEX_FAILURE_STATE_CHANGE
     if context is not None:
         try:
             failure_result = _fail_indexing(
@@ -524,7 +530,8 @@ def _handle_indexing_failure(
         error=error,
         phase=phase,
         context=context,
-        state_updated=failure_result.state_updated,
+        document_state_updated=failure_result.document_state_updated,
+        chunk_state_updated_count=failure_result.chunk_state_updated_count,
         status_before=failure_result.status_before,
         status_after=failure_result.status_after,
         operation=operation,
@@ -547,7 +554,7 @@ def _handle_indexing_failure(
     try:
         vector_store.delete_points(list(compensation_point_ids))
         index_logger.compensation_completed(
-            deleted_point_count=len(compensation_point_ids),
+            requested_point_count=len(compensation_point_ids),
             started_at_ms=compensation_started_at_ms,
         )
     except Exception as compensation_error:

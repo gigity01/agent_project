@@ -1,6 +1,7 @@
 """文档上传拒绝与前置异常的事实语义测试。"""
 
 import unittest
+from types import SimpleNamespace
 
 from core.observability.document_upload_logger import DocumentUploadLogger
 
@@ -72,6 +73,20 @@ class DocumentUploadLoggerTest(unittest.TestCase):
         self.assertEqual(event["outcome"], "error")
         self.assertFalse(event["document_created"])
         self.assertIsNone(event["status_after"])
+
+    def test_duplicate_detected_uses_finalize_phase(self) -> None:
+        self.upload_logger.duplicate_detected(
+            doc_code="DOC_002",
+            kb_id=1,
+            content_hash="hash",
+            duplicated_document=SimpleNamespace(
+                id=13,
+                doc_code="DOC_001",
+            ),
+        )
+
+        event = self.upload_logger.writer.events[0]
+        self.assertEqual(event["phase"], "finalize")
 
 
 if __name__ == "__main__":

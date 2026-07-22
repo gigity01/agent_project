@@ -658,6 +658,9 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(failed_fields["operation"], "qdrant_upsert")
         self.assertEqual(failed_fields["batch_index"], 1)
         self.assertEqual(failed_fields["batch_size"], 2)
+        self.assertTrue(failed_fields["document_state_updated"])
+        self.assertEqual(failed_fields["chunk_state_updated_count"], 2)
+        self.assertNotIn("state_updated", failed_fields)
 
     def test_failed_batch_distinguishes_confirmed_and_uncertain_points(self) -> None:
         document = _document()
@@ -699,7 +702,8 @@ class VectorIndexingServiceTest(unittest.TestCase):
             RuntimeError("failed"),
         )
 
-        self.assertFalse(result.state_updated)
+        self.assertFalse(result.document_state_updated)
+        self.assertEqual(result.chunk_state_updated_count, 1)
         self.assertEqual(result.status_before, DocumentStatus.INDEXED.value)
         self.assertEqual(result.status_after, DocumentStatus.INDEXED.value)
         self.assertEqual(document.status, DocumentStatus.INDEXED.value)

@@ -134,7 +134,8 @@ class DocumentIndexLogger(DocumentStageLogger):
         error: Exception,
         phase: str,
         context: Any | None,
-        state_updated: bool = False,
+        document_state_updated: bool = False,
+        chunk_state_updated_count: int = 0,
         status_before: str | None = None,
         status_after: str | None = None,
         operation: str | None = None,
@@ -155,7 +156,8 @@ class DocumentIndexLogger(DocumentStageLogger):
             batch_size=batch_size,
             confirmed_point_count=confirmed_point_count,
             uncertain_point_count=uncertain_point_count,
-            state_updated=state_updated,
+            document_state_updated=document_state_updated,
+            chunk_state_updated_count=chunk_state_updated_count,
             status_before=status_before,
             status_after=status_after,
             **self.error_fields(error),
@@ -180,7 +182,7 @@ class DocumentIndexLogger(DocumentStageLogger):
     def compensation_completed(
         self,
         *,
-        deleted_point_count: int,
+        requested_point_count: int,
         started_at_ms: int,
     ) -> None:
         self.write(
@@ -188,7 +190,7 @@ class DocumentIndexLogger(DocumentStageLogger):
             phase="compensate",
             level="info",
             message="Qdrant Point 补偿删除完成",
-            deleted_point_count=deleted_point_count,
+            requested_point_count=requested_point_count,
             batch_duration_ms=now_ms() - started_at_ms,
         )
 

@@ -70,7 +70,7 @@ class DocumentIndexLoggerTest(unittest.TestCase):
             uncertain_point_count=1,
         )
         self.index_logger.compensation_completed(
-            deleted_point_count=2,
+            requested_point_count=2,
             started_at_ms=started_at,
         )
         self.index_logger.compensation_failed(
@@ -83,7 +83,8 @@ class DocumentIndexLoggerTest(unittest.TestCase):
 
         events = self.index_logger.writer.events
         self.assertEqual(events[0]["phase"], "compensate")
-        self.assertEqual(events[1]["deleted_point_count"], 2)
+        self.assertEqual(events[1]["requested_point_count"], 2)
+        self.assertNotIn("deleted_point_count", events[1])
         self.assertEqual(
             events[2]["event"],
             "document_index_compensation_failed",
@@ -97,7 +98,8 @@ class DocumentIndexLoggerTest(unittest.TestCase):
             ),
             phase="finalize",
             context=_context(),
-            state_updated=False,
+            document_state_updated=False,
+            chunk_state_updated_count=1,
             status_before="archived",
             status_after="archived",
             operation="qdrant_upsert",
@@ -111,7 +113,8 @@ class DocumentIndexLoggerTest(unittest.TestCase):
         self.assertEqual(event["phase"], "finalize")
         self.assertEqual(event["confirmed_point_count"], 2)
         self.assertEqual(event["uncertain_point_count"], 1)
-        self.assertFalse(event["state_updated"])
+        self.assertFalse(event["document_state_updated"])
+        self.assertEqual(event["chunk_state_updated_count"], 1)
         self.assertEqual(event["status_after"], "archived")
         self.assertEqual(event["operation"], "qdrant_upsert")
         self.assertNotIn("test-secret-value", event["error_message"])

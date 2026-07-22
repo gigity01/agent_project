@@ -106,7 +106,7 @@ class DocumentUploadLogger(DocumentStageLogger):
     ) -> None:
         """记录因同知识库内容重复而拒绝上传。"""
         self.write(
-            phase="execute",
+            phase="finalize",
             level="warning",
             event="document_upload_duplicate_detected",
             message="检测到重复文档，上传被拒绝",
