@@ -37,6 +37,45 @@ class _PointStruct:
         self.payload = payload
 
 
+class _DocumentIndexLogger:
+    instances = []
+
+    def __init__(self, *, document_id=None) -> None:
+        self.document_id = document_id
+        self.failed_fields = None
+        self.__class__.instances.append(self)
+
+    def claimed(self, context) -> None:
+        self.context = context
+
+    def collection_ready(self, **fields) -> None:
+        pass
+
+    def embedding_batch_started(self, **fields) -> int:
+        return 0
+
+    def embedding_batch_completed(self, **fields) -> None:
+        pass
+
+    def qdrant_batch_completed(self, **fields) -> None:
+        pass
+
+    def completed(self, response) -> None:
+        self.response = response
+
+    def failed(self, **fields) -> None:
+        self.failed_fields = fields
+
+    def compensation_started(self, **fields) -> int:
+        return 0
+
+    def compensation_completed(self, **fields) -> None:
+        pass
+
+    def compensation_failed(self, **fields) -> None:
+        pass
+
+
 def _load_service_module():
     replacements = {
         "fastapi": types.ModuleType("fastapi"),
@@ -53,10 +92,14 @@ def _load_service_module():
         "app.vectorstores.qdrant_store": types.ModuleType(
             "app.vectorstores.qdrant_store"
         ),
+        "core.observability.document_index_logger": types.ModuleType(
+            "core.observability.document_index_logger"
+        ),
     }
     replacements["fastapi"].HTTPException = _HTTPException
     replacements["qdrant_client.models"].PointStruct = _PointStruct
     replacements["app.app_config.settings"].EMBEDDING_BATCH_SIZE = 2
+    replacements["app.app_config.settings"].EMBEDDING_MODEL_NAME = "test-model"
     replacements["app.app_config.settings"].EMBEDDING_VECTOR_SIZE = 3
     replacements["app.db.uow"].SQLAlchemyUnitOfWork = object
     replacements["app.schemas.vector_indexing"].VectorIndexingResponse = (
@@ -64,6 +107,9 @@ def _load_service_module():
     )
     replacements["app.services.embedding_service"].EmbeddingService = object
     replacements["app.vectorstores.qdrant_store"].QdrantVectorStore = object
+    replacements[
+        "core.observability.document_index_logger"
+    ].DocumentIndexLogger = _DocumentIndexLogger
 
     originals = {name: sys.modules.get(name) for name in replacements}
     sys.modules.update(replacements)
@@ -285,6 +331,7 @@ def _document(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=1,
+        doc_code="DOC_001",
         source_type="md",
         title="Document title",
         original_filename="document.md",
@@ -357,6 +404,19 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(chunks[1].vector_status, "indexing")
         self.assertEqual(chunks[2].vector_status, "indexed")
         self.assertEqual(factory.instances[0].commit_count, 1)
+
+    def test_claim_failure_is_logged_without_failure_state_compensation(self) -> None:
+        factory = _UnitOfWorkFactory({}, [])
+        self.service.SQLAlchemyUnitOfWork = factory
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service.index_document_vectors(999)
+
+        index_logger = self.service.DocumentIndexLogger.instances[-1]
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(index_logger.failed_fields["phase"], "claim")
+        self.assertIsNone(index_logger.failed_fields["context"])
+        self.assertEqual(len(factory.instances), 1)
 
     def test_failed_claim_requires_pending_or_failed_chunk(self) -> None:
         document = _document(status=DocumentStatus.FAILED.value)

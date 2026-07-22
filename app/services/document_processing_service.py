@@ -41,9 +41,13 @@ class ProcessingContext:
 
     document_id: int
     doc_code: str
+    kb_id: int
+    domain_code: str | None
+    business_scene: str | None
     source_type: str
     source_path: Path
     created_by_actor_code: str | None
+    status_before: str
 
 
 @dataclass(frozen=True)
@@ -70,59 +74,62 @@ class ProcessingExecutionResult:
 
 def process_document(document_id: int) -> DocumentProcessResponse:
     """领取文档后在事务外处理，并以独立短事务登记结果或失败。"""
-    process_logger = DocumentProcessLogger()
-    context = _claim_processing(document_id)
-
+    process_logger = DocumentProcessLogger(document_id=document_id)
+    context: ProcessingContext | None = None
     execution_result: ProcessingExecutionResult | None = None
+    phase = "claim"
     try:
-        process_logger.started(
-            document_id=context.document_id,
-            doc_code=context.doc_code,
-            source_type=context.source_type,
-        )
+        context = _claim_processing(document_id)
+        process_logger.claimed(context)
+
+        phase = "execute"
         execution_result = _execute_processing(context)
+
+        phase = "finalize"
         response = _complete_processing(execution_result)
+        process_logger.completed(
+            processed_source_type=(
+                execution_result.cleaned_artifact.artifact_format
+            ),
+            cleaned_uri=response.cleaned_uri,
+        )
+        return response
     except ProcessingAbortedError as exc:
-        _fail_processing(document_id, exc)
+        if context is not None:
+            _fail_processing(document_id, exc)
         if execution_result is not None:
             execution_result.cleanup_generated_files()
         process_logger.failed(
-            document_id=context.document_id,
-            doc_code=context.doc_code,
             error=exc,
+            phase=phase,
+            context=context,
         )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException as exc:
-        _fail_processing(document_id, exc)
+        if context is not None:
+            _fail_processing(document_id, exc)
         if execution_result is not None:
             execution_result.cleanup_generated_files()
         process_logger.failed(
-            document_id=context.document_id,
-            doc_code=context.doc_code,
             error=exc,
+            phase=phase,
+            context=context,
         )
         raise
     except Exception as exc:
-        _fail_processing(document_id, exc)
+        if context is not None:
+            _fail_processing(document_id, exc)
         if execution_result is not None:
             execution_result.cleanup_generated_files()
         process_logger.failed(
-            document_id=context.document_id,
-            doc_code=context.doc_code,
             error=exc,
+            phase=phase,
+            context=context,
         )
         raise HTTPException(
             status_code=500,
             detail="文档处理失败，请稍后重试或联系管理员",
         ) from exc
-
-    process_logger.completed(
-        document_id=context.document_id,
-        doc_code=context.doc_code,
-        processed_source_type=execution_result.cleaned_artifact.artifact_format,
-        cleaned_uri=response.cleaned_uri,
-    )
-    return response
 
 
 def _claim_processing(document_id: int) -> ProcessingContext:
@@ -145,12 +152,17 @@ def _claim_processing(document_id: int) -> ProcessingContext:
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
             raise HTTPException(status_code=409, detail="文档不在活跃存储区")
 
+        status_before = document.status
         context = ProcessingContext(
             document_id=document.id,
             doc_code=document.doc_code,
+            kb_id=document.kb_id,
+            domain_code=document.domain_code,
+            business_scene=document.business_scene,
             source_type=document.source_type,
             source_path=Path(document.source_uri),
             created_by_actor_code=document.created_by_actor_code,
+            status_before=status_before,
         )
         document.status = DocumentStatus.PROCESSING.value
         uow.flush()

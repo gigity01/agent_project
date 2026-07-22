@@ -23,6 +23,7 @@ from app.models.child_chunk import ChildChunk
 from app.models.parent_block import ParentBlock
 from app.policies.document_source_policy import get_expected_process_output_type
 from app.schemas.chunking import BuildChunksResponse
+from core.observability.document_chunk_logger import DocumentChunkLogger
 
 
 CHUNKABLE_LIFECYCLE_STATUSES = frozenset(
@@ -52,6 +53,7 @@ class ChunkingContext:
     business_scene: str | None
     version: int
     process_metadata: dict[str, Any]
+    status_before: str
 
 
 @dataclass(frozen=True)
@@ -81,19 +83,34 @@ def generate_chunk_code(
 
 def build_document_chunks(document_id: int) -> BuildChunksResponse:
     """领取切块任务后在事务外计算，并以独立短事务登记结果。"""
-    context = _claim_chunking(document_id)
-
+    chunk_logger = DocumentChunkLogger(document_id=document_id)
+    context: ChunkingContext | None = None
+    phase = "claim"
     try:
-        execution_result = _execute_chunking(context)
-        return _complete_chunking(execution_result)
+        context = _claim_chunking(document_id)
+        chunk_logger.claimed(context)
+
+        phase = "execute"
+        execution_result = _execute_chunking(context, chunk_logger=chunk_logger)
+
+        phase = "finalize"
+        response = _complete_chunking(execution_result)
+        chunk_logger.completed(response)
+        return response
     except ChunkingAbortedError as exc:
-        _fail_chunking(document_id, exc)
+        if context is not None:
+            _fail_chunking(document_id, exc)
+        chunk_logger.failed(error=exc, phase=phase, context=context)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException as exc:
-        _fail_chunking(document_id, exc)
+        if context is not None:
+            _fail_chunking(document_id, exc)
+        chunk_logger.failed(error=exc, phase=phase, context=context)
         raise
     except Exception as exc:
-        _fail_chunking(document_id, exc)
+        if context is not None:
+            _fail_chunking(document_id, exc)
+        chunk_logger.failed(error=exc, phase=phase, context=context)
         raise HTTPException(
             status_code=500,
             detail="构建 chunks 失败，请稍后重试或联系管理员",
@@ -147,6 +164,7 @@ def _claim_chunking(document_id: int) -> ChunkingContext:
             )
             process_metadata = {}
 
+        status_before = document.status
         context = ChunkingContext(
             document_id=document.id,
             doc_code=document.doc_code,
@@ -159,6 +177,7 @@ def _claim_chunking(document_id: int) -> ChunkingContext:
             business_scene=document.business_scene,
             version=document.version,
             process_metadata=process_metadata,
+            status_before=status_before,
         )
         document.status = DocumentStatus.CHUNKING.value
         uow.flush()
@@ -169,6 +188,8 @@ def _claim_chunking(document_id: int) -> ChunkingContext:
 
 def _execute_chunking(
     context: ChunkingContext,
+    *,
+    chunk_logger: DocumentChunkLogger | None = None,
 ) -> ChunkingExecutionResult:
     """在数据库事务外读取 cleaned 文件并生成父子块 DTO。"""
     if not context.cleaned_path.exists():
@@ -183,6 +204,9 @@ def _execute_chunking(
         )
 
     chunker = get_chunker(context.chunk_source_type)
+    chunker_name = chunker.__class__.__name__
+    if chunk_logger is not None:
+        chunk_logger.build_started(context, chunker=chunker_name)
     chunks = chunker.build(
         ChunkBuildInput(
             cleaned_path=context.cleaned_path,
@@ -192,8 +216,10 @@ def _execute_chunking(
         )
     )
     _validate_chunk_build_result(chunks)
-
-    return ChunkingExecutionResult(context=context, chunks=chunks)
+    result = ChunkingExecutionResult(context=context, chunks=chunks)
+    if chunk_logger is not None:
+        chunk_logger.build_completed(result, chunker=chunker_name)
+    return result
 
 
 def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:

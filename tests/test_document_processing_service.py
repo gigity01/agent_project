@@ -61,8 +61,17 @@ class _PreparedProcessSource:
 
 
 class _DocumentProcessLogger:
-    def started(self, **fields) -> None:
-        self.started_fields = fields
+    instances = []
+
+    def __init__(self, *, document_id=None) -> None:
+        self.document_id = document_id
+        self.claimed_fields = None
+        self.completed_fields = None
+        self.failed_fields = None
+        self.__class__.instances.append(self)
+
+    def claimed(self, context) -> None:
+        self.claimed_fields = {"context": context}
 
     def completed(self, **fields) -> None:
         self.completed_fields = fields
@@ -205,6 +214,9 @@ def _document(
     return SimpleNamespace(
         id=1,
         doc_code="DOC_001",
+        kb_id=10,
+        domain_code="domain",
+        business_scene="scene",
         source_type="txt",
         source_uri=source_uri,
         cleaned_uri=None,
@@ -265,6 +277,20 @@ class DocumentProcessingServiceTest(unittest.TestCase):
         self.assertEqual(factory.instances[0].documents.locked_ids, [document.id])
         self.assertEqual(factory.instances[0].flush_count, 1)
         self.assertEqual(factory.instances[0].commit_count, 1)
+
+    def test_claim_failure_is_logged_without_failure_state_compensation(self) -> None:
+        factory = _UnitOfWorkFactory({})
+        self.service.SQLAlchemyUnitOfWork = factory
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service.process_document(999)
+
+        process_logger = self.service.DocumentProcessLogger.instances[-1]
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(process_logger.document_id, 999)
+        self.assertEqual(process_logger.failed_fields["phase"], "claim")
+        self.assertIsNone(process_logger.failed_fields["context"])
+        self.assertEqual(len(factory.instances), 1)
 
     def test_failed_document_can_be_claimed_for_retry(self) -> None:
         document = _document(status=DocumentStatus.FAILED.value)

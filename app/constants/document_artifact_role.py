@@ -8,3 +8,4 @@ class DocumentArtifactRole(str, Enum):
     PROCESS_OUTPUT = "process_output"
     CHUNK_INPUT = "chunk_input"
     DEBUG_ARTIFACT = "debug_artifact"
+

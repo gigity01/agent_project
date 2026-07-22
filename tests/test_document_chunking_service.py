@@ -68,6 +68,30 @@ class _ChunkBuildResult:
     children_by_parent_index: dict[int, list[_ChildChunkData]]
 
 
+class _DocumentChunkLogger:
+    instances = []
+
+    def __init__(self, *, document_id=None) -> None:
+        self.document_id = document_id
+        self.failed_fields = None
+        self.__class__.instances.append(self)
+
+    def claimed(self, context) -> None:
+        self.context = context
+
+    def build_started(self, context, *, chunker) -> None:
+        self.chunker = chunker
+
+    def build_completed(self, result, *, chunker) -> None:
+        self.result = result
+
+    def completed(self, response) -> None:
+        self.response = response
+
+    def failed(self, **fields) -> None:
+        self.failed_fields = fields
+
+
 def _load_service_module():
     replacements = {
         "fastapi": types.ModuleType("fastapi"),
@@ -86,6 +110,9 @@ def _load_service_module():
         ),
         "app.schemas.chunking": types.ModuleType(
             "app.schemas.chunking"
+        ),
+        "core.observability.document_chunk_logger": types.ModuleType(
+            "core.observability.document_chunk_logger"
         ),
     }
 
@@ -156,6 +183,11 @@ def _load_service_module():
         replacements["app.schemas.chunking"],
         "BuildChunksResponse",
         _KeywordModel,
+    )
+    setattr(
+        replacements["core.observability.document_chunk_logger"],
+        "DocumentChunkLogger",
+        _DocumentChunkLogger,
     )
 
     originals = {
@@ -421,6 +453,19 @@ class DocumentChunkingServiceTest(unittest.TestCase):
         self.assertEqual(factory.instances[0].documents.locked_ids, [document.id])
         self.assertEqual(factory.instances[0].commit_count, 1)
 
+    def test_claim_failure_is_logged_without_failure_state_compensation(self) -> None:
+        factory = _UnitOfWorkFactory({}, None, False)
+        setattr(self.service, "SQLAlchemyUnitOfWork", factory)
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service.build_document_chunks(999)
+
+        chunk_logger = self.service.DocumentChunkLogger.instances[-1]
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(chunk_logger.failed_fields["phase"], "claim")
+        self.assertIsNone(chunk_logger.failed_fields["context"])
+        self.assertEqual(len(factory.instances), 1)
+
     def test_failed_document_can_retry_with_cleaned_uri(self) -> None:
         document = _document(
             status=DocumentStatus.FAILED.value,
@@ -623,6 +668,7 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             business_scene=document.business_scene,
             version=document.version,
             process_metadata={},
+            status_before=DocumentStatus.PROCESSED.value,
         )
         result = self.service.ChunkingExecutionResult(
             context=context,
