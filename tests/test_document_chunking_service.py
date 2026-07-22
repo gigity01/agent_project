@@ -562,6 +562,21 @@ class DocumentChunkingServiceTest(unittest.TestCase):
                 self.assertEqual(document.status, DocumentStatus.PROCESSED.value)
                 self.assertEqual(factory.instances[0].commit_count, 0)
 
+    def test_failure_state_result_preserves_concurrent_document_status(self) -> None:
+        document = _document(status=DocumentStatus.INDEXED.value)
+        factory = self._use_document(document, _artifact())
+
+        result = self.service._fail_chunking(
+            document.id,
+            RuntimeError("failed"),
+        )
+
+        self.assertFalse(result.state_updated)
+        self.assertEqual(result.status_before, DocumentStatus.INDEXED.value)
+        self.assertEqual(result.status_after, DocumentStatus.INDEXED.value)
+        self.assertEqual(document.status, DocumentStatus.INDEXED.value)
+        self.assertEqual(factory.instances[0].commit_count, 0)
+
     def test_chunker_failure_marks_failed_without_releasing_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cleaned_path = Path(temp_dir) / "cleaned.md"

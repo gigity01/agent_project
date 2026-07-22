@@ -71,10 +71,14 @@ class DocumentChunkLoggerTest(unittest.TestCase):
             error=RuntimeError("chunker failed"),
             phase="execute",
             context=_context(),
+            state_updated=True,
+            status_before="chunking",
+            status_after="failed",
         )
 
         event = chunk_logger.writer.events[0]
         self.assertEqual(event["phase"], "execute")
+        self.assertTrue(event["state_updated"])
         self.assertEqual(event["status_after"], "failed")
 
 

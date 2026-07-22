@@ -65,7 +65,7 @@ class DocumentIndexLogger(DocumentStageLogger):
         self,
         *,
         batch_index: int,
-        chunk_ids: list[int],
+        batch_size: int,
         embedding_model: str,
     ) -> int:
         self.write(
@@ -74,8 +74,7 @@ class DocumentIndexLogger(DocumentStageLogger):
             level="info",
             message="Embedding 批次开始生成",
             batch_index=batch_index,
-            batch_size=len(chunk_ids),
-            chunk_ids=chunk_ids,
+            batch_size=batch_size,
             embedding_model=embedding_model,
         )
         return now_ms()
@@ -104,7 +103,7 @@ class DocumentIndexLogger(DocumentStageLogger):
         self,
         *,
         batch_index: int,
-        point_ids: list[int],
+        point_count: int,
         started_at_ms: int,
     ) -> None:
         self.write(
@@ -113,8 +112,7 @@ class DocumentIndexLogger(DocumentStageLogger):
             level="info",
             message="Qdrant 批次写入完成",
             batch_index=batch_index,
-            point_count=len(point_ids),
-            point_ids=point_ids,
+            point_count=point_count,
             batch_duration_ms=now_ms() - started_at_ms,
         )
 
@@ -136,8 +134,14 @@ class DocumentIndexLogger(DocumentStageLogger):
         error: Exception,
         phase: str,
         context: Any | None,
-        confirmed_point_ids: tuple[int, ...] = (),
-        uncertain_point_ids: tuple[int, ...] = (),
+        state_updated: bool = False,
+        status_before: str | None = None,
+        status_after: str | None = None,
+        operation: str | None = None,
+        batch_index: int | None = None,
+        batch_size: int | None = None,
+        confirmed_point_count: int = 0,
+        uncertain_point_count: int = 0,
     ) -> None:
         if context is not None:
             self.bind_context(context)
@@ -146,47 +150,44 @@ class DocumentIndexLogger(DocumentStageLogger):
             phase=phase,
             level="error",
             message="文档向量索引失败",
-            confirmed_point_count=len(confirmed_point_ids),
-            uncertain_point_count=len(uncertain_point_ids),
-            status_after=(
-                DocumentStatus.FAILED.value if context is not None else None
-            ),
+            operation=operation,
+            batch_index=batch_index,
+            batch_size=batch_size,
+            confirmed_point_count=confirmed_point_count,
+            uncertain_point_count=uncertain_point_count,
+            state_updated=state_updated,
+            status_before=status_before,
+            status_after=status_after,
             **self.error_fields(error),
         )
 
     def compensation_started(
         self,
         *,
-        confirmed_point_ids: tuple[int, ...],
-        uncertain_point_ids: tuple[int, ...],
+        confirmed_point_count: int,
+        uncertain_point_count: int,
     ) -> int:
         self.write(
             event="document_index_compensation_started",
             phase="compensate",
             level="warning",
             message="Qdrant Point 补偿删除开始",
-            confirmed_point_ids=list(confirmed_point_ids),
-            uncertain_point_ids=list(uncertain_point_ids),
+            confirmed_point_count=confirmed_point_count,
+            uncertain_point_count=uncertain_point_count,
         )
         return now_ms()
 
     def compensation_completed(
         self,
         *,
-        confirmed_point_ids: tuple[int, ...],
-        uncertain_point_ids: tuple[int, ...],
+        deleted_point_count: int,
         started_at_ms: int,
     ) -> None:
-        deleted_point_count = len(
-            tuple(dict.fromkeys(confirmed_point_ids + uncertain_point_ids))
-        )
         self.write(
             event="document_index_compensation_completed",
             phase="compensate",
             level="info",
             message="Qdrant Point 补偿删除完成",
-            confirmed_point_ids=list(confirmed_point_ids),
-            uncertain_point_ids=list(uncertain_point_ids),
             deleted_point_count=deleted_point_count,
             batch_duration_ms=now_ms() - started_at_ms,
         )
@@ -195,22 +196,19 @@ class DocumentIndexLogger(DocumentStageLogger):
         self,
         *,
         error: Exception,
-        confirmed_point_ids: tuple[int, ...],
-        uncertain_point_ids: tuple[int, ...],
+        confirmed_point_count: int,
+        uncertain_point_count: int,
+        point_count: int,
         started_at_ms: int,
     ) -> None:
-        point_ids = tuple(
-            dict.fromkeys(confirmed_point_ids + uncertain_point_ids)
-        )
         self.write(
             event="document_index_compensation_failed",
             phase="compensate",
             level="error",
             message="Qdrant Point 补偿删除失败",
-            confirmed_point_ids=list(confirmed_point_ids),
-            uncertain_point_ids=list(uncertain_point_ids),
-            point_ids=list(point_ids),
-            point_count=len(point_ids),
+            confirmed_point_count=confirmed_point_count,
+            uncertain_point_count=uncertain_point_count,
+            point_count=point_count,
             batch_duration_ms=now_ms() - started_at_ms,
             **self.error_fields(error),
         )

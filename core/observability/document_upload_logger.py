@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.constants.document_status import DocumentStatus
 from core.observability.document_stage_logger import DocumentStageLogger
 from core.observability.jsonl_event_writer import JsonlEventWriter
 from main_config.settings import DOCUMENT_UPLOAD_LOG_DIR
@@ -116,6 +115,9 @@ class DocumentUploadLogger(DocumentStageLogger):
             content_hash=content_hash,
             duplicated_document_id=duplicated_document.id,
             duplicated_doc_code=duplicated_document.doc_code,
+            outcome="rejected",
+            document_created=False,
+            status_after=None,
             diagnosis_hint=(
                 "该失败属于业务规则拒绝，不是系统异常。"
                 "请检查是否重复上传了相同内容的文档。"
@@ -151,20 +153,21 @@ class DocumentUploadLogger(DocumentStageLogger):
         self,
         *,
         exc: HTTPException,
-        doc_code: str,
+        phase: str,
+        doc_code: str | None,
         kb_id: int,
         domain_code: str | None,
         business_scene: str | None,
         title: str,
-        filename: str,
-        source_type: str,
-        source_uri: str,
+        filename: str | None,
+        source_type: str | None,
+        source_uri: str | None,
         file_size: int,
         cleanup_success: bool,
     ) -> None:
         """记录由输入校验或业务规则导致的上传失败。"""
         self.write(
-            phase="execute",
+            phase=phase,
             level="warning",
             event="document_upload_failed",
             message="源文档上传失败，业务校验未通过",
@@ -180,7 +183,9 @@ class DocumentUploadLogger(DocumentStageLogger):
             error_type="HTTPException",
             error_message=self._redact_sensitive_text(str(exc.detail)),
             http_status=exc.status_code,
-            status_after=DocumentStatus.FAILED.value,
+            outcome="rejected",
+            document_created=False,
+            status_after=None,
             cleanup_success=cleanup_success,
             diagnosis_hint=(
                 "该失败通常由管理员输入或业务规则导致，请检查文件名、"
@@ -192,20 +197,21 @@ class DocumentUploadLogger(DocumentStageLogger):
         self,
         *,
         exc: Exception,
-        doc_code: str,
+        phase: str,
+        doc_code: str | None,
         kb_id: int,
         domain_code: str | None,
         business_scene: str | None,
         title: str,
-        filename: str,
-        source_type: str,
-        source_uri: str,
+        filename: str | None,
+        source_type: str | None,
+        source_uri: str | None,
         file_size: int,
         cleanup_success: bool,
     ) -> None:
         """记录未预期异常导致的上传失败及清理结果。"""
         self.write(
-            phase="execute",
+            phase=phase,
             level="error",
             event="document_upload_failed",
             message="源文档上传失败，发生系统异常，请联系管理员",
@@ -218,7 +224,9 @@ class DocumentUploadLogger(DocumentStageLogger):
             source_type=source_type,
             source_uri=source_uri,
             file_size=file_size,
-            status_after=DocumentStatus.FAILED.value,
+            outcome="error",
+            document_created=False,
+            status_after=None,
             cleanup_success=cleanup_success,
             diagnosis_hint="该失败属于系统异常，请联系上级管理员处理",
             **self.error_fields(exc),

@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +34,13 @@ class JsonlEventWriter:
             payload = dict(event)
             payload.setdefault("created_at", now_utc_iso())
 
+            line = json.dumps(
+                payload,
+                ensure_ascii=False,
+                default=str,
+            ) + "\n"
             with log_path.open("a", encoding="utf-8") as file:
-                file.write(
-                    json.dumps(payload, ensure_ascii=False, default=str)
-                )
-                file.write("\n")
+                file.write(line)
             return True
         except Exception:
             logger.exception(
@@ -53,5 +55,5 @@ class JsonlEventWriter:
 
     def _get_log_path(self) -> Path:
         """生成当天对应的 JSONL 日志文件路径。"""
-        date_text = datetime.now().strftime("%Y-%m-%d")
+        date_text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         return self.log_dir / f"{self.file_prefix}-{date_text}.jsonl"

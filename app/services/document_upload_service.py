@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.exc import IntegrityError
@@ -104,40 +105,45 @@ async def save_uploaded_document(
 
     任一步骤失败时会清理已落盘的原始文件，并写入对应审计日志。
     """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="必须上传文件")
-
-    validate_content_type(file)
-
-    source_extension = get_safe_extension(file.filename)
-    source_type = normalize_source_type(source_extension)
-    doc_code = generate_doc_code()
-
+    upload_logger = DocumentUploadLogger()
     actor_code = created_by_actor_code or DEFAULT_CREATED_BY_ACTOR_CODE
-
-    # 两个目录都会预创建：选择由 source_type 决定，避免在校验通过后因目录
-    # 不存在而中断上传流程。
-    RAW_EXTERNAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    RAW_LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    saved_filename = f"{doc_code}.{source_extension}"
-    save_path = get_raw_storage_dir(source_type) / saved_filename
+    phase = "validate"
+    doc_code: str | None = None
+    source_type: str | None = None
+    save_path: Path | None = None
     total_size = 0
     db_committed = False
-    upload_logger = DocumentUploadLogger()
-
-    upload_logger.started(
-        doc_code=doc_code,
-        kb_id=meta.kb_id,
-        domain_code=meta.domain_code,
-        business_scene=meta.business_scene,
-        title=meta.title,
-        filename=file.filename,
-        source_type=source_type,
-        saved_filename=saved_filename,
-        created_by_actor_code=actor_code,
-    )
 
     try:
+        doc_code = generate_doc_code()
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="必须上传文件")
+
+        validate_content_type(file)
+        source_extension = get_safe_extension(file.filename)
+        source_type = normalize_source_type(source_extension)
+
+        phase = "prepare_storage"
+        # 两个目录都会预创建：选择由 source_type 决定，避免在校验通过后因
+        # 目录不存在而中断上传流程。
+        RAW_EXTERNAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        RAW_LOCAL_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        saved_filename = f"{doc_code}.{source_extension}"
+        save_path = get_raw_storage_dir(source_type) / saved_filename
+
+        phase = "execute"
+        upload_logger.started(
+            doc_code=doc_code,
+            kb_id=meta.kb_id,
+            domain_code=meta.domain_code,
+            business_scene=meta.business_scene,
+            title=meta.title,
+            filename=file.filename,
+            source_type=source_type,
+            saved_filename=saved_filename,
+            created_by_actor_code=actor_code,
+        )
+
         with save_path.open("wb") as buffer:
             while True:
                 chunk = await file.read(READ_CHUNK_SIZE)
@@ -175,6 +181,7 @@ async def save_uploaded_document(
             content_hash=content_hash,
         )
 
+        phase = "finalize"
         with SQLAlchemyUnitOfWork() as uow:
             # 去重范围限定在知识库内：不同知识库可各自维护相同原件。
             duplicated = uow.documents.get_active_by_hash_in_kb(
@@ -246,9 +253,12 @@ async def save_uploaded_document(
             raise
 
         # 业务拒绝（格式、大小、重复等）同样可能已创建临时原件，必须清理。
-        cleanup_success = cleanup_file(save_path)
+        cleanup_success = (
+            cleanup_file(save_path) if save_path is not None else True
+        )
         upload_logger.failed_by_http_exception(
             exc=exc,
+            phase=phase,
             doc_code=doc_code,
             kb_id=meta.kb_id,
             domain_code=meta.domain_code,
@@ -256,7 +266,7 @@ async def save_uploaded_document(
             title=meta.title,
             filename=file.filename,
             source_type=source_type,
-            source_uri=str(save_path),
+            source_uri=str(save_path) if save_path is not None else None,
             file_size=total_size,
             cleanup_success=cleanup_success,
         )
@@ -270,10 +280,13 @@ async def save_uploaded_document(
             )
             raise
 
-        cleanup_success = cleanup_file(save_path)
+        cleanup_success = (
+            cleanup_file(save_path) if save_path is not None else True
+        )
 
         upload_logger.failed_by_unexpected_exception(
             exc=exc,
+            phase=phase,
             doc_code=doc_code,
             kb_id=meta.kb_id,
             domain_code=meta.domain_code,
@@ -281,7 +294,7 @@ async def save_uploaded_document(
             title=meta.title,
             filename=file.filename,
             source_type=source_type,
-            source_uri=str(save_path),
+            source_uri=str(save_path) if save_path is not None else None,
             file_size=total_size,
             cleanup_success=cleanup_success,
         )

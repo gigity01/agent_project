@@ -353,6 +353,21 @@ class DocumentProcessingServiceTest(unittest.TestCase):
         self.assertEqual(document.status, DocumentStatus.UPLOADED.value)
         self.assertEqual(factory.instances[0].commit_count, 0)
 
+    def test_failure_state_result_preserves_concurrent_document_status(self) -> None:
+        document = _document(status=DocumentStatus.PROCESSED.value)
+        factory = self._use_document(document)
+
+        result = self.service._fail_processing(
+            document.id,
+            RuntimeError("failed"),
+        )
+
+        self.assertFalse(result.state_updated)
+        self.assertEqual(result.status_before, DocumentStatus.PROCESSED.value)
+        self.assertEqual(result.status_after, DocumentStatus.PROCESSED.value)
+        self.assertEqual(document.status, DocumentStatus.PROCESSED.value)
+        self.assertEqual(factory.instances[0].commit_count, 0)
+
     def test_docling_failure_marks_failed_without_releasing_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             source_path = Path(temp_dir) / "source.pdf"

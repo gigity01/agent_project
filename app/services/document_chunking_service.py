@@ -1,5 +1,6 @@
 """以短事务编排文档切块任务的领取、执行与结果登记。"""
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,10 @@ from app.models.child_chunk import ChildChunk
 from app.models.parent_block import ParentBlock
 from app.policies.document_source_policy import get_expected_process_output_type
 from app.schemas.chunking import BuildChunksResponse
+from app.services.document_failure_state import (
+    FailureStateResult,
+    NO_FAILURE_STATE_CHANGE,
+)
 from core.observability.document_chunk_logger import DocumentChunkLogger
 
 
@@ -32,6 +37,7 @@ CHUNKABLE_LIFECYCLE_STATUSES = frozenset(
         DocumentLifecycleStatus.SCHEDULED.value,
     }
 )
+logger = logging.getLogger(__name__)
 
 
 class ChunkingAbortedError(RuntimeError):
@@ -98,19 +104,49 @@ def build_document_chunks(document_id: int) -> BuildChunksResponse:
         chunk_logger.completed(response)
         return response
     except ChunkingAbortedError as exc:
-        if context is not None:
-            _fail_chunking(document_id, exc)
-        chunk_logger.failed(error=exc, phase=phase, context=context)
+        failure_result = _register_chunking_failure(
+            document_id=document_id,
+            error=exc,
+            claimed=context is not None,
+        )
+        chunk_logger.failed(
+            error=exc,
+            phase=phase,
+            context=context,
+            state_updated=failure_result.state_updated,
+            status_before=failure_result.status_before,
+            status_after=failure_result.status_after,
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException as exc:
-        if context is not None:
-            _fail_chunking(document_id, exc)
-        chunk_logger.failed(error=exc, phase=phase, context=context)
+        failure_result = _register_chunking_failure(
+            document_id=document_id,
+            error=exc,
+            claimed=context is not None,
+        )
+        chunk_logger.failed(
+            error=exc,
+            phase=phase,
+            context=context,
+            state_updated=failure_result.state_updated,
+            status_before=failure_result.status_before,
+            status_after=failure_result.status_after,
+        )
         raise
     except Exception as exc:
-        if context is not None:
-            _fail_chunking(document_id, exc)
-        chunk_logger.failed(error=exc, phase=phase, context=context)
+        failure_result = _register_chunking_failure(
+            document_id=document_id,
+            error=exc,
+            claimed=context is not None,
+        )
+        chunk_logger.failed(
+            error=exc,
+            phase=phase,
+            context=context,
+            state_updated=failure_result.state_updated,
+            status_before=failure_result.status_before,
+            status_after=failure_result.status_after,
+        )
         raise HTTPException(
             status_code=500,
             detail="构建 chunks 失败，请稍后重试或联系管理员",
@@ -330,17 +366,50 @@ def _complete_chunking(
     return response
 
 
-def _fail_chunking(document_id: int, error: Exception) -> None:
+def _register_chunking_failure(
+    *,
+    document_id: int,
+    error: Exception,
+    claimed: bool,
+) -> FailureStateResult:
+    """尽力登记失败状态；登记异常时保留原始业务异常。"""
+    if not claimed:
+        return NO_FAILURE_STATE_CHANGE
+    try:
+        return _fail_chunking(document_id, error)
+    except Exception:
+        logger.exception(
+            "文档切块失败状态登记失败",
+            extra={"document_id": document_id},
+        )
+        return NO_FAILURE_STATE_CHANGE
+
+
+def _fail_chunking(
+    document_id: int,
+    error: Exception,
+) -> FailureStateResult:
     """仅在任务仍为 chunking 时，以独立短事务标记切块失败。"""
     del error
     with SQLAlchemyUnitOfWork() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
         if document is None:
-            return
+            return NO_FAILURE_STATE_CHANGE
+        status_before = document.status
         if document.status == DocumentStatus.CHUNKING.value:
             document.status = DocumentStatus.FAILED.value
             uow.flush()
             uow.commit()
+            return FailureStateResult(
+                state_updated=True,
+                status_before=status_before,
+                status_after=document.status,
+            )
+        return FailureStateResult(
+            state_updated=False,
+            status_before=status_before,
+            status_after=document.status,
+        )
 
 
 def _build_parent_block(

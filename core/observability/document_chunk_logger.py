@@ -90,6 +90,9 @@ class DocumentChunkLogger(DocumentStageLogger):
         error: Exception,
         phase: str,
         context: Any | None = None,
+        state_updated: bool = False,
+        status_before: str | None = None,
+        status_after: str | None = None,
     ) -> None:
         if context is not None:
             self.bind_context(context)
@@ -98,8 +101,8 @@ class DocumentChunkLogger(DocumentStageLogger):
             phase=phase,
             level="error",
             message="文档切块失败",
-            status_after=(
-                DocumentStatus.FAILED.value if context is not None else None
-            ),
+            state_updated=state_updated,
+            status_before=status_before,
+            status_after=status_after,
             **self.error_fields(error),
         )

@@ -18,6 +18,10 @@ from app.constants.document_status import DocumentStatus
 from app.constants.document_storage_status import DocumentStorageStatus
 from app.db.uow import SQLAlchemyUnitOfWork
 from app.schemas.vector_indexing import VectorIndexingResponse
+from app.services.document_failure_state import (
+    FailureStateResult,
+    NO_FAILURE_STATE_CHANGE,
+)
 from app.services.embedding_service import EmbeddingService
 from app.vectorstores.qdrant_store import QdrantVectorStore
 from core.observability.document_index_logger import DocumentIndexLogger
@@ -60,16 +64,22 @@ class IndexingAbortedError(RuntimeError):
 
 
 class IndexingExecutionError(RuntimeError):
-    """携带一次失败执行中已确认和结果不确定的 Qdrant Point ID。"""
+    """携带失败操作位置和仅用于运行时补偿的 Point ID。"""
 
     def __init__(
         self,
         message: str,
         *,
+        operation: str,
+        batch_index: int | None,
+        batch_size: int | None,
         confirmed_point_ids: tuple[int, ...],
         uncertain_point_ids: tuple[int, ...],
     ) -> None:
         super().__init__(message)
+        self.operation = operation
+        self.batch_index = batch_index
+        self.batch_size = batch_size
         self.confirmed_point_ids = confirmed_point_ids
         self.uncertain_point_ids = uncertain_point_ids
 
@@ -153,83 +163,58 @@ def index_document_vectors(
     except IndexingExecutionError as exc:
         confirmed_point_ids = exc.confirmed_point_ids
         uncertain_point_ids = exc.uncertain_point_ids
-        index_logger.failed(
-            error=exc,
-            phase=phase,
+        _handle_indexing_failure(
+            document_id=document_id,
             context=context,
+            phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
+            vector_store=resolved_vector_store,
+            error=exc,
+            index_logger=index_logger,
+            operation=exc.operation,
+            batch_index=exc.batch_index,
+            batch_size=exc.batch_size,
         )
-        if context is not None:
-            _handle_indexing_failure(
-                document_id=document_id,
-                chunk_ids=_context_chunk_ids(context),
-                confirmed_point_ids=confirmed_point_ids,
-                uncertain_point_ids=uncertain_point_ids,
-                vector_store=resolved_vector_store,
-                error=exc,
-                index_logger=index_logger,
-            )
         raise HTTPException(
             status_code=500,
             detail="向量索引失败，请稍后重试或联系管理员",
         ) from exc
     except IndexingAbortedError as exc:
-        index_logger.failed(
-            error=exc,
-            phase=phase,
+        _handle_indexing_failure(
+            document_id=document_id,
             context=context,
+            phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
+            vector_store=resolved_vector_store,
+            error=exc,
+            index_logger=index_logger,
         )
-        if context is not None:
-            _handle_indexing_failure(
-                document_id=document_id,
-                chunk_ids=_context_chunk_ids(context),
-                confirmed_point_ids=confirmed_point_ids,
-                uncertain_point_ids=uncertain_point_ids,
-                vector_store=resolved_vector_store,
-                error=exc,
-                index_logger=index_logger,
-            )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException as exc:
-        index_logger.failed(
-            error=exc,
-            phase=phase,
+        _handle_indexing_failure(
+            document_id=document_id,
             context=context,
+            phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
+            vector_store=resolved_vector_store,
+            error=exc,
+            index_logger=index_logger,
         )
-        if context is not None:
-            _handle_indexing_failure(
-                document_id=document_id,
-                chunk_ids=_context_chunk_ids(context),
-                confirmed_point_ids=confirmed_point_ids,
-                uncertain_point_ids=uncertain_point_ids,
-                vector_store=resolved_vector_store,
-                error=exc,
-                index_logger=index_logger,
-            )
         raise
     except Exception as exc:
-        index_logger.failed(
-            error=exc,
-            phase=phase,
+        _handle_indexing_failure(
+            document_id=document_id,
             context=context,
+            phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
+            vector_store=resolved_vector_store,
+            error=exc,
+            index_logger=index_logger,
         )
-        if context is not None:
-            _handle_indexing_failure(
-                document_id=document_id,
-                chunk_ids=_context_chunk_ids(context),
-                confirmed_point_ids=confirmed_point_ids,
-                uncertain_point_ids=uncertain_point_ids,
-                vector_store=resolved_vector_store,
-                error=exc,
-                index_logger=index_logger,
-            )
         raise HTTPException(
             status_code=500,
             detail="向量索引失败，请稍后重试或联系管理员",
@@ -277,6 +262,8 @@ def _claim_indexing(document_id: int) -> IndexingContext:
             )
             raise HTTPException(status_code=409, detail=detail)
 
+        _validate_indexing_chunk_ownership(document, chunks)
+
         status_before = document.status
         pending_count = sum(
             chunk.vector_status == "pending" for chunk in chunks
@@ -284,7 +271,6 @@ def _claim_indexing(document_id: int) -> IndexingContext:
         retry_count = sum(
             chunk.vector_status == "failed" for chunk in chunks
         )
-        first_chunk = chunks[0]
         context = IndexingContext(
             document_id=document.id,
             source_type=document.source_type,
@@ -292,9 +278,9 @@ def _claim_indexing(document_id: int) -> IndexingContext:
             original_filename=document.original_filename,
             chunks=tuple(_to_chunk_input(chunk) for chunk in chunks),
             doc_code=document.doc_code,
-            kb_id=first_chunk.kb_id,
-            domain_code=first_chunk.domain_code,
-            business_scene=first_chunk.business_scene,
+            kb_id=document.kb_id,
+            domain_code=document.domain_code,
+            business_scene=document.business_scene,
             status_before=status_before,
             pending_count=pending_count,
             retry_count=retry_count,
@@ -316,65 +302,107 @@ def _execute_indexing(
 ) -> IndexingExecutionResult:
     """在数据库事务外分批生成向量并以稳定 ID upsert Qdrant。"""
     if EMBEDDING_BATCH_SIZE <= 0:
-        raise RuntimeError("EMBEDDING_BATCH_SIZE 必须大于 0")
+        raise IndexingExecutionError(
+            "EMBEDDING_BATCH_SIZE 必须大于 0",
+            operation="vector_validation",
+            batch_index=None,
+            batch_size=None,
+            confirmed_point_ids=(),
+            uncertain_point_ids=(),
+        )
 
     confirmed_point_ids: list[int] = []
-    uncertain_point_ids: list[int] = []
     try:
         vector_store.ensure_collection()
+    except Exception as exc:
+        raise IndexingExecutionError(
+            "Qdrant Collection 检查失败",
+            operation="collection_check",
+            batch_index=None,
+            batch_size=None,
+            confirmed_point_ids=(),
+            uncertain_point_ids=(),
+        ) from exc
+
+    if index_logger is not None:
+        index_logger.collection_ready(
+            collection_name=getattr(
+                vector_store,
+                "collection_name",
+                None,
+            ),
+            vector_size=EMBEDDING_VECTOR_SIZE,
+        )
+
+    for start in range(0, len(context.chunks), EMBEDDING_BATCH_SIZE):
+        batch = context.chunks[start:start + EMBEDDING_BATCH_SIZE]
+        batch_index = start // EMBEDDING_BATCH_SIZE + 1
+        batch_point_ids = [chunk.chunk_id for chunk in batch]
+        embedding_started_at_ms = now_ms()
         if index_logger is not None:
-            index_logger.collection_ready(
-                collection_name=getattr(
-                    vector_store,
-                    "collection_name",
-                    None,
-                ),
-                vector_size=EMBEDDING_VECTOR_SIZE,
+            embedding_started_at_ms = index_logger.embedding_batch_started(
+                batch_index=batch_index,
+                batch_size=len(batch),
+                embedding_model=EMBEDDING_MODEL_NAME,
             )
-        for start in range(0, len(context.chunks), EMBEDDING_BATCH_SIZE):
-            batch = context.chunks[start:start + EMBEDDING_BATCH_SIZE]
-            batch_index = start // EMBEDDING_BATCH_SIZE + 1
-            batch_chunk_ids = [chunk.chunk_id for chunk in batch]
-            embedding_started_at_ms = now_ms()
-            if index_logger is not None:
-                embedding_started_at_ms = index_logger.embedding_batch_started(
-                    batch_index=batch_index,
-                    chunk_ids=batch_chunk_ids,
-                    embedding_model=EMBEDDING_MODEL_NAME,
-                )
+        try:
             vectors = embedding_client.embed_texts(
                 [chunk.embedding_text for chunk in batch]
             )
-            _validate_vectors(batch, vectors)
-            if index_logger is not None:
-                index_logger.embedding_batch_completed(
-                    batch_index=batch_index,
-                    input_count=len(batch),
-                    vectors=vectors,
-                    started_at_ms=embedding_started_at_ms,
-                )
+        except Exception as exc:
+            raise IndexingExecutionError(
+                "Embedding 调用失败",
+                operation="embedding",
+                batch_index=batch_index,
+                batch_size=len(batch),
+                confirmed_point_ids=tuple(confirmed_point_ids),
+                uncertain_point_ids=(),
+            ) from exc
 
+        try:
+            _validate_vectors(batch, vectors)
             points = [
                 _build_point(context, chunk, vector)
                 for chunk, vector in zip(batch, vectors)
             ]
-            uncertain_point_ids = batch_chunk_ids
-            qdrant_started_at_ms = now_ms()
+        except Exception as exc:
+            raise IndexingExecutionError(
+                "Embedding 结果校验失败",
+                operation="vector_validation",
+                batch_index=batch_index,
+                batch_size=len(batch),
+                confirmed_point_ids=tuple(confirmed_point_ids),
+                uncertain_point_ids=(),
+            ) from exc
+
+        if index_logger is not None:
+            index_logger.embedding_batch_completed(
+                batch_index=batch_index,
+                input_count=len(batch),
+                vectors=vectors,
+                started_at_ms=embedding_started_at_ms,
+            )
+
+        qdrant_started_at_ms = now_ms()
+        try:
             vector_store.upsert_points(points)
-            confirmed_point_ids.extend(uncertain_point_ids)
-            if index_logger is not None:
-                index_logger.qdrant_batch_completed(
-                    batch_index=batch_index,
-                    point_ids=list(uncertain_point_ids),
-                    started_at_ms=qdrant_started_at_ms,
-                )
-            uncertain_point_ids = []
-    except Exception as exc:
-        raise IndexingExecutionError(
-            "事务外向量索引执行失败",
-            confirmed_point_ids=tuple(confirmed_point_ids),
-            uncertain_point_ids=tuple(uncertain_point_ids),
-        ) from exc
+        except Exception as exc:
+            raise IndexingExecutionError(
+                "Qdrant Upsert 失败",
+                operation="qdrant_upsert",
+                batch_index=batch_index,
+                batch_size=len(batch),
+                confirmed_point_ids=tuple(confirmed_point_ids),
+                uncertain_point_ids=tuple(batch_point_ids),
+            ) from exc
+
+        confirmed_point_ids.extend(batch_point_ids)
+        if index_logger is not None:
+            index_logger.qdrant_batch_completed(
+                batch_index=batch_index,
+                point_count=len(batch_point_ids),
+                started_at_ms=qdrant_started_at_ms,
+            )
 
     return IndexingExecutionResult(
         context=context,
@@ -438,14 +466,15 @@ def _fail_indexing(
     document_id: int,
     chunk_ids: tuple[int, ...],
     error: Exception,
-) -> None:
+) -> FailureStateResult:
     """以独立短事务把本次 indexing Document/Chunk 标记为 failed。"""
     del error
     with SQLAlchemyUnitOfWork() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
         if document is None:
-            return
+            return NO_FAILURE_STATE_CHANGE
 
+        status_before = document.status
         chunks = uow.child_chunks.list_by_ids_for_update(
             document.id,
             chunk_ids,
@@ -455,54 +484,80 @@ def _fail_indexing(
             document.status = DocumentStatus.FAILED.value
         uow.flush()
         uow.commit()
+        return FailureStateResult(
+            state_updated=status_before != document.status,
+            status_before=status_before,
+            status_after=document.status,
+        )
 
 
 def _handle_indexing_failure(
     *,
     document_id: int,
-    chunk_ids: tuple[int, ...],
+    context: IndexingContext | None,
+    phase: str,
     confirmed_point_ids: tuple[int, ...],
     uncertain_point_ids: tuple[int, ...],
     vector_store: VectorStoreClient | None,
     error: Exception,
-    index_logger: DocumentIndexLogger | None = None,
-) -> None:
+    index_logger: DocumentIndexLogger,
+    operation: str | None = None,
+    batch_index: int | None = None,
+    batch_size: int | None = None,
+) -> FailureStateResult:
     """不掩盖原异常地执行数据库失败登记和 Qdrant Point 补偿。"""
-    try:
-        _fail_indexing(document_id, chunk_ids, error)
-    except Exception:
-        logger.exception(
-            "向量索引失败状态登记失败",
-            extra={"document_id": document_id},
-        )
+    failure_result = NO_FAILURE_STATE_CHANGE
+    if context is not None:
+        try:
+            failure_result = _fail_indexing(
+                document_id,
+                _context_chunk_ids(context),
+                error,
+            )
+        except Exception:
+            logger.exception(
+                "向量索引失败状态登记失败",
+                extra={"document_id": document_id},
+            )
+
+    index_logger.failed(
+        error=error,
+        phase=phase,
+        context=context,
+        state_updated=failure_result.state_updated,
+        status_before=failure_result.status_before,
+        status_after=failure_result.status_after,
+        operation=operation,
+        batch_index=batch_index,
+        batch_size=batch_size,
+        confirmed_point_count=len(confirmed_point_ids),
+        uncertain_point_count=len(uncertain_point_ids),
+    )
 
     compensation_point_ids = tuple(
         dict.fromkeys(confirmed_point_ids + uncertain_point_ids)
     )
     if vector_store is None or not compensation_point_ids:
-        return
+        return failure_result
     compensation_started_at_ms = now_ms()
-    if index_logger is not None:
-        compensation_started_at_ms = index_logger.compensation_started(
-            confirmed_point_ids=confirmed_point_ids,
-            uncertain_point_ids=uncertain_point_ids,
-        )
+    compensation_started_at_ms = index_logger.compensation_started(
+        confirmed_point_count=len(confirmed_point_ids),
+        uncertain_point_count=len(uncertain_point_ids),
+    )
     try:
         vector_store.delete_points(list(compensation_point_ids))
-        if index_logger is not None:
-            index_logger.compensation_completed(
-                confirmed_point_ids=confirmed_point_ids,
-                uncertain_point_ids=uncertain_point_ids,
-                started_at_ms=compensation_started_at_ms,
-            )
+        index_logger.compensation_completed(
+            deleted_point_count=len(compensation_point_ids),
+            started_at_ms=compensation_started_at_ms,
+        )
     except Exception as compensation_error:
-        if index_logger is not None:
-            index_logger.compensation_failed(
-                error=compensation_error,
-                confirmed_point_ids=confirmed_point_ids,
-                uncertain_point_ids=uncertain_point_ids,
-                started_at_ms=compensation_started_at_ms,
-            )
+        index_logger.compensation_failed(
+            error=compensation_error,
+            confirmed_point_count=len(confirmed_point_ids),
+            uncertain_point_count=len(uncertain_point_ids),
+            point_count=len(compensation_point_ids),
+            started_at_ms=compensation_started_at_ms,
+        )
         logger.exception(
             "Qdrant 索引补偿删除失败",
             extra={
@@ -511,6 +566,17 @@ def _handle_indexing_failure(
                 "uncertain_point_count": len(uncertain_point_ids),
             },
         )
+    return failure_result
+
+
+def _validate_indexing_chunk_ownership(document, chunks) -> None:
+    """确保待索引子块与 Document 的权威归属字段一致。"""
+    if any(chunk.doc_id != document.id for chunk in chunks):
+        raise RuntimeError("索引子块与文档关联不一致")
+    if any(chunk.kb_id != document.kb_id for chunk in chunks):
+        raise RuntimeError("索引子块与文档知识库不一致")
+    if any(chunk.domain_code != document.domain_code for chunk in chunks):
+        raise RuntimeError("索引子块与文档领域编码不一致")
 
 
 def _to_chunk_input(chunk) -> IndexingChunkInput:

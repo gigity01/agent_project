@@ -44,7 +44,7 @@ class DocumentIndexLoggerTest(unittest.TestCase):
         self.index_logger.claimed(_context())
         started_at = self.index_logger.embedding_batch_started(
             batch_index=1,
-            chunk_ids=[101, 102],
+            batch_size=2,
             embedding_model="text-embedding-v3",
         )
         self.index_logger.embedding_batch_completed(
@@ -59,23 +59,25 @@ class DocumentIndexLoggerTest(unittest.TestCase):
         self.assertEqual(event["vector_count"], 2)
         self.assertEqual(event["vector_size"], 3)
         self.assertNotIn("vectors", event)
+        self.assertNotIn("chunk_ids", serialized)
+        self.assertNotIn("point_ids", serialized)
         self.assertNotIn(secret_text, serialized)
         self.assertNotIn(api_key, serialized)
 
     def test_compensation_success_and_failure_are_distinct_events(self) -> None:
         started_at = self.index_logger.compensation_started(
-            confirmed_point_ids=(101,),
-            uncertain_point_ids=(102,),
+            confirmed_point_count=1,
+            uncertain_point_count=1,
         )
         self.index_logger.compensation_completed(
-            confirmed_point_ids=(101,),
-            uncertain_point_ids=(102,),
+            deleted_point_count=2,
             started_at_ms=started_at,
         )
         self.index_logger.compensation_failed(
             error=RuntimeError("delete failed"),
-            confirmed_point_ids=(101,),
-            uncertain_point_ids=(102,),
+            confirmed_point_count=1,
+            uncertain_point_count=1,
+            point_count=2,
             started_at_ms=started_at,
         )
 
@@ -86,6 +88,7 @@ class DocumentIndexLoggerTest(unittest.TestCase):
             events[2]["event"],
             "document_index_compensation_failed",
         )
+        self.assertNotIn("point_ids", json.dumps(events))
 
     def test_finalize_failure_records_confirmed_and_uncertain_counts(self) -> None:
         self.index_logger.failed(
@@ -94,14 +97,23 @@ class DocumentIndexLoggerTest(unittest.TestCase):
             ),
             phase="finalize",
             context=_context(),
-            confirmed_point_ids=(101, 102),
-            uncertain_point_ids=(103,),
+            state_updated=False,
+            status_before="archived",
+            status_after="archived",
+            operation="qdrant_upsert",
+            batch_index=3,
+            batch_size=10,
+            confirmed_point_count=2,
+            uncertain_point_count=1,
         )
 
         event = self.index_logger.writer.events[0]
         self.assertEqual(event["phase"], "finalize")
         self.assertEqual(event["confirmed_point_count"], 2)
         self.assertEqual(event["uncertain_point_count"], 1)
+        self.assertFalse(event["state_updated"])
+        self.assertEqual(event["status_after"], "archived")
+        self.assertEqual(event["operation"], "qdrant_upsert")
         self.assertNotIn("test-secret-value", event["error_message"])
         self.assertIn("<redacted>", event["error_message"])
 

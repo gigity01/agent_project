@@ -68,6 +68,9 @@ class DocumentProcessLogger(DocumentStageLogger):
         error: Exception,
         phase: str,
         context: Any | None = None,
+        state_updated: bool = False,
+        status_before: str | None = None,
+        status_after: str | None = None,
     ) -> None:
         """记录领取、执行或完成阶段失败。"""
         if context is not None:
@@ -77,15 +80,8 @@ class DocumentProcessLogger(DocumentStageLogger):
             phase=phase,
             level="error",
             message="文档处理失败",
-            status_before=(
-                context.status_before
-                if phase == "claim" and context is not None
-                else DocumentStatus.PROCESSING.value
-                if context is not None
-                else None
-            ),
-            status_after=(
-                DocumentStatus.FAILED.value if context is not None else None
-            ),
+            state_updated=state_updated,
+            status_before=status_before,
+            status_after=status_after,
             **self.error_fields(error),
         )

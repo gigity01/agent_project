@@ -332,6 +332,9 @@ def _document(
     return SimpleNamespace(
         id=1,
         doc_code="DOC_001",
+        kb_id=10,
+        domain_code="domain",
+        business_scene="scene",
         source_type="md",
         title="Document title",
         original_filename="document.md",
@@ -404,6 +407,26 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(chunks[1].vector_status, "indexing")
         self.assertEqual(chunks[2].vector_status, "indexed")
         self.assertEqual(factory.instances[0].commit_count, 1)
+        self.assertEqual(context.kb_id, document.kb_id)
+        self.assertEqual(context.domain_code, document.domain_code)
+        self.assertEqual(context.business_scene, document.business_scene)
+
+    def test_claim_rejects_chunk_with_inconsistent_document_metadata(self) -> None:
+        document = _document()
+        chunk = _chunk(1)
+        chunk.kb_id = 999
+        factory = self._use(document, [chunk])
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.service._claim_indexing(document.id)
+
+        self.assertEqual(
+            str(raised.exception),
+            "索引子块与文档知识库不一致",
+        )
+        self.assertEqual(document.status, DocumentStatus.CHUNKED.value)
+        self.assertEqual(chunk.vector_status, "pending")
+        self.assertEqual(factory.instances[0].commit_count, 0)
 
     def test_claim_failure_is_logged_without_failure_state_compensation(self) -> None:
         factory = _UnitOfWorkFactory({}, [])
@@ -556,6 +579,12 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(document.active_content_hash, "keep-me")
         self.assertEqual(vector_store.upsert_calls, [])
         self.assertEqual(vector_store.delete_calls, [])
+        self.assertEqual(
+            self.service.DocumentIndexLogger.instances[-1].failed_fields[
+                "operation"
+            ],
+            "vector_validation",
+        )
 
     def test_embedding_dimension_mismatch_marks_failed(self) -> None:
         document = _document()
@@ -597,6 +626,12 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(embedding.calls, [])
         self.assertEqual(vector_store.upsert_calls, [])
         self.assertEqual(vector_store.delete_calls, [])
+        self.assertEqual(
+            self.service.DocumentIndexLogger.instances[-1].failed_fields[
+                "operation"
+            ],
+            "collection_check",
+        )
 
     def test_qdrant_failure_marks_failed_and_deletes_uncertain_points(self) -> None:
         document = _document(active_content_hash="keep-me")
@@ -617,6 +652,12 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertTrue(all(chunk.vector_status == "failed" for chunk in chunks))
         self.assertEqual(document.active_content_hash, "keep-me")
         self.assertEqual(vector_store.delete_calls, [[1, 2]])
+        failed_fields = (
+            self.service.DocumentIndexLogger.instances[-1].failed_fields
+        )
+        self.assertEqual(failed_fields["operation"], "qdrant_upsert")
+        self.assertEqual(failed_fields["batch_index"], 1)
+        self.assertEqual(failed_fields["batch_size"], 2)
 
     def test_failed_batch_distinguishes_confirmed_and_uncertain_points(self) -> None:
         document = _document()
@@ -642,7 +683,28 @@ class VectorIndexingServiceTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.confirmed_point_ids, (1, 2))
         self.assertEqual(raised.exception.uncertain_point_ids, (3,))
+        self.assertEqual(raised.exception.operation, "qdrant_upsert")
+        self.assertEqual(raised.exception.batch_index, 2)
+        self.assertEqual(raised.exception.batch_size, 1)
         self.assertEqual(vector_store.ensure_count, 1)
+
+    def test_failure_state_result_preserves_concurrent_document_status(self) -> None:
+        document = _document(status=DocumentStatus.INDEXED.value)
+        chunk = _chunk(1, vector_status="indexing")
+        factory = self._use(document, [chunk])
+
+        result = self.service._fail_indexing(
+            document.id,
+            (chunk.id,),
+            RuntimeError("failed"),
+        )
+
+        self.assertFalse(result.state_updated)
+        self.assertEqual(result.status_before, DocumentStatus.INDEXED.value)
+        self.assertEqual(result.status_after, DocumentStatus.INDEXED.value)
+        self.assertEqual(document.status, DocumentStatus.INDEXED.value)
+        self.assertEqual(chunk.vector_status, "failed")
+        self.assertEqual(factory.instances[0].commit_count, 1)
 
     def test_deletion_during_execution_aborts_and_deletes_points(self) -> None:
         document = _document()
