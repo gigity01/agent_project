@@ -240,14 +240,26 @@ class _VectorStore:
         self,
         factory: _UnitOfWorkFactory,
         *,
+        fail_ensure: bool = False,
         fail_upsert: bool = False,
+        fail_upsert_call: int | None = None,
         on_upsert=None,
     ) -> None:
         self.factory = factory
+        self.fail_ensure = fail_ensure
         self.fail_upsert = fail_upsert
+        self.fail_upsert_call = fail_upsert_call
         self.on_upsert = on_upsert
+        self.ensure_count = 0
         self.upsert_calls: list[list[_PointStruct]] = []
         self.delete_calls: list[list[int]] = []
+
+    def ensure_collection(self) -> None:
+        if any(uow.active for uow in self.factory.instances):
+            raise AssertionError("Qdrant collection 检查发生在数据库事务内")
+        self.ensure_count += 1
+        if self.fail_ensure:
+            raise RuntimeError("Qdrant collection check failed")
 
     def upsert_points(self, points: list[_PointStruct]) -> None:
         if any(uow.active for uow in self.factory.instances):
@@ -255,7 +267,7 @@ class _VectorStore:
         self.upsert_calls.append(points)
         if self.on_upsert is not None:
             self.on_upsert(points)
-        if self.fail_upsert:
+        if self.fail_upsert or self.fail_upsert_call == len(self.upsert_calls):
             raise RuntimeError("Qdrant failed")
 
     def delete_points(self, point_ids: list[int]) -> None:
@@ -433,6 +445,7 @@ class VectorIndexingServiceTest(unittest.TestCase):
             [["embedding 1", "embedding 2"], ["embedding 3"]],
         )
         self.assertEqual(len(vector_store.upsert_calls), 2)
+        self.assertEqual(vector_store.ensure_count, 1)
         points = [point for batch in vector_store.upsert_calls for point in batch]
         self.assertEqual([point.id for point in points], [1, 2, 3])
         self.assertEqual(
@@ -503,7 +516,29 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(chunks[0].vector_status, "failed")
         self.assertEqual(vector_store.upsert_calls, [])
 
-    def test_qdrant_failure_marks_failed_and_deletes_attempted_points(self) -> None:
+    def test_collection_check_failure_does_not_delete_points(self) -> None:
+        document = _document()
+        chunks = [_chunk(1), _chunk(2)]
+        factory = self._use(document, chunks)
+        embedding = _EmbeddingClient(factory)
+        vector_store = _VectorStore(factory, fail_ensure=True)
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service.index_document_vectors(
+                document.id,
+                embedding_client=embedding,
+                vector_store=vector_store,
+            )
+
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertTrue(all(chunk.vector_status == "failed" for chunk in chunks))
+        self.assertEqual(vector_store.ensure_count, 1)
+        self.assertEqual(embedding.calls, [])
+        self.assertEqual(vector_store.upsert_calls, [])
+        self.assertEqual(vector_store.delete_calls, [])
+
+    def test_qdrant_failure_marks_failed_and_deletes_uncertain_points(self) -> None:
         document = _document(active_content_hash="keep-me")
         chunks = [_chunk(1), _chunk(2)]
         factory = self._use(document, chunks)
@@ -522,6 +557,32 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertTrue(all(chunk.vector_status == "failed" for chunk in chunks))
         self.assertEqual(document.active_content_hash, "keep-me")
         self.assertEqual(vector_store.delete_calls, [[1, 2]])
+
+    def test_failed_batch_distinguishes_confirmed_and_uncertain_points(self) -> None:
+        document = _document()
+        chunks = [_chunk(1), _chunk(2), _chunk(3)]
+        factory = self._use(document, chunks)
+        embedding = _EmbeddingClient(factory)
+        vector_store = _VectorStore(factory, fail_upsert_call=2)
+
+        with self.assertRaises(self.service.IndexingExecutionError) as raised:
+            self.service._execute_indexing(
+                self.service.IndexingContext(
+                    document_id=document.id,
+                    source_type=document.source_type,
+                    title=document.title,
+                    original_filename=document.original_filename,
+                    chunks=tuple(
+                        self.service._to_chunk_input(chunk) for chunk in chunks
+                    ),
+                ),
+                embedding_client=embedding,
+                vector_store=vector_store,
+            )
+
+        self.assertEqual(raised.exception.confirmed_point_ids, (1, 2))
+        self.assertEqual(raised.exception.uncertain_point_ids, (3,))
+        self.assertEqual(vector_store.ensure_count, 1)
 
     def test_deletion_during_execution_aborts_and_deletes_points(self) -> None:
         document = _document()

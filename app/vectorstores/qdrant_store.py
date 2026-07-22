@@ -42,11 +42,9 @@ class QdrantVectorStore:
         )
 
     def upsert_points(self, points: list[PointStruct]) -> None:
-        """确保 collection 存在后同步写入一批向量点。"""
+        """同步写入一批向量点；调用方须先确保 collection 存在。"""
         if not points:
             return
-
-        self.ensure_collection()
 
         self.client.upsert(
             collection_name=self.collection_name,

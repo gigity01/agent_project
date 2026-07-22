@@ -42,6 +42,9 @@ class EmbeddingClient(Protocol):
 class VectorStoreClient(Protocol):
     """索引编排所需的最小向量存储契约。"""
 
+    def ensure_collection(self) -> None:
+        ...
+
     def upsert_points(self, points: list[PointStruct]) -> None:
         ...
 
@@ -54,11 +57,18 @@ class IndexingAbortedError(RuntimeError):
 
 
 class IndexingExecutionError(RuntimeError):
-    """携带一次失败执行中可能已经写入 Qdrant 的 Point ID。"""
+    """携带一次失败执行中已确认和结果不确定的 Qdrant Point ID。"""
 
-    def __init__(self, message: str, point_ids: tuple[int, ...]) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        confirmed_point_ids: tuple[int, ...],
+        uncertain_point_ids: tuple[int, ...],
+    ) -> None:
         super().__init__(message)
-        self.point_ids = point_ids
+        self.confirmed_point_ids = confirmed_point_ids
+        self.uncertain_point_ids = uncertain_point_ids
 
 
 @dataclass(frozen=True)
@@ -106,7 +116,8 @@ def index_document_vectors(
     """领取索引任务，在事务外写 Qdrant，再以短事务登记结果。"""
     context = _claim_indexing(document_id)
     resolved_vector_store = vector_store
-    point_ids: tuple[int, ...] = ()
+    confirmed_point_ids: tuple[int, ...] = ()
+    uncertain_point_ids: tuple[int, ...] = ()
 
     try:
         resolved_embedding_client = embedding_client or EmbeddingService()
@@ -116,14 +127,16 @@ def index_document_vectors(
             embedding_client=resolved_embedding_client,
             vector_store=resolved_vector_store,
         )
-        point_ids = execution_result.point_ids
+        confirmed_point_ids = execution_result.point_ids
         return _complete_indexing(execution_result)
     except IndexingExecutionError as exc:
-        point_ids = exc.point_ids
+        confirmed_point_ids = exc.confirmed_point_ids
+        uncertain_point_ids = exc.uncertain_point_ids
         _handle_indexing_failure(
             document_id=document_id,
             chunk_ids=_context_chunk_ids(context),
-            point_ids=point_ids,
+            confirmed_point_ids=confirmed_point_ids,
+            uncertain_point_ids=uncertain_point_ids,
             vector_store=resolved_vector_store,
             error=exc,
         )
@@ -135,7 +148,8 @@ def index_document_vectors(
         _handle_indexing_failure(
             document_id=document_id,
             chunk_ids=_context_chunk_ids(context),
-            point_ids=point_ids,
+            confirmed_point_ids=confirmed_point_ids,
+            uncertain_point_ids=uncertain_point_ids,
             vector_store=resolved_vector_store,
             error=exc,
         )
@@ -144,7 +158,8 @@ def index_document_vectors(
         _handle_indexing_failure(
             document_id=document_id,
             chunk_ids=_context_chunk_ids(context),
-            point_ids=point_ids,
+            confirmed_point_ids=confirmed_point_ids,
+            uncertain_point_ids=uncertain_point_ids,
             vector_store=resolved_vector_store,
             error=exc,
         )
@@ -153,7 +168,8 @@ def index_document_vectors(
         _handle_indexing_failure(
             document_id=document_id,
             chunk_ids=_context_chunk_ids(context),
-            point_ids=point_ids,
+            confirmed_point_ids=confirmed_point_ids,
+            uncertain_point_ids=uncertain_point_ids,
             vector_store=resolved_vector_store,
             error=exc,
         )
@@ -229,8 +245,10 @@ def _execute_indexing(
     if EMBEDDING_BATCH_SIZE <= 0:
         raise RuntimeError("EMBEDDING_BATCH_SIZE 必须大于 0")
 
-    attempted_point_ids: list[int] = []
+    confirmed_point_ids: list[int] = []
+    uncertain_point_ids: list[int] = []
     try:
+        vector_store.ensure_collection()
         for start in range(0, len(context.chunks), EMBEDDING_BATCH_SIZE):
             batch = context.chunks[start:start + EMBEDDING_BATCH_SIZE]
             vectors = embedding_client.embed_texts(
@@ -242,18 +260,20 @@ def _execute_indexing(
                 _build_point(context, chunk, vector)
                 for chunk, vector in zip(batch, vectors)
             ]
-            batch_point_ids = [chunk.chunk_id for chunk in batch]
-            attempted_point_ids.extend(batch_point_ids)
+            uncertain_point_ids = [chunk.chunk_id for chunk in batch]
             vector_store.upsert_points(points)
+            confirmed_point_ids.extend(uncertain_point_ids)
+            uncertain_point_ids = []
     except Exception as exc:
         raise IndexingExecutionError(
             "事务外向量索引执行失败",
-            tuple(attempted_point_ids),
+            confirmed_point_ids=tuple(confirmed_point_ids),
+            uncertain_point_ids=tuple(uncertain_point_ids),
         ) from exc
 
     return IndexingExecutionResult(
         context=context,
-        point_ids=tuple(attempted_point_ids),
+        point_ids=tuple(confirmed_point_ids),
     )
 
 
@@ -336,7 +356,8 @@ def _handle_indexing_failure(
     *,
     document_id: int,
     chunk_ids: tuple[int, ...],
-    point_ids: tuple[int, ...],
+    confirmed_point_ids: tuple[int, ...],
+    uncertain_point_ids: tuple[int, ...],
     vector_store: VectorStoreClient | None,
     error: Exception,
 ) -> None:
@@ -349,16 +370,20 @@ def _handle_indexing_failure(
             extra={"document_id": document_id},
         )
 
-    if vector_store is None or not point_ids:
+    compensation_point_ids = tuple(
+        dict.fromkeys(confirmed_point_ids + uncertain_point_ids)
+    )
+    if vector_store is None or not compensation_point_ids:
         return
     try:
-        vector_store.delete_points(list(point_ids))
+        vector_store.delete_points(list(compensation_point_ids))
     except Exception:
         logger.exception(
             "Qdrant 索引补偿删除失败",
             extra={
                 "document_id": document_id,
-                "point_count": len(point_ids),
+                "confirmed_point_count": len(confirmed_point_ids),
+                "uncertain_point_count": len(uncertain_point_ids),
             },
         )
 

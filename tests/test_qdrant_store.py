@@ -29,7 +29,16 @@ class _Distance:
 
 class _Client:
     def __init__(self) -> None:
+        self.collection_exists_calls: list[dict] = []
+        self.upsert_calls: list[dict] = []
         self.delete_calls: list[dict] = []
+
+    def collection_exists(self, **values) -> bool:
+        self.collection_exists_calls.append(values)
+        return True
+
+    def upsert(self, **values) -> None:
+        self.upsert_calls.append(values)
 
     def delete(self, **values) -> None:
         self.delete_calls.append(values)
@@ -73,6 +82,19 @@ def _load_store_module(client: _Client):
 
 
 class QdrantVectorStoreTest(unittest.TestCase):
+    def test_upsert_points_does_not_check_collection_implicitly(self) -> None:
+        client = _Client()
+        store_module = _load_store_module(client)
+        store = store_module.QdrantVectorStore()
+        point = object()
+
+        store.upsert_points([point])
+
+        self.assertEqual(client.collection_exists_calls, [])
+        self.assertEqual(len(client.upsert_calls), 1)
+        self.assertEqual(client.upsert_calls[0]["points"], [point])
+        self.assertTrue(client.upsert_calls[0]["wait"])
+
     def test_delete_points_uses_point_ids_selector_and_waits(self) -> None:
         client = _Client()
         store_module = _load_store_module(client)
