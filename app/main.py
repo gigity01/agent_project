@@ -1,8 +1,11 @@
 """新版知识库管理 API 的 FastAPI 路由入口。"""
 
 import app.models
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, Literal
+
+from app.agents.runtime import AgentRuntime
 from app.db.session import Base
 from fastapi import FastAPI, UploadFile, File, Form, Depends
 
@@ -21,8 +24,21 @@ from app.schemas.vector_indexing import VectorIndexingResponse
 from app.services.vector_indexing_service import index_document_vectors
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """创建并关闭应用级 Agent 运行时。"""
+    agent_runtime = AgentRuntime.create()
+    app.state.agent_runtime = agent_runtime
+
+    try:
+        yield
+    finally:
+        await agent_runtime.aclose()
+
+
 app = FastAPI(
     title="AJ3Q Knowledge Admin API",
+    lifespan=lifespan,
 )
 
 

@@ -78,6 +78,25 @@ EMBEDDING_BATCH_SIZE: Final[int] = environment.get_int_env(
     10,
 )
 
+# DeepSeek Agent LLM。该配置与 DashScope Embedding 相互独立。
+DEEPSEEK_API_KEY: Final[str] = environment.get_required_env("DEEPSEEK_API_KEY")
+DEEPSEEK_BASE_URL: Final[str] = environment.get_env(
+    "DEEPSEEK_BASE_URL",
+    "https://api.deepseek.com",
+)
+DEEPSEEK_MODEL_NAME: Final[str] = environment.get_env(
+    "DEEPSEEK_MODEL_NAME",
+    "deepseek-v4-flash",
+)
+DEEPSEEK_TIMEOUT_SECONDS: Final[int] = environment.get_int_env(
+    "DEEPSEEK_TIMEOUT_SECONDS",
+    60,
+)
+DEEPSEEK_MAX_RETRIES: Final[int] = environment.get_int_env(
+    "DEEPSEEK_MAX_RETRIES",
+    2,
+)
+
 # 文档转换服务。复杂办公文件先转换为 Markdown，之后复用本地 Markdown
 # 处理器，避免各格式分别维护清洗和切块逻辑。
 DOCING_SOURCE_TYPES: Final[set[str]] = {"pdf", "doc", "docx", "ppt", "pptx"}

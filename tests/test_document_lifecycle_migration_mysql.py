@@ -121,6 +121,7 @@ class DocumentLifecycleMigrationMySQLTest(unittest.TestCase):
         environment = os.environ.copy()
         environment["SQLALCHEMY_DATABASE_URL"] = self.database_url
         environment["DASHSCOPE_API_KEY"] = "migration-test-placeholder"
+        environment["DEEPSEEK_API_KEY"] = "migration-test-placeholder"
         environment["PYTHONUTF8"] = "1"
         return subprocess.run(
             [
