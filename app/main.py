@@ -1,14 +1,15 @@
 """新版知识库管理 API 的 FastAPI 路由入口。"""
 
-import app.models
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, Literal
 
-from app.agents.runtime import AgentRuntime
-from app.db.session import Base
 from fastapi import FastAPI, UploadFile, File, Form, Depends
 
+import app.models
+from app.agents.deepseek_provider import DeepSeekModelProvider
+from app.app_config.settings import DEEPSEEK_API_KEY
+from app.db.session import Base
 from app.schemas.document import (
     DocumentUploadFormData,
     DocumentResponse,
@@ -26,14 +27,19 @@ from app.services.vector_indexing_service import index_document_vectors
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """创建并关闭应用级 Agent 运行时。"""
-    agent_runtime = AgentRuntime.create()
-    app.state.agent_runtime = agent_runtime
+    """按需创建并关闭应用级 DeepSeek 模型 Provider。"""
+    deepseek_provider = (
+        DeepSeekModelProvider.create()
+        if DEEPSEEK_API_KEY is not None
+        else None
+    )
+    app.state.deepseek_provider = deepseek_provider
 
     try:
         yield
     finally:
-        await agent_runtime.aclose()
+        if deepseek_provider is not None:
+            await deepseek_provider.aclose()
 
 
 app = FastAPI(

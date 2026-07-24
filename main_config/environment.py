@@ -34,6 +34,14 @@ def get_required_env(name: str) -> str:
     return value
 
 
+def get_optional_env(name: str) -> str | None:
+    """读取可选环境变量，空值或示例占位值视为未配置。"""
+    value = os.getenv(name)
+    if not value or value.startswith("replace-with-"):
+        return None
+    return value
+
+
 def get_env(name: str, default: str) -> str:
     """读取可选环境变量，空值时采用默认值。"""
     return os.getenv(name) or default

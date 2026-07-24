@@ -1,4 +1,4 @@
-"""OpenAI Agents SDK 的 DeepSeek 运行时配置。"""
+"""OpenAI Agents SDK 的 DeepSeek 模型 Provider。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from agents import (
     ModelSettings,
     OpenAIChatCompletionsModel,
-    set_tracing_disabled,
+    RunConfig,
 )
 from openai import AsyncOpenAI
 
@@ -21,19 +21,18 @@ from app.app_config.settings import (
 
 
 @dataclass
-class AgentRuntime:
-    """持有 Agent 共用的 DeepSeek 客户端与模型实例。"""
+class DeepSeekModelProvider:
+    """持有 DeepSeek 客户端、模型适配器与默认模型参数。"""
 
     client: AsyncOpenAI
     model: OpenAIChatCompletionsModel
-    default_model_settings: ModelSettings
+    model_settings: ModelSettings
 
     @classmethod
-    def create(cls) -> "AgentRuntime":
-        """创建使用 DeepSeek Chat Completions 的共享运行时。"""
-        # 当前没有使用 OpenAI Platform API Key，不向 OpenAI tracing
-        # 后端发送执行轨迹。
-        set_tracing_disabled(True)
+    def create(cls) -> "DeepSeekModelProvider":
+        """创建使用 DeepSeek Chat Completions 的模型 Provider。"""
+        if not DEEPSEEK_API_KEY:
+            raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
 
         client = AsyncOpenAI(
             api_key=DEEPSEEK_API_KEY,
@@ -62,9 +61,20 @@ class AgentRuntime:
         return cls(
             client=client,
             model=model,
-            default_model_settings=model_settings,
+            model_settings=model_settings,
         )
 
     async def aclose(self) -> None:
         """释放底层异步 HTTP 连接池。"""
         await self.client.close()
+
+
+def build_deepseek_run_config(
+    provider: DeepSeekModelProvider,
+) -> RunConfig:
+    """构建一次 Agent 执行使用的 DeepSeek 模型与追踪策略。"""
+    return RunConfig(
+        model=provider.model,
+        model_settings=provider.model_settings,
+        tracing_disabled=True,
+    )

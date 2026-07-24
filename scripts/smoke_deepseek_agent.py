@@ -14,11 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents import Agent, Runner
 
-from app.agents.runtime import AgentRuntime
+from app.agents.deepseek_provider import (
+    DeepSeekModelProvider,
+    build_deepseek_run_config,
+)
 
 
 async def main() -> None:
-    runtime = AgentRuntime.create()
+    provider = DeepSeekModelProvider.create()
 
     try:
         agent = Agent(
@@ -27,14 +30,13 @@ async def main() -> None:
                 "你是 SDK 连通性测试 Agent。"
                 "收到输入后只回复 SDK_OK，不要补充其他内容。"
             ),
-            model=runtime.model,
-            model_settings=runtime.default_model_settings,
         )
 
         result = await Runner.run(
             agent,
             input="执行连通性检查。",
             max_turns=1,
+            run_config=build_deepseek_run_config(provider),
         )
 
         output = str(result.final_output).strip()
@@ -45,7 +47,7 @@ async def main() -> None:
         print("DeepSeek Agents SDK smoke test: OK")
 
     finally:
-        await runtime.aclose()
+        await provider.aclose()
 
 
 if __name__ == "__main__":

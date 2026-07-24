@@ -79,7 +79,9 @@ EMBEDDING_BATCH_SIZE: Final[int] = environment.get_int_env(
 )
 
 # DeepSeek Agent LLM。该配置与 DashScope Embedding 相互独立。
-DEEPSEEK_API_KEY: Final[str] = environment.get_required_env("DEEPSEEK_API_KEY")
+DEEPSEEK_API_KEY: Final[str | None] = environment.get_optional_env(
+    "DEEPSEEK_API_KEY"
+)
 DEEPSEEK_BASE_URL: Final[str] = environment.get_env(
     "DEEPSEEK_BASE_URL",
     "https://api.deepseek.com",

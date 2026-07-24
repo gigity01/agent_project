@@ -2,14 +2,14 @@
 
 from fastapi import Request
 
-from app.agents.runtime import AgentRuntime
+from app.agents.deepseek_provider import DeepSeekModelProvider
 
 
-def get_agent_runtime(request: Request) -> AgentRuntime:
-    """获取应用生命周期内共享的 Agent 运行时。"""
-    runtime = getattr(request.app.state, "agent_runtime", None)
+def get_deepseek_provider(request: Request) -> DeepSeekModelProvider:
+    """获取应用生命周期内共享的 DeepSeek 模型 Provider。"""
+    provider = getattr(request.app.state, "deepseek_provider", None)
 
-    if not isinstance(runtime, AgentRuntime):
-        raise RuntimeError("AgentRuntime 尚未初始化")
+    if not isinstance(provider, DeepSeekModelProvider):
+        raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
 
-    return runtime
+    return provider
