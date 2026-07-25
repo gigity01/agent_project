@@ -10,9 +10,7 @@ from alembic import context
 from app.app_config.settings import SQLALCHEMY_DATABASE_URL
 from app.db.session import Base
 
-from app.models.knowledge_base import KnowledgeBase
-from app.models.document import Document
-from app.models.document_artifact import DocumentArtifact
+import app.models
 
 # Alembic 配置对象来自 alembic.ini；运行时 URL 由应用统一配置覆盖，避免迁移
 # 与服务连接到不同数据库。

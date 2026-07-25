@@ -7,6 +7,7 @@ from typing import Optional, Literal
 from fastapi import FastAPI, UploadFile, File, Form, Depends
 
 import app.models
+from app.api.context import router as context_router
 from app.agents.deepseek_provider import DeepSeekModelProvider
 from app.app_config.settings import DEEPSEEK_API_KEY
 from app.db.session import Base
@@ -46,6 +47,7 @@ app = FastAPI(
     title="AJ3Q Knowledge Admin API",
     lifespan=lifespan,
 )
+app.include_router(context_router)
 
 
 def document_upload_form(

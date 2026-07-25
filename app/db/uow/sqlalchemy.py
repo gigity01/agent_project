@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.session import session_local
 from app.db.uow.base import AbstractUnitOfWork
 from app.repositories.child_chunk_repository import ChildChunkRepository
+from app.repositories.context_repository import ContextRepository
 from app.repositories.document_artifact_repository import DocumentArtifactRepository
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.parent_block_repository import ParentBlockRepository
@@ -32,6 +33,7 @@ class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
         self.document_artifacts = DocumentArtifactRepository(self.session)
         self.parent_blocks = ParentBlockRepository(self.session)
         self.child_chunks = ChildChunkRepository(self.session)
+        self.context = ContextRepository(self.session)
 
         return self
 

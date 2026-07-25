@@ -159,7 +159,7 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
 - SQLAlchemy engine/session/Base：`app/db/session.py`
 - ORM 模型：`app/models/`
 - Repository：`app/repositories/`
-- Alembic 当前迁移头：`e7b3c2d4a9f1`
+- Alembic 当前迁移头：`b6d9a2e4c8f1`
 
 Repository 原则：
 
