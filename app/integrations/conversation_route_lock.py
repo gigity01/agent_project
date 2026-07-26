@@ -14,7 +14,7 @@ class ConversationRouteLockUnavailable(RuntimeError):
 
 
 class ConversationRouteLockManager:
-    """使用外部注入的 Redis 客户端串行化 Context 路由。"""
+    """使用应用级共享 Redis 客户端串行化 Context 路由。"""
 
     def __init__(
         self,
@@ -23,6 +23,12 @@ class ConversationRouteLockManager:
         lock_timeout_seconds: int,
         blocking_timeout_seconds: int,
     ) -> None:
+        if lock_timeout_seconds < 1:
+            raise ValueError("Conversation route lock timeout must be positive")
+        if blocking_timeout_seconds < 0:
+            raise ValueError(
+                "Conversation route blocking timeout cannot be negative"
+            )
         self._client = client
         self._lock_timeout_seconds = lock_timeout_seconds
         self._blocking_timeout_seconds = blocking_timeout_seconds
@@ -30,7 +36,7 @@ class ConversationRouteLockManager:
     @asynccontextmanager
     async def hold(self, conversation_id: str) -> AsyncIterator[None]:
         lock = self._client.lock(
-            f"context-route:{conversation_id}",
+            f"ctx:{{{conversation_id}}}:route:lock",
             timeout=self._lock_timeout_seconds,
             blocking_timeout=self._blocking_timeout_seconds,
             thread_local=False,

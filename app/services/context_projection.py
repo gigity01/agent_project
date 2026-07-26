@@ -5,7 +5,7 @@ from app.models.conversation_turn import ConversationTurn as TurnModel
 from app.schemas.context import (
     ContextChain,
     ContextChainNodeContext,
-    ContextResources,
+    ContextResourceQueue,
     ConversationTurn,
 )
 
@@ -22,6 +22,7 @@ def get_context_assistant_content(
 def build_context_chain(
     chain: ContextChainModel,
     *,
+    resource_queue: ContextResourceQueue,
     full_assistant_turn_count: int,
 ) -> ContextChain:
     """保留全部节点，并按新旧策略选择助手回答内容。"""
@@ -67,7 +68,7 @@ def build_context_chain(
         chain_id=chain.chain_id,
         conversation_id=chain.conversation_id,
         nodes=projected_nodes,
-        resources=ContextResources.model_validate(chain.resources or {}),
+        resource_queue=resource_queue,
         last_active_at=chain.last_active_at,
         archived=chain.archived,
     )

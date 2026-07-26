@@ -99,6 +99,34 @@ DEEPSEEK_MAX_RETRIES: Final[int] = environment.get_int_env(
     2,
 )
 
+# Context Redis。应用生命周期持有一个异步客户端，路由锁和热资源队列共享连接池。
+REDIS_URL: Final[str] = environment.get_env(
+    "REDIS_URL",
+    "redis://127.0.0.1:6379/0",
+)
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS: Final[int] = environment.get_int_env(
+    "REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS",
+    5,
+)
+REDIS_SOCKET_TIMEOUT_SECONDS: Final[int] = environment.get_int_env(
+    "REDIS_SOCKET_TIMEOUT_SECONDS",
+    5,
+)
+CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS: Final[int] = environment.get_int_env(
+    "CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS",
+    240,
+)
+CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS: Final[int] = (
+    environment.get_int_env(
+        "CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS",
+        5,
+    )
+)
+CONTEXT_RESOURCE_QUEUE_MAX_SIZE: Final[int] = environment.get_int_env(
+    "CONTEXT_RESOURCE_QUEUE_MAX_SIZE",
+    16,
+)
+
 # 文档转换服务。复杂办公文件先转换为 Markdown，之后复用本地 Markdown
 # 处理器，避免各格式分别维护清洗和切块逻辑。
 DOCING_SOURCE_TYPES: Final[set[str]] = {"pdf", "doc", "docx", "ppt", "pptx"}

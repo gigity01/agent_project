@@ -8,16 +8,40 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
-class ContextResources(BaseModel):
-    """一条上下文链当前关联的完整资源集合。"""
+class ContextResourceInput(BaseModel):
+    """下游提交的单个资源事实，不包含完整业务对象。"""
 
-    document_ids: list[int] = Field(default_factory=list)
-    document_codes: list[str] = Field(default_factory=list)
-    knowledge_base_ids: list[int] = Field(default_factory=list)
-    plan_ids: list[str] = Field(default_factory=list)
-    task_ids: list[str] = Field(default_factory=list)
-    result_refs: list[str] = Field(default_factory=list)
-    other: dict[str, list[str]] = Field(default_factory=dict)
+    resource_type: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
+    resource_id: str = Field(min_length=1, max_length=400)
+    relation: str | None = Field(default=None, max_length=100)
+    summary: str | None = Field(default=None, max_length=1000)
+
+    @property
+    def resource_key(self) -> str:
+        return f"{self.resource_type}:{self.resource_id}"
+
+
+class ContextResourceRef(BaseModel):
+    """数据库与 Redis 热队列共享的紧凑资源引用。"""
+
+    resource_key: str
+    resource_type: str
+    resource_id: str
+    relation: str | None = None
+    summary: str | None = None
+    source_turn_id: str
+    last_seen_at: datetime
+
+
+class ContextResourceQueue(BaseModel):
+    """按最久未使用到最近使用排序的有界热资源队列。"""
+
+    capacity: int = Field(ge=1)
+    items: list[ContextResourceRef] = Field(default_factory=list)
 
 
 class ConversationTurn(BaseModel):
@@ -63,7 +87,7 @@ class ContextChain(BaseModel):
     chain_id: str
     conversation_id: str
     nodes: list[ContextChainNodeContext]
-    resources: ContextResources
+    resource_queue: ContextResourceQueue
     last_active_at: datetime
     archived: bool = False
 
@@ -112,12 +136,14 @@ class ContextRouteRequest(BaseModel):
 
 
 class ContextChainTurnUpdate(BaseModel):
-    """下游完成后写入某条链的关联元数据与资源快照。"""
+    """下游完成后写入某条链的本轮资源事实。"""
 
     chain_id: str = Field(min_length=1, max_length=100)
     related_task_ids: list[str] = Field(default_factory=list)
-    related_resource_refs: list[str] = Field(default_factory=list)
-    resources: ContextResources | None = None
+    related_resources: list[ContextResourceInput] = Field(
+        default_factory=list
+    )
+    removed_resource_keys: list[str] = Field(default_factory=list)
 
 
 class CompleteContextTurnRequest(BaseModel):

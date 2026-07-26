@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from app.agents.context_agent import ContextAgentRouter
 from app.api.dependencies import (
     get_context_agent_router,
+    get_context_resource_service,
     get_context_route_lock_manager,
 )
 from app.integrations.conversation_route_lock import (
@@ -17,6 +18,7 @@ from app.schemas.context import (
     RoutedContextPackage,
 )
 from app.services.context_service import ContextService
+from app.services.context_resource_service import ContextResourceService
 
 
 router = APIRouter(prefix="/api/context", tags=["context"])
@@ -34,10 +36,14 @@ async def route_context(
     route_lock_manager: ConversationRouteLockManager = Depends(
         get_context_route_lock_manager
     ),
+    resource_service: ContextResourceService = Depends(
+        get_context_resource_service
+    ),
 ) -> RoutedContextPackage:
     service = ContextService(
         agent_router=agent_router,
         route_lock_manager=route_lock_manager,
+        resource_service=resource_service,
     )
     return await service.route_context(request)
 
@@ -52,9 +58,13 @@ async def complete_context_turn(
     route_lock_manager: ConversationRouteLockManager = Depends(
         get_context_route_lock_manager
     ),
+    resource_service: ContextResourceService = Depends(
+        get_context_resource_service
+    ),
 ) -> CompleteContextTurnResponse:
     service = ContextService(
         agent_router=None,
         route_lock_manager=route_lock_manager,
+        resource_service=resource_service,
     )
     return await service.complete_turn(turn_id, request)

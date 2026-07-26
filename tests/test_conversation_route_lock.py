@@ -61,7 +61,7 @@ class ConversationRouteLockManagerTest(
             client.calls,
             [
                 (
-                    "context-route:conversation-1",
+                    "ctx:{conversation-1}:route:lock",
                     {
                         "timeout": 30,
                         "blocking_timeout": 2,

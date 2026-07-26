@@ -134,6 +134,12 @@ class AgentSettingsTest(unittest.TestCase):
         self.assertEqual(settings.DEEPSEEK_MODEL_NAME, "deepseek-v4-flash")
         self.assertEqual(settings.DEEPSEEK_TIMEOUT_SECONDS, 60)
         self.assertEqual(settings.DEEPSEEK_MAX_RETRIES, 2)
+        self.assertEqual(
+            settings.REDIS_URL,
+            "redis://127.0.0.1:6379/0",
+        )
+        self.assertEqual(settings.CONTEXT_RESOURCE_QUEUE_MAX_SIZE, 16)
+        self.assertEqual(settings.CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS, 240)
 
     def test_fastapi_lifespan_starts_without_deepseek_api_key(self) -> None:
         code = """
@@ -147,9 +153,29 @@ environment.load_local_env_file = lambda project_root: None
 
 from app import main as app_main
 
+class FakeRedis:
+    def __init__(self):
+        self.ping_count = 0
+        self.aclose_count = 0
+
+    async def ping(self):
+        self.ping_count += 1
+        return True
+
+    async def aclose(self):
+        self.aclose_count += 1
+
+redis_client = FakeRedis()
+app_main.create_redis_client = lambda *args, **kwargs: redis_client
+
 async def check() -> None:
     async with app_main.lifespan(app_main.app):
+        assert redis_client.ping_count == 1
         assert app_main.app.state.deepseek_provider is None
+        assert app_main.app.state.redis_client is redis_client
+        assert app_main.app.state.context_route_lock_manager is not None
+        assert app_main.app.state.context_resource_service is not None
+    assert redis_client.aclose_count == 1
 
 asyncio.run(check())
 print("FastAPI lifespan without DeepSeek key: OK")
@@ -173,6 +199,66 @@ print("FastAPI lifespan without DeepSeek key: OK")
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn(
             "FastAPI lifespan without DeepSeek key: OK",
+            result.stdout,
+        )
+
+    def test_fastapi_lifespan_closes_redis_after_ping_failure(self) -> None:
+        code = """
+import asyncio
+import os
+
+os.environ.pop("DEEPSEEK_API_KEY", None)
+
+from main_config import environment
+environment.load_local_env_file = lambda project_root: None
+
+from app import main as app_main
+
+class FailingRedis:
+    def __init__(self):
+        self.aclose_count = 0
+
+    async def ping(self):
+        raise ConnectionError("redis unavailable")
+
+    async def aclose(self):
+        self.aclose_count += 1
+
+redis_client = FailingRedis()
+app_main.create_redis_client = lambda *args, **kwargs: redis_client
+
+async def check() -> None:
+    try:
+        async with app_main.lifespan(app_main.app):
+            raise AssertionError("Redis PING 失败时不应进入 lifespan")
+    except ConnectionError:
+        pass
+    else:
+        raise AssertionError("Redis PING 失败必须阻止应用启动")
+    assert redis_client.aclose_count == 1
+
+asyncio.run(check())
+print("FastAPI lifespan Redis failure cleanup: OK")
+"""
+        child_environment = os.environ.copy()
+        child_environment["SQLALCHEMY_DATABASE_URL"] = (
+            "sqlite+pysqlite:///:memory:"
+        )
+        child_environment["DASHSCOPE_API_KEY"] = "lifespan-test-placeholder"
+        child_environment.pop("DEEPSEEK_API_KEY", None)
+
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=ROOT_DIR,
+            env=child_environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn(
+            "FastAPI lifespan Redis failure cleanup: OK",
             result.stdout,
         )
 

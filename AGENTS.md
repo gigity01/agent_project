@@ -10,23 +10,30 @@
 4. 构建父级语义块（parent block）和可向量化子块（child chunk）。
 5. 调用 DashScope / Qwen Embedding 生成向量。
 6. 将向量写入 Qdrant。
+7. 使用 Context Agent 将完整用户输入路由到一条或多条历史上下文链。
 
-当前尚未提供检索、召回、重排或问答 API，因此它是“知识入库管理服务”，不是完整 RAG 问答系统。
+当前尚未提供检索、召回、重排或问答 API。Context Agent 只负责上下文关联，
+不提供业务规划或问答能力，因此本项目仍不是完整 RAG 问答系统。
 
 ## 当前入口与命令
 
 - FastAPI 入口：`app/main.py`
 - 应用对象：`app.main:app`
-- 本地运行：`py -3 -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
-- 数据库迁移：`py -3 -m alembic upgrade head`
-- 语法检查：`py -3 -m compileall -q app core main_config utils alembic`
+- 依赖声明：`pyproject.toml`
+- 锁文件：`uv.lock`
+- 本地运行：`uv run --frozen uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
+- 数据库迁移：`uv run --frozen alembic upgrade head`
+- 自动化测试：`uv run --frozen python -m unittest discover -s tests -v`
+- 语法检查：`uv run --frozen python -m compileall -q app core main_config main_utils alembic`
 - 差异检查：`git diff --check`
 
-仓库目前没有 `requirements.txt`、`pyproject.toml`、自动化测试、lint、typecheck 或 CI 配置。不要声称这些检查已运行。
+仓库使用 `pyproject.toml` 和 `uv.lock` 管理依赖，自动化测试基于标准库
+`unittest`。当前没有独立的 lint、typecheck 或 CI 配置；不要声称未实际执行的
+检查已经运行。首次同步依赖或修改锁文件前仍需说明影响并取得确认。
 
 ## HTTP API
 
-`app/main.py` 当前暴露四个管理端接口：
+`app/main.py` 和 `app/api/context.py` 当前暴露六个接口：
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
@@ -34,28 +41,34 @@
 | POST | `/api/admin/documents/{document_id}/process` | 转换或清洗文档 |
 | POST | `/api/admin/documents/{document_id}/build-chunks` | 重建父块和子块 |
 | POST | `/api/admin/documents/{document_id}/index-vectors` | 生成向量并写入 Qdrant |
+| POST | `/api/context/route` | 创建唯一 Turn 并执行上下文链路由 |
+| POST | `/api/context/turns/{turn_id}/complete` | 补全 Turn 并关联已路由的目标链 |
 
-这些步骤彼此独立，必须按顺序调用。上传成功不会自动触发处理、切块或索引。
+四个文档步骤彼此独立，必须按顺序调用。上传成功不会自动触发处理、切块或索引。
+两个 Context 接口组成独立流程：先路由，待下游处理完成后再回写 Turn。
 
 ## 目录与分层
 
 ```text
 app/main.py
+  -> app/api/                      # Context 等拆分路由与请求依赖
+  -> app/agents/                   # Context Agent 与 DeepSeek Provider
   -> app/services/                 # 业务编排和事务边界
     -> app/repositories/           # SQLAlchemy 查询与持久化，不应自行 commit
       -> app/models/               # ORM 表模型
     -> app/processors/             # 本地文本清洗
     -> app/chunkers/               # 父子切块策略
-    -> app/integrations/           # Docling 等外部服务客户端
+    -> app/integrations/           # Docling、Redis 客户端、路由锁和热资源队列
     -> app/vectorstores/           # Qdrant 封装
   -> app/schemas/                  # Pydantic 请求/响应模型
-  -> app/db/                       # engine、session、Unit of Work 契约
+  -> app/db/                       # engine、session、Unit of Work
   -> app/app_config/settings.py    # 应用配置
 
 core/observability/                # JSONL 生命周期事件日志
 main_config/                       # 环境变量与日志目录配置
-utils/                             # 跨模块的小型辅助函数
+main_utils/                        # 跨模块的小型辅助函数
 alembic/                           # 数据库迁移
+tests/                             # unittest 自动化测试
 ```
 
 依赖方向应保持为 API → Service → Repository/Processor/Chunker/Integration/VectorStore。Repository 不应反向调用 Service，模型不应承载业务编排。
@@ -120,6 +133,72 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 
 数据库、Embedding 服务和 Qdrant 无法组成单一事务。必须考虑“Qdrant 已写入但数据库状态更新失败”等跨存储不一致场景。
 
+## Context Agent 子系统
+
+入口：
+
+- API：`app/api/context.py`
+- Agent：`app/agents/context_agent.py`
+- Service：`app/services/context_service.py`
+- 资源 Service：`app/services/context_resource_service.py`
+- 确定性校验：`app/services/context_route_validation.py`
+- Redis 锁客户端：`app/integrations/conversation_route_lock.py`
+- Redis 资源队列：`app/integrations/context_resource_queue.py`
+
+Context Agent 是上下文路由器，只判断当前完整用户输入关联哪些已有链，以及是否
+包含与所有已有链无关的新内容。它不拆分或改写输入，也不负责业务计划、Task
+拆解、Service 选择、权限判断、操作执行或最终回答。
+
+固定路由模式包括：
+
+- `single_match`：关联一条已有链。
+- `multi_match`：关联多条已有链。
+- `new_chain`：与全部已有链无关，创建新链。
+- `existing_and_new`：同时关联已有链并创建新链。
+- `fallback_latest`：存在上下文关联但无法判断具体归属时，选择
+  `last_active_at` 最新的未归档链，不向用户追问。
+
+Context 数据约束：
+
+- 一次完整用户输入只创建一个 `ConversationTurn`。
+- `ContextChainNode` 只引用 Turn；同一个 Turn 可以关联多条链。
+- Agent 输入包含当前完整用户输入、当前 Conversation 的全部未归档完整链，以及每条
+  链按最久未使用到最近使用排列的热资源队列。
+- Agent 只读链资源，不得修改资源、归档状态或时间戳。
+- 普通代码必须校验链存在性、Conversation 归属、重复、归档状态以及
+  `route_mode` 与字段组合。
+- 路由阶段只保存决定并预分配新链 ID；下游完成后才补全 Turn、建立链节点并更新
+  资源和 `last_active_at`。
+- 旧助手回答可以使用 `assistant_compact`，但链节点和用户原始输入不得丢失。
+
+资源管理以 MySQL 为完整事实层：
+
+- `context_chain_nodes.related_resource_refs` 保存某个 Turn 在某条链中涉及的资源 Key。
+- `context_chain_resource_events` 追加保存 `seen`、`refreshed`、`removed` 和
+  `invalidated` 事件，Redis 淘汰不得删除这些历史。
+- `context_chain_resources` 以 `UNIQUE(chain_id, resource_key)` 保存资源当前状态、
+  首次/最近使用 Turn、时间、使用次数和有效性。
+- `context_chains.resource_version` 在资源状态变化时递增；旧 `resources` JSON 列仅
+  作为兼容字段保留，不再由完成流程整包替换，也不是正式事实来源。
+
+下游完成 Turn 时只提交本轮 `related_resources` 和 `removed_resource_keys`，不提交
+完整资源快照。数据库事务内必须创建 Node、追加事件、upsert 或停用资源、递增版本并
+更新 `last_active_at`；数据库提交后才能刷新 Redis。Redis 失败不能回滚已提交的
+MySQL 事务，应删除该链的热队列 Key，使下一次读取从数据库预热。
+
+Redis 为每条 Chain 使用 List、Hash 和 Version 三个 Key，维护默认容量 16 的刷新式
+FIFO：新资源或再次使用的资源先从旧位置移除，再进入队尾；超过容量时从队头推出最久
+未再次使用的资源；明确失效资源从 List 和 Hash 删除。List、Hash、版本更新必须通过
+Lua 原子完成，增量刷新必须校验 Redis 当前版本等于数据库新版本的前一版本。版本
+缺失、不一致、出现跳号或缓存结构不完整时，从
+`context_chain_resources` 查询最近 N 个 active 资源，反转为最旧到最新后整体预热。
+
+同一 Conversation 的路由通过 Redis 短锁串行化。FastAPI lifespan 根据 `REDIS_URL`
+创建一个应用级 `redis.asyncio.Redis` 客户端，路由锁和资源队列共享其连接池，并在
+启动时执行 `PING` 验证连接，在应用关闭时统一 `aclose()`。Redis 不可用时应用启动
+必须失败，不能带着不可用的 Context 并发锁进入服务状态；离线测试必须使用替身，
+除非用户明确提供安全的测试实例。
+
 ## 文件类型支持现状
 
 | 类型 | 上传 | 准备/清洗 | 切块 | 说明 |
@@ -159,7 +238,8 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
 - SQLAlchemy engine/session/Base：`app/db/session.py`
 - ORM 模型：`app/models/`
 - Repository：`app/repositories/`
-- Alembic 当前迁移头：`b6d9a2e4c8f1`
+- Unit of Work：`app/db/uow/`
+- Alembic 当前迁移头：`d4f8a1c7e2b9`
 
 Repository 原则：
 
@@ -167,7 +247,9 @@ Repository 原则：
 - 不应自行 `commit()` 或 `rollback()`。
 - 业务事务由 Service 或 Unit of Work 管理。
 
-`app/db/unit_of_work.py` 已定义 Unit of Work 契约，但现有 Service 仍有直接管理 `Session.commit()` / `rollback()` 的代码。不要假设 UoW 已在全项目完成接入。
+当前主要文档 Service 和 Context Service 已通过 `SQLAlchemyUnitOfWork` 管理事务。
+Service 可以调用 `uow.commit()` / `uow.rollback()`，但不应绕过 UoW 直接提交其
+内部 Session。修改 UoW 或 Repository 契约时必须同步检查所有调用方。
 
 文件系统操作不受数据库事务保护。任何“先写文件、后写数据库”的流程都必须在异常路径显式清理孤儿文件。
 
@@ -191,7 +273,14 @@ Repository 原则：
 - `SQLALCHEMY_DATABASE_URL`
 - `DASHSCOPE_API_KEY`
 
-可覆盖配置包括 Qdrant、DashScope endpoint/model、Embedding 维度与批量大小、Docling 地址/超时/输出格式和日志目录。
+Context Agent 启用时还需要：
+
+- `DEEPSEEK_API_KEY`
+
+可覆盖配置包括 Qdrant、DashScope endpoint/model、Embedding 维度与批量大小、
+Docling 地址/超时/输出格式、DeepSeek endpoint/model/超时/重试次数、Redis URL、
+Redis socket 超时、Context 路由锁超时、热资源队列容量和日志目录。Redis URL 可能
+包含凭据，不得输出或写入日志。
 
 禁止读取、打印、写入计划、提交或日志记录 `.env`、数据库密码、API Key、Token 或其他真实凭据。只允许维护不含真实值的 `.env.example`。
 
@@ -217,15 +306,21 @@ Repository 原则：
 - SQLAlchemy、PyMySQL、Alembic
 - requests
 - OpenAI Python SDK（用于 DashScope compatible API）
+- OpenAI Agents SDK 与 OpenAI 异步客户端（用于 DeepSeek Context Agent）
 - qdrant-client
+- redis-py 异步客户端（Conversation 路由锁与 Context 热资源队列共享）
 
-运行时还需要可访问的 MySQL、Qdrant、DashScope 和 Docling 服务。安装依赖、修改依赖清单或访问外部服务前，先说明影响并取得确认。
+运行时还需要可访问的 MySQL、Qdrant、DashScope 和 Docling 服务；启用 Context
+路由时还需要 DeepSeek 和 Redis。安装依赖、修改依赖清单或访问外部服务前，先说明
+影响并取得确认。
 
 ## 观测日志
 
-`core/observability/` 将上传和处理事件按日期追加为 JSONL。日志用于诊断和审计，但不得记录密钥、数据库连接串、完整认证头或其他敏感值。
+`core/observability/` 将上传、处理、切块和索引事件按日期追加为 JSONL。日志用于
+诊断和审计，但不得记录密钥、数据库连接串、完整认证头或其他敏感值。
 
-当前只完整实现了上传和处理日志组件；chunk、index、retrieval 目录虽已配置，不代表对应事件记录已经完成。
+当前已实现上传、处理、切块和索引日志组件；尚未提供 retrieval 流程，不要因为
+日志目录配置存在就声称检索事件已经实现。
 
 ## 容易遗漏的约束
 
@@ -238,6 +333,11 @@ Repository 原则：
 - Content hash 基于完整落盘后的文件字节计算。
 - `created_by_actor_code` 当前在 API 层使用固定默认值，尚未接入真实认证主体。
 - 当前没有检索 API，也没有 Qdrant search 封装。
+- Context Agent 的 `reason_summary` 只能说明路由依据，不能包含业务计划或执行建议。
+- Context 完成回写不得扩张已保存路由决定的目标链范围。
+- 读取、压缩或缓存刷新不得更新 Context Chain 的 `last_active_at`。
+- Redis 热队列只保存资源引用和简短描述，不能写入完整文档、完整结果或完整 Task。
+- 资源再次使用必须刷新到队尾；从 Redis 推出不等于从 MySQL 删除。
 
 ## 编码工作规则
 
@@ -251,16 +351,30 @@ Repository 原则：
 - 修改支持的源类型时同步检查上传白名单、Source Policy、Processor、Chunker 和 Docling 路径。
 - 修改存储路径时同步检查失败清理、Artifact URI、日志和 `.gitignore`。
 - 修改向量模型或维度时同步检查 Embedding 配置与 Qdrant schema。
+- 修改 Context 路由规则时同步检查 Prompt、Schema、确定性校验、完成回写和离线测试。
+- 修改 Context 资源逻辑时同步检查事件历史、当前状态、`resource_version`、Lua 队列、
+  数据库提交后刷新、版本预热和缓存失败补偿。
+- 修改 Context 并发逻辑时保留 Conversation 级串行语义；Redis 客户端只能由 FastAPI
+  lifespan 创建和关闭，Repository 与 Service 不得自行创建连接。
 - 安装依赖、修改配置/锁文件、删除或移动文件、联网、部署、提交或推送前，说明影响并取得确认。
 - Code review 先按严重程度报告具体问题和文件行号；除非明确要求，否则不修改代码。
 
 ## 交付验证
 
-仓库没有自动化测试框架时，至少执行：
+至少执行：
 
 ```powershell
-py -3 -m compileall -q app core main_config utils alembic
+uv run --frozen python -m compileall -q app core main_config main_utils alembic
 git diff --check
 ```
 
-如运行环境已安装依赖并配置了安全的测试环境，再按改动范围执行导入检查、Alembic 检查或针对性 API 测试。不要为了验证连接真实生产数据库或外部服务。
+在项目依赖环境可用时，按改动范围运行针对性 `unittest`；涉及多个子系统或交付前
+再运行：
+
+```powershell
+uv run --frozen python -m unittest discover -s tests -v
+```
+
+`tests/test_document_lifecycle_migration_mysql.py` 只有在显式提供
+`TEST_MYSQL_DATABASE_URL` 时才运行，并要求指向名称以 `_test` 结尾的空测试库。
+不要为了验证连接真实生产数据库、Qdrant、DashScope、Docling、DeepSeek 或 Redis。

@@ -9,8 +9,27 @@ from fastapi import FastAPI, UploadFile, File, Form, Depends
 import app.models
 from app.api.context import router as context_router
 from app.agents.deepseek_provider import DeepSeekModelProvider
-from app.app_config.settings import DEEPSEEK_API_KEY
+from app.app_config.settings import (
+    CONTEXT_RESOURCE_QUEUE_MAX_SIZE,
+    CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS,
+    CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS,
+    DEEPSEEK_API_KEY,
+    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+    REDIS_SOCKET_TIMEOUT_SECONDS,
+    REDIS_URL,
+)
 from app.db.session import Base
+from app.integrations.context_resource_queue import (
+    ContextResourceQueueRepository,
+)
+from app.integrations.conversation_route_lock import (
+    ConversationRouteLockManager,
+)
+from app.integrations.redis_client import (
+    close_redis_client,
+    create_redis_client,
+    ping_redis_client,
+)
 from app.schemas.document import (
     DocumentUploadFormData,
     DocumentResponse,
@@ -18,6 +37,7 @@ from app.schemas.document import (
 )
 from app.services.document_upload_service import save_uploaded_document
 from app.services.document_processing_service import process_document
+from app.services.context_resource_service import ContextResourceService
 
 from app.schemas.chunking import BuildChunksResponse
 from app.services.document_chunking_service import build_document_chunks
@@ -28,19 +48,46 @@ from app.services.vector_indexing_service import index_document_vectors
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """按需创建并关闭应用级 DeepSeek 模型 Provider。"""
-    deepseek_provider = (
-        DeepSeekModelProvider.create()
-        if DEEPSEEK_API_KEY is not None
-        else None
+    """连接 Redis，并创建和关闭应用级共享客户端。"""
+    redis_client = create_redis_client(
+        REDIS_URL,
+        socket_connect_timeout_seconds=(
+            REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS
+        ),
+        socket_timeout_seconds=REDIS_SOCKET_TIMEOUT_SECONDS,
     )
-    app.state.deepseek_provider = deepseek_provider
+    deepseek_provider = None
 
     try:
+        if not await ping_redis_client(redis_client):
+            raise RuntimeError("Redis PING 未返回成功")
+
+        app.state.redis_client = redis_client
+        app.state.context_route_lock_manager = ConversationRouteLockManager(
+            redis_client,
+            lock_timeout_seconds=CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS,
+            blocking_timeout_seconds=(
+                CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS
+            ),
+        )
+        queue_repository = ContextResourceQueueRepository(
+            redis_client,
+            capacity=CONTEXT_RESOURCE_QUEUE_MAX_SIZE,
+        )
+        app.state.context_resource_service = ContextResourceService(
+            queue_repository=queue_repository,
+        )
+        deepseek_provider = (
+            DeepSeekModelProvider.create()
+            if DEEPSEEK_API_KEY is not None
+            else None
+        )
+        app.state.deepseek_provider = deepseek_provider
         yield
     finally:
         if deepseek_provider is not None:
             await deepseek_provider.aclose()
+        await close_redis_client(redis_client)
 
 
 app = FastAPI(

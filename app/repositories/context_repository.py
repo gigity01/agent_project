@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.context_chain import ContextChain
 from app.models.context_chain_node import ContextChainNode
+from app.models.context_chain_resource import ContextChainResource
+from app.models.context_chain_resource_event import (
+    ContextChainResourceEvent,
+)
 from app.models.context_route_record import ContextRouteRecord
 from app.models.conversation_turn import ConversationTurn
 
@@ -84,6 +88,13 @@ class ContextRepository:
             .all()
         )
 
+    def get_chain(self, chain_id: str) -> ContextChain | None:
+        return (
+            self.db.query(ContextChain)
+            .filter(ContextChain.chain_id == chain_id)
+            .first()
+        )
+
     def get_chain_for_update(self, chain_id: str) -> ContextChain | None:
         return (
             self.db.query(ContextChain)
@@ -143,6 +154,127 @@ class ContextRepository:
         self.db.flush()
         return node
 
+    def get_chain_resource_for_update(
+        self,
+        chain_id: str,
+        resource_key: str,
+    ) -> ContextChainResource | None:
+        return (
+            self.db.query(ContextChainResource)
+            .filter(
+                ContextChainResource.chain_id == chain_id,
+                ContextChainResource.resource_key == resource_key,
+            )
+            .with_for_update()
+            .first()
+        )
+
+    def upsert_chain_resource(
+        self,
+        *,
+        chain_id: str,
+        resource_key: str,
+        resource_type: str,
+        resource_id: str,
+        relation: str | None,
+        summary: str | None,
+        turn_id: str,
+        seen_at: datetime,
+    ) -> tuple[ContextChainResource, bool]:
+        """刷新资源当前状态，返回资源记录以及是否为首次出现。"""
+        resource = self.get_chain_resource_for_update(
+            chain_id,
+            resource_key,
+        )
+        created = resource is None
+        if resource is None:
+            resource = ContextChainResource(
+                chain_id=chain_id,
+                resource_key=resource_key,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                relation=relation,
+                summary=summary,
+                first_seen_turn_id=turn_id,
+                last_seen_turn_id=turn_id,
+                first_seen_at=seen_at,
+                last_seen_at=seen_at,
+                use_count=1,
+                active=True,
+                removed_at=None,
+            )
+            self.db.add(resource)
+        else:
+            resource.resource_type = resource_type
+            resource.resource_id = resource_id
+            resource.relation = relation
+            resource.summary = summary
+            resource.last_seen_turn_id = turn_id
+            resource.last_seen_at = seen_at
+            resource.use_count += 1
+            resource.active = True
+            resource.removed_at = None
+
+        self.db.flush()
+        return resource, created
+
+    def deactivate_chain_resource(
+        self,
+        *,
+        chain_id: str,
+        resource_key: str,
+        removed_at: datetime,
+    ) -> ContextChainResource | None:
+        """将资源标记为失效；历史记录和最后使用信息继续保留。"""
+        resource = self.get_chain_resource_for_update(
+            chain_id,
+            resource_key,
+        )
+        if resource is None:
+            return None
+
+        resource.active = False
+        resource.removed_at = removed_at
+        self.db.flush()
+        return resource
+
+    def create_resource_event(
+        self,
+        event: ContextChainResourceEvent,
+    ) -> ContextChainResourceEvent:
+        self.db.add(event)
+        self.db.flush()
+        return event
+
+    def list_resources_for_warmup(
+        self,
+        chain_id: str,
+        *,
+        limit: int,
+    ) -> list[ContextChainResource]:
+        """按最近到最旧返回活跃资源，由 Service 反转为 FIFO 顺序。"""
+        return (
+            self.db.query(ContextChainResource)
+            .filter(
+                ContextChainResource.chain_id == chain_id,
+                ContextChainResource.active.is_(True),
+            )
+            .order_by(
+                ContextChainResource.last_seen_at.desc(),
+                ContextChainResource.resource_key.desc(),
+            )
+            .limit(limit)
+            .all()
+        )
+
+    def increment_resource_version(
+        self,
+        chain: ContextChain,
+    ) -> int:
+        chain.resource_version += 1
+        self.db.flush()
+        return chain.resource_version
+
     def list_linked_chain_ids(self, turn_id: str) -> list[str]:
         rows = (
             self.db.query(ContextChainNode.chain_id)
@@ -177,10 +309,7 @@ class ContextRepository:
         chain: ContextChain,
         *,
         last_active_at: datetime,
-        resources: dict | None = None,
     ) -> ContextChain:
-        if resources is not None:
-            chain.resources = resources
         chain.last_active_at = last_active_at
         chain.archived = False
         self.db.flush()

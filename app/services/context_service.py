@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
@@ -28,18 +29,34 @@ from app.schemas.context import (
     ContextAgentInput,
     ContextChain,
     ContextChainTurnUpdate,
-    ContextResources,
     ContextRouteDecision,
     ContextRouteRequest,
     ConversationTurn,
     RoutedContextPackage,
 )
 from app.services.context_projection import build_context_chain
+from app.services.context_resource_service import (
+    ContextResourceQueueRefresh,
+    ContextResourceService,
+    split_resource_key,
+)
 from app.services.context_route_validation import validate_route_decision
 
 
 UnitOfWorkFactory = Callable[[], SQLAlchemyUnitOfWork]
 DEFAULT_FULL_ASSISTANT_TURN_COUNT = 5
+
+
+@dataclass(frozen=True)
+class _LoadedContextChain:
+    chain: ContextChain
+    resource_version: int
+
+
+@dataclass(frozen=True)
+class _CompleteTurnTransactionResult:
+    response: CompleteContextTurnResponse
+    resource_refreshes: list[ContextResourceQueueRefresh]
 
 
 def _new_id(prefix: str) -> str:
@@ -54,6 +71,7 @@ class ContextService:
         *,
         agent_router: ContextAgentRouter | None,
         route_lock_manager: ConversationRouteLockManager,
+        resource_service: ContextResourceService,
         uow_factory: UnitOfWorkFactory = SQLAlchemyUnitOfWork,
         full_assistant_turn_count: int = DEFAULT_FULL_ASSISTANT_TURN_COUNT,
     ) -> None:
@@ -61,6 +79,7 @@ class ContextService:
             raise ValueError("full_assistant_turn_count cannot be negative")
         self._agent_router = agent_router
         self._route_lock_manager = route_lock_manager
+        self._resource_service = resource_service
         self._uow_factory = uow_factory
         self._full_assistant_turn_count = full_assistant_turn_count
 
@@ -79,12 +98,24 @@ class ContextService:
             async with self._route_lock_manager.hold(
                 request.conversation_id
             ):
-                chains = await run_in_threadpool(
+                loaded_chains = await run_in_threadpool(
                     self._create_turn_and_load_chains,
                     turn_id,
                     request,
                 )
                 turn_created = True
+                chains: list[ContextChain] = []
+                for loaded in loaded_chains:
+                    resource_queue = await self._resource_service.get_queue(
+                        conversation_id=request.conversation_id,
+                        chain_id=loaded.chain.chain_id,
+                        resource_version=loaded.resource_version,
+                    )
+                    chains.append(
+                        loaded.chain.model_copy(
+                            update={"resource_queue": resource_queue}
+                        )
+                    )
 
                 agent_input = ContextAgentInput(
                     conversation_id=request.conversation_id,
@@ -161,12 +192,15 @@ class ContextService:
 
         try:
             async with self._route_lock_manager.hold(conversation_id):
-                return await run_in_threadpool(
+                result = await run_in_threadpool(
                     self._complete_turn_in_transaction,
                     turn_id,
                     conversation_id,
                     request,
                 )
+                for refresh in result.resource_refreshes:
+                    await self._resource_service.refresh_after_commit(refresh)
+                return result.response
         except ConversationRouteLockUnavailable as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -174,7 +208,7 @@ class ContextService:
         self,
         turn_id: str,
         request: ContextRouteRequest,
-    ) -> list[ContextChain]:
+    ) -> list[_LoadedContextChain]:
         with self._uow_factory() as uow:
             uow.context.create_turn(
                 ConversationTurnModel(
@@ -189,11 +223,15 @@ class ContextService:
                 request.conversation_id
             )
             chains = [
-                build_context_chain(
-                    chain,
-                    full_assistant_turn_count=(
-                        self._full_assistant_turn_count
+                _LoadedContextChain(
+                    chain=build_context_chain(
+                        chain,
+                        resource_queue=self._resource_service.empty_queue(),
+                        full_assistant_turn_count=(
+                            self._full_assistant_turn_count
+                        ),
                     ),
+                    resource_version=chain.resource_version,
                 )
                 for chain in chain_models
             ]
@@ -280,7 +318,7 @@ class ContextService:
         turn_id: str,
         conversation_id: str,
         request: CompleteContextTurnRequest,
-    ) -> CompleteContextTurnResponse:
+    ) -> _CompleteTurnTransactionResult:
         with self._uow_factory() as uow:
             turn = uow.context.get_turn_for_update(turn_id)
             if turn is None:
@@ -294,11 +332,14 @@ class ContextService:
                     detail="Context Turn 会话归属已变化",
                 )
             if turn.status == ContextTurnStatus.COMPLETED.value:
-                return CompleteContextTurnResponse(
-                    turn=ConversationTurn.model_validate(turn),
-                    linked_chain_ids=(
-                        uow.context.list_linked_chain_ids(turn_id)
+                return _CompleteTurnTransactionResult(
+                    response=CompleteContextTurnResponse(
+                        turn=ConversationTurn.model_validate(turn),
+                        linked_chain_ids=(
+                            uow.context.list_linked_chain_ids(turn_id)
+                        ),
                     ),
+                    resource_refreshes=[],
                 )
             if turn.status != ContextTurnStatus.ROUTED.value:
                 raise HTTPException(
@@ -360,17 +401,12 @@ class ContextService:
                         status_code=409,
                         detail="预分配的 Context Chain ID 已存在",
                     )
-                new_update = update_map.get(new_chain_id)
                 new_chain = uow.context.create_chain(
                     ContextChainModel(
                         chain_id=new_chain_id,
                         conversation_id=conversation_id,
-                        resources=(
-                            new_update.resources.model_dump()
-                            if new_update is not None
-                            and new_update.resources is not None
-                            else ContextResources().model_dump()
-                        ),
+                        resources={},
+                        resource_version=0,
                         last_active_at=now,
                         archived=False,
                     )
@@ -388,9 +424,23 @@ class ContextService:
                 status=ContextTurnStatus.COMPLETED.value,
             )
 
+            resource_refreshes: list[ContextResourceQueueRefresh] = []
             for chain_id in target_chain_ids:
                 chain = chain_map[chain_id]
                 update = update_map.get(chain_id)
+                related_resource_refs = (
+                    list(
+                        dict.fromkeys(
+                            [
+                                resource.resource_key
+                                for resource in update.related_resources
+                            ]
+                            + list(update.removed_resource_keys)
+                        )
+                    )
+                    if update is not None
+                    else []
+                )
                 uow.context.create_node(
                     ContextChainNodeModel(
                         node_id=_new_id("node"),
@@ -402,33 +452,32 @@ class ContextService:
                             if update is not None
                             else []
                         ),
-                        related_resource_refs=(
-                            list(
-                                dict.fromkeys(
-                                    update.related_resource_refs
-                                )
-                            )
-                            if update is not None
-                            else []
-                        ),
+                        related_resource_refs=related_resource_refs,
                     )
                 )
-                resources = (
-                    update.resources.model_dump()
-                    if update is not None
-                    and update.resources is not None
-                    else None
+                resource_refresh = (
+                    self._resource_service.apply_in_transaction(
+                        repository=uow.context,
+                        chain=chain,
+                        update=update,
+                        turn_id=turn_id,
+                        now=now,
+                    )
                 )
+                if resource_refresh is not None:
+                    resource_refreshes.append(resource_refresh)
                 uow.context.update_chain_activity(
                     chain,
                     last_active_at=now,
-                    resources=resources,
                 )
 
             uow.commit()
-            return CompleteContextTurnResponse(
-                turn=ConversationTurn.model_validate(turn),
-                linked_chain_ids=target_chain_ids,
+            return _CompleteTurnTransactionResult(
+                response=CompleteContextTurnResponse(
+                    turn=ConversationTurn.model_validate(turn),
+                    linked_chain_ids=target_chain_ids,
+                ),
+                resource_refreshes=resource_refreshes,
             )
 
     @staticmethod
@@ -461,6 +510,39 @@ class ContextService:
                 raise HTTPException(
                     status_code=400,
                     detail=f"链关联了 Turn 中不存在的 Task: {unknown}",
+                )
+
+            resource_keys = [
+                resource.resource_key
+                for resource in update.related_resources
+            ]
+            if len(resource_keys) != len(set(resource_keys)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"链包含重复资源: {update.chain_id}",
+                )
+
+            removed_keys = list(update.removed_resource_keys)
+            if len(removed_keys) != len(set(removed_keys)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"链包含重复移除资源: {update.chain_id}",
+                )
+            for resource_key in removed_keys:
+                try:
+                    split_resource_key(resource_key)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=str(exc),
+                    ) from exc
+
+            conflicts = set(resource_keys) & set(removed_keys)
+            if conflicts:
+                conflict = ", ".join(sorted(conflicts))
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"资源不能在同一轮同时刷新和移除: {conflict}",
                 )
             update_map[update.chain_id] = update
 

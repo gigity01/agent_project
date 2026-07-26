@@ -7,4 +7,6 @@ from app.models.child_chunk import ChildChunk
 from app.models.conversation_turn import ConversationTurn
 from app.models.context_chain import ContextChain
 from app.models.context_chain_node import ContextChainNode
+from app.models.context_chain_resource import ContextChainResource
+from app.models.context_chain_resource_event import ContextChainResourceEvent
 from app.models.context_route_record import ContextRouteRecord
