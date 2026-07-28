@@ -11,10 +11,12 @@ from app.agents.deepseek_provider import DeepSeekModelProvider
 from app.schemas.context import (
     ContextAgentInput,
     ContextRouteDecision,
+    ContextRouteMode,
 )
 
 
 CONTEXT_ROUTE_TOOL_NAME = "submit_context_route"
+DEFAULT_CONTEXT_AGENT_OUTPUT_ATTEMPTS = 2
 
 CONTEXT_AGENT_INSTRUCTIONS = """
 你是上下文管理和消息路由 Agent。
@@ -131,75 +133,142 @@ def build_context_route_tool_schema() -> dict[str, Any]:
     return normalized
 
 
+def _new_chain_decision_without_model() -> ContextRouteDecision:
+    """没有候选链时直接返回确定性结果，避免无意义模型调用。"""
+    return ContextRouteDecision(
+        selected_chain_ids=[],
+        create_new_chain=True,
+        route_mode=ContextRouteMode.NEW_CHAIN,
+        reason_summary="当前会话没有可关联的已有上下文链。",
+    )
+
+
 class ContextAgentRouter:
     """通过 DeepSeek strict tool call 返回结构化路由决定。"""
 
-    def __init__(self, provider: DeepSeekModelProvider) -> None:
+    def __init__(
+        self,
+        provider: DeepSeekModelProvider,
+        *,
+        max_output_attempts: int = DEFAULT_CONTEXT_AGENT_OUTPUT_ATTEMPTS,
+    ) -> None:
+        if max_output_attempts < 1:
+            raise ValueError("max_output_attempts must be at least 1")
         self._client = provider.strict_tool_client
         self._model_name = provider.model_name
         self._tool_schema = build_context_route_tool_schema()
+        self._max_output_attempts = max_output_attempts
 
     async def route(
         self,
         agent_input: ContextAgentInput,
     ) -> ContextRouteDecision:
-        response = await self._client.chat.completions.create(
-            model=self._model_name,
-            messages=[
-                {
-                    "role": "system",
-                    "content": CONTEXT_AGENT_INSTRUCTIONS,
-                },
-                {
-                    "role": "user",
-                    "content": agent_input.model_dump_json(indent=2),
-                },
-            ],
-            tools=[
-                {
+        """返回结构化路由结果；没有候选链时不调用模型。"""
+        if not agent_input.chains:
+            return _new_chain_decision_without_model()
+
+        last_error: ContextAgentOutputError | None = None
+        for attempt in range(self._max_output_attempts):
+            response = await self._client.chat.completions.create(
+                model=self._model_name,
+                messages=self._build_messages(
+                    agent_input,
+                    retry=attempt > 0,
+                ),
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": CONTEXT_ROUTE_TOOL_NAME,
+                            "description": "提交唯一的 Context 路由决定。",
+                            "strict": True,
+                            "parameters": self._tool_schema,
+                        },
+                    }
+                ],
+                tool_choice={
                     "type": "function",
                     "function": {
                         "name": CONTEXT_ROUTE_TOOL_NAME,
-                        "description": "提交唯一的 Context 路由决定。",
-                        "strict": True,
-                        "parameters": self._tool_schema,
                     },
-                }
-            ],
-            tool_choice={
-                "type": "function",
-                "function": {
-                    "name": CONTEXT_ROUTE_TOOL_NAME,
                 },
-            },
-            parallel_tool_calls=False,
-            temperature=0,
-            max_tokens=512,
-            extra_body={
-                "thinking": {
-                    "type": "disabled",
-                }
-            },
-        )
+                parallel_tool_calls=False,
+                temperature=0,
+                max_tokens=512,
+                extra_body={
+                    "thinking": {
+                        "type": "disabled",
+                    }
+                },
+            )
 
-        message = response.choices[0].message
-        tool_calls = message.tool_calls or []
+            try:
+                return self._parse_response(response)
+            except ContextAgentOutputError as exc:
+                last_error = exc
+
+        raise ContextAgentOutputError(
+            "Context Agent 连续返回非法 strict tool 响应"
+        ) from last_error
+
+    @staticmethod
+    def _build_messages(
+        agent_input: ContextAgentInput,
+        *,
+        retry: bool,
+    ) -> list[dict[str, str]]:
+        user_content = agent_input.model_dump_json(indent=2)
+        if retry:
+            user_content = (
+                "上一次响应未形成唯一且合法的 submit_context_route "
+                "调用。请重新判断，并且只能调用该工具。\n\n"
+                f"{user_content}"
+            )
+        return [
+            {
+                "role": "system",
+                "content": CONTEXT_AGENT_INSTRUCTIONS,
+            },
+            {
+                "role": "user",
+                "content": user_content,
+            },
+        ]
+
+    @staticmethod
+    def _parse_response(response: Any) -> ContextRouteDecision:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise ContextAgentOutputError("Context Agent 没有返回 choice")
+
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            raise ContextAgentOutputError("Context Agent choice 缺少 message")
+
+        tool_calls = getattr(message, "tool_calls", None) or []
         if len(tool_calls) != 1:
             raise ContextAgentOutputError(
                 "Context Agent 必须且只能返回一个 Tool Call"
             )
 
         tool_call = tool_calls[0]
-        if tool_call.function.name != CONTEXT_ROUTE_TOOL_NAME:
+        function = getattr(tool_call, "function", None)
+        if function is None:
+            raise ContextAgentOutputError("Context Agent Tool Call 缺少 function")
+        if function.name != CONTEXT_ROUTE_TOOL_NAME:
             raise ContextAgentOutputError(
                 "Context Agent 返回了非预期 Tool: "
-                f"{tool_call.function.name}"
+                f"{function.name}"
+            )
+
+        arguments = getattr(function, "arguments", None)
+        if not isinstance(arguments, str) or not arguments.strip():
+            raise ContextAgentOutputError(
+                "Context Agent Tool Call 缺少 arguments"
             )
 
         try:
-            return ContextRouteDecision.model_validate_json(
-                tool_call.function.arguments
-            )
+            return ContextRouteDecision.model_validate_json(arguments)
         except ValidationError as exc:
             raise ContextAgentOutputError(
                 "Context Agent Tool 参数不符合路由契约"
