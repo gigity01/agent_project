@@ -1,4 +1,4 @@
-"""OpenAI Agents SDK 的 DeepSeek 模型 Provider。"""
+"""OpenAI Agents SDK 与 DeepSeek 专用结构化输出客户端。"""
 
 from __future__ import annotations
 
@@ -11,38 +11,53 @@ from agents import (
 )
 from openai import AsyncOpenAI
 
-from app.app_config.settings import (
-    DEEPSEEK_API_KEY,
-    DEEPSEEK_BASE_URL,
-    DEEPSEEK_MAX_RETRIES,
-    DEEPSEEK_MODEL_NAME,
-    DEEPSEEK_TIMEOUT_SECONDS,
-)
+from app.app_config import settings
+
+
+def _build_strict_tool_base_url(base_url: str) -> str:
+    """将 DeepSeek 普通端点转换为 strict tool beta 端点。"""
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/beta"):
+        return normalized
+    if normalized.endswith("/v1"):
+        normalized = normalized[:-3]
+    return f"{normalized}/beta"
 
 
 @dataclass
 class DeepSeekModelProvider:
-    """持有 DeepSeek 客户端、模型适配器与默认模型参数。"""
+    """持有通用 Agents SDK 客户端和 Context strict tool 客户端。"""
 
     client: AsyncOpenAI
+    strict_tool_client: AsyncOpenAI
     model: OpenAIChatCompletionsModel
+    model_name: str
     model_settings: ModelSettings
 
     @classmethod
     def create(cls) -> "DeepSeekModelProvider":
-        """创建使用 DeepSeek Chat Completions 的模型 Provider。"""
-        if not DEEPSEEK_API_KEY:
+        """创建通用模型适配器及 DeepSeek strict tool 专用客户端。"""
+        if not settings.DEEPSEEK_API_KEY:
             raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
 
+        client_options = {
+            "api_key": settings.DEEPSEEK_API_KEY,
+            "timeout": settings.DEEPSEEK_TIMEOUT_SECONDS,
+            "max_retries": settings.DEEPSEEK_MAX_RETRIES,
+        }
         client = AsyncOpenAI(
-            api_key=DEEPSEEK_API_KEY,
-            base_url=DEEPSEEK_BASE_URL,
-            timeout=DEEPSEEK_TIMEOUT_SECONDS,
-            max_retries=DEEPSEEK_MAX_RETRIES,
+            base_url=settings.DEEPSEEK_BASE_URL,
+            **client_options,
+        )
+        strict_tool_client = AsyncOpenAI(
+            base_url=_build_strict_tool_base_url(
+                settings.DEEPSEEK_BASE_URL
+            ),
+            **client_options,
         )
 
         model = OpenAIChatCompletionsModel(
-            model=DEEPSEEK_MODEL_NAME,
+            model=settings.DEEPSEEK_MODEL_NAME,
             openai_client=client,
             strict_feature_validation=True,
             buffer_streamed_tool_calls=True,
@@ -60,19 +75,22 @@ class DeepSeekModelProvider:
 
         return cls(
             client=client,
+            strict_tool_client=strict_tool_client,
             model=model,
+            model_name=settings.DEEPSEEK_MODEL_NAME,
             model_settings=model_settings,
         )
 
     async def aclose(self) -> None:
-        """释放底层异步 HTTP 连接池。"""
+        """释放两个异步 HTTP 客户端持有的连接池。"""
         await self.client.close()
+        await self.strict_tool_client.close()
 
 
 def build_deepseek_run_config(
     provider: DeepSeekModelProvider,
 ) -> RunConfig:
-    """构建一次 Agent 执行使用的 DeepSeek 模型与追踪策略。"""
+    """构建普通 Agents SDK Agent 使用的 DeepSeek 运行配置。"""
     return RunConfig(
         model=provider.model,
         model_settings=provider.model_settings,
