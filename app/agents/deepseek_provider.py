@@ -11,7 +11,13 @@ from agents import (
 )
 from openai import AsyncOpenAI
 
-from app.app_config import settings
+from app.app_config.settings import (
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_MAX_RETRIES,
+    DEEPSEEK_MODEL_NAME,
+    DEEPSEEK_TIMEOUT_SECONDS,
+)
 
 
 def _build_strict_tool_base_url(base_url: str) -> str:
@@ -37,27 +43,25 @@ class DeepSeekModelProvider:
     @classmethod
     def create(cls) -> "DeepSeekModelProvider":
         """创建通用模型适配器及 DeepSeek strict tool 专用客户端。"""
-        if not settings.DEEPSEEK_API_KEY:
+        if not DEEPSEEK_API_KEY:
             raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
 
         client_options = {
-            "api_key": settings.DEEPSEEK_API_KEY,
-            "timeout": settings.DEEPSEEK_TIMEOUT_SECONDS,
-            "max_retries": settings.DEEPSEEK_MAX_RETRIES,
+            "api_key": DEEPSEEK_API_KEY,
+            "timeout": DEEPSEEK_TIMEOUT_SECONDS,
+            "max_retries": DEEPSEEK_MAX_RETRIES,
         }
         client = AsyncOpenAI(
-            base_url=settings.DEEPSEEK_BASE_URL,
+            base_url=DEEPSEEK_BASE_URL,
             **client_options,
         )
         strict_tool_client = AsyncOpenAI(
-            base_url=_build_strict_tool_base_url(
-                settings.DEEPSEEK_BASE_URL
-            ),
+            base_url=_build_strict_tool_base_url(DEEPSEEK_BASE_URL),
             **client_options,
         )
 
         model = OpenAIChatCompletionsModel(
-            model=settings.DEEPSEEK_MODEL_NAME,
+            model=DEEPSEEK_MODEL_NAME,
             openai_client=client,
             strict_feature_validation=True,
             buffer_streamed_tool_calls=True,
@@ -77,7 +81,7 @@ class DeepSeekModelProvider:
             client=client,
             strict_tool_client=strict_tool_client,
             model=model,
-            model_name=settings.DEEPSEEK_MODEL_NAME,
+            model_name=DEEPSEEK_MODEL_NAME,
             model_settings=model_settings,
         )
 
