@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ContextResourceInput(BaseModel):
@@ -112,8 +112,10 @@ class ContextRouteMode(str, Enum):
 class ContextRouteDecision(BaseModel):
     """Context Agent 唯一允许返回的结构化结果。"""
 
-    selected_chain_ids: list[str] = Field(default_factory=list)
-    create_new_chain: bool = False
+    model_config = ConfigDict(extra="forbid")
+
+    selected_chain_ids: list[str]
+    create_new_chain: bool
     route_mode: ContextRouteMode
     reason_summary: str = Field(min_length=1, max_length=1000)
 
