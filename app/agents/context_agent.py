@@ -93,16 +93,24 @@ def _resolve_local_schema_refs(
 
 
 def _normalize_strict_tool_schema(value: Any) -> Any:
-    """移除展示元数据，并收紧对象 Schema。"""
+    """转换为 DeepSeek strict tool 当前支持的 JSON Schema 子集。"""
     if isinstance(value, list):
         return [_normalize_strict_tool_schema(item) for item in value]
     if not isinstance(value, dict):
         return value
 
+    unsupported_or_display_only = {
+        "title",
+        "default",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+    }
     normalized = {
         key: _normalize_strict_tool_schema(item)
         for key, item in value.items()
-        if key not in {"title", "default"}
+        if key not in unsupported_or_display_only
     }
     if normalized.get("type") == "object":
         properties = normalized.get("properties", {})
