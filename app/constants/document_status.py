@@ -1,16 +1,5 @@
-"""文档处理生命周期状态。"""
+"""DocumentStatus 的兼容导出。"""
 
-from enum import Enum
+from app.modules.document.domain.enums import DocumentStatus
 
-
-class DocumentStatus(str, Enum):
-    """表示上传、处理、切块和索引流程中的文档阶段。"""
-
-    UPLOADED = "uploaded"
-    PROCESSING = "processing"
-    PROCESSED = "processed"
-    CHUNKING = "chunking"
-    CHUNKED = "chunked"
-    INDEXING = "indexing"
-    INDEXED = "indexed"
-    FAILED = "failed"
+__all__ = ["DocumentStatus"]

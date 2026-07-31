@@ -44,8 +44,8 @@ coverage.xml
 *.db
 *.sqlite
 *.sqlite3
-storage/
-app/storage/
+/storage/
+/app/storage/
 uploads/
 cleaned_files/
 chroma_db/

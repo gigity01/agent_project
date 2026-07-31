@@ -11,7 +11,15 @@ from types import SimpleNamespace
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-REPOSITORY_PATH = ROOT_DIR / "app" / "repositories" / "child_chunk_repository.py"
+REPOSITORY_PATH = (
+    ROOT_DIR
+    / "app"
+    / "modules"
+    / "document"
+    / "infrastructure"
+    / "persistence"
+    / "child_chunk_repository.py"
+)
 
 
 class _Field:
@@ -44,12 +52,15 @@ def _load_repository_module():
     sqlalchemy_module = types.ModuleType("sqlalchemy")
     sqlalchemy_orm_module = types.ModuleType("sqlalchemy.orm")
     sqlalchemy_orm_module.Session = object
-    document_module = types.ModuleType("app.models.child_chunk")
+    model_module_name = (
+        "app.modules.document.infrastructure.persistence.models.child_chunk"
+    )
+    document_module = types.ModuleType(model_module_name)
     document_module.ChildChunk = _ChildChunkModel
     replacements = {
         "sqlalchemy": sqlalchemy_module,
         "sqlalchemy.orm": sqlalchemy_orm_module,
-        "app.models.child_chunk": document_module,
+        model_module_name: document_module,
     }
     originals = {name: sys.modules.get(name) for name in replacements}
     sys.modules.update(replacements)

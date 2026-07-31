@@ -1,13 +1,5 @@
-"""文档业务生命周期状态。"""
+"""DocumentLifecycleStatus 的兼容导出。"""
 
-from enum import Enum
+from app.modules.document.domain.enums import DocumentLifecycleStatus
 
-
-class DocumentLifecycleStatus(str, Enum):
-    """表示文档在业务上是否可用以及失效原因。"""
-
-    SCHEDULED = "scheduled"
-    ACTIVE = "active"
-    EXPIRED = "expired"
-    REPLACED = "replaced"
-    DELETED = "deleted"
+__all__ = ["DocumentLifecycleStatus"]

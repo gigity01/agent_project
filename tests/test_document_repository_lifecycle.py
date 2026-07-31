@@ -14,7 +14,15 @@ from app.constants.document_storage_status import DocumentStorageStatus
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-REPOSITORY_PATH = ROOT_DIR / "app" / "repositories" / "document_repository.py"
+REPOSITORY_PATH = (
+    ROOT_DIR
+    / "app"
+    / "modules"
+    / "document"
+    / "infrastructure"
+    / "persistence"
+    / "document_repository.py"
+)
 
 
 class _Field:
@@ -35,13 +43,16 @@ def _load_repository_module():
     sqlalchemy_module = types.ModuleType("sqlalchemy")
     sqlalchemy_orm_module = types.ModuleType("sqlalchemy.orm")
     sqlalchemy_orm_module.Session = object
-    document_module = types.ModuleType("app.models.document")
+    model_module_name = (
+        "app.modules.document.infrastructure.persistence.models.document"
+    )
+    document_module = types.ModuleType(model_module_name)
     document_module.Document = _DocumentModel
 
     replacements = {
         "sqlalchemy": sqlalchemy_module,
         "sqlalchemy.orm": sqlalchemy_orm_module,
-        "app.models.document": document_module,
+        model_module_name: document_module,
     }
     originals = {name: sys.modules.get(name) for name in replacements}
     sys.modules.update(replacements)

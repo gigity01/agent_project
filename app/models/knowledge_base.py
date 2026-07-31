@@ -1,30 +1,7 @@
-"""知识库主表的 SQLAlchemy ORM 定义。"""
+"""文档模块 KnowledgeBase ORM 的兼容导出。"""
 
-from sqlalchemy import BigInteger, String, DateTime, Text
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql import func
+from app.modules.document.infrastructure.persistence.models.knowledge_base import (
+    KnowledgeBase,
+)
 
-from app.db.session import Base
-
-
-class KnowledgeBase(Base):
-    """保存知识库的业务标识、检索范围和向量 collection 配置。"""
-    __tablename__ = "knowledge_bases"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    kb_code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-
-    domain_code: Mapped[str] = mapped_column(String(100), nullable=False)
-    business_scene: Mapped[str | None] = mapped_column(String(100), nullable=True)
-
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
-    visibility: Mapped[str] = mapped_column(String(30), nullable=False, default="external")
-
-    owner_actor_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    embedding_model: Mapped[str] = mapped_column(String(100), nullable=False)
-    vector_collection: Mapped[str] = mapped_column(String(100), nullable=False, default="knowledge_chunks")
-
-    created_at: Mapped[DateTime] = mapped_column(DateTime, nullable=False, server_default=func.now())
-    updated_at: Mapped[DateTime] = mapped_column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+__all__ = ["KnowledgeBase"]

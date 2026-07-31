@@ -1,115 +1,13 @@
-"""为复杂文件生成可交给本地处理器的二级 Markdown 源。"""
+"""文档源准备应用用例的兼容导出。"""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from uuid import uuid4
-
-from app.app_config.settings import SECONDARY_TEXT_STORAGE_DIR
-from app.app_utils.file_security import calculate_file_hash
-from app.integrations.document_converter.docling_client import DoclingClient
-from app.policies.document_source_policy import (
-    normalize_source_type,
-    requires_external_processing,
+from app.modules.document.application.use_cases.prepare_document_source import (
+    PendingArtifact,
+    PreparedProcessSource,
+    prepare_process_source,
 )
 
-if TYPE_CHECKING:
-    from app.modules.document.application.use_cases.process_document import (
-        ProcessingContext,
-    )
-
-
-@dataclass(frozen=True)
-class PendingArtifact:
-    """事务外生成、等待在完成事务中登记的派生产物元数据。"""
-
-    artifact_type: str
-    artifact_role: str
-    artifact_format: str
-    artifact_uri: str
-    artifact_hash: str
-    provider: str | None
-    processor: str | None
-    file_size: int
-    char_count: int
-    line_count: int
-    metadata: dict[str, Any] | None
-
-
-@dataclass(frozen=True)
-class PreparedProcessSource:
-    """供处理器使用的标准化输入文件及其待登记产物信息。"""
-
-    source_path: Path
-    source_type: str
-    generated_secondary_text: bool = False
-    secondary_artifact: PendingArtifact | None = None
-
-    def cleanup_generated_file(self) -> None:
-        """仅删除本次转换生成、尚未登记成功的二级文本文件。"""
-        if self.generated_secondary_text:
-            try:
-                self.source_path.unlink(missing_ok=True)
-            except OSError:
-                # 文件补偿失败不能改变数据库状态机的处理结果。
-                pass
-
-
-def prepare_process_source(
-    document: ProcessingContext,
-) -> PreparedProcessSource:
-    """在事务外转换复杂格式并返回内存产物，不访问数据库。"""
-    source_type = normalize_source_type(document.source_type)
-
-    # 本地可处理格式不生成二级产物，保留原件作为处理输入。
-    if not requires_external_processing(source_type):
-        return PreparedProcessSource(
-            source_path=document.source_path,
-            source_type=source_type,
-        )
-
-    markdown_result = DoclingClient().convert_to_markdown(
-        source_path=document.source_path,
-        source_type=source_type,
-    )
-    SECONDARY_TEXT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-
-    artifact_code = _generate_artifact_code(document.doc_code)
-    secondary_path = SECONDARY_TEXT_STORAGE_DIR / f"{artifact_code}.md"
-
-    try:
-        secondary_path.write_text(markdown_result.markdown, encoding="utf-8")
-        pending_artifact = PendingArtifact(
-            artifact_type="secondary_text",
-            artifact_role="process_input",
-            artifact_format="md",
-            artifact_uri=str(secondary_path),
-            artifact_hash=calculate_file_hash(secondary_path),
-            provider=markdown_result.provider,
-            processor=DoclingClient.__name__,
-            file_size=secondary_path.stat().st_size,
-            char_count=len(markdown_result.markdown),
-            line_count=len(markdown_result.markdown.splitlines()),
-            metadata=markdown_result.metadata,
-        )
-    except Exception:
-        try:
-            secondary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
-    return PreparedProcessSource(
-        source_path=secondary_path,
-        source_type="md",
-        generated_secondary_text=True,
-        secondary_artifact=pending_artifact,
-    )
-
-
-def _generate_artifact_code(doc_code: str) -> str:
-    """生成不超过 Artifact 字段长度的唯一业务编号。"""
-    suffix = f"_ART_DOCLING_MD_{uuid4().hex[:12].upper()}"
-    return f"{doc_code[:100 - len(suffix)]}{suffix}"
+__all__ = [
+    "PendingArtifact",
+    "PreparedProcessSource",
+    "prepare_process_source",
+]
