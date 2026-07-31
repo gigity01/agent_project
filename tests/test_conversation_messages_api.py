@@ -10,9 +10,7 @@ from fastapi import FastAPI
 
 from app.api.conversations import router
 from app.api.dependencies import (
-    get_context_agent_router,
-    get_context_resource_service,
-    get_context_route_lock_manager,
+    get_context_routing_service,
 )
 from app.schemas.context import (
     ContextRouteDecision,
@@ -25,28 +23,15 @@ from app.schemas.context import (
 class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.app = FastAPI()
-        self.app.include_router(router)
-        self.agent_router = object()
-        self.route_lock_manager = object()
-        self.resource_service = object()
+        self.app.include_router(router, prefix="/api")
+        self.context_service = mock.Mock()
+        self.context_service.route_context = mock.AsyncMock()
 
-        async def get_agent_router():
-            return self.agent_router
+        async def get_service():
+            return self.context_service
 
-        async def get_route_lock_manager():
-            return self.route_lock_manager
-
-        async def get_resource_service():
-            return self.resource_service
-
-        self.app.dependency_overrides[get_context_agent_router] = (
-            get_agent_router
-        )
-        self.app.dependency_overrides[get_context_route_lock_manager] = (
-            get_route_lock_manager
-        )
-        self.app.dependency_overrides[get_context_resource_service] = (
-            get_resource_service
+        self.app.dependency_overrides[get_context_routing_service] = (
+            get_service
         )
 
     async def _post(self, path: str, *, json: dict[str, str]):
@@ -71,29 +56,18 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        with mock.patch(
-            "app.api.conversations.ContextService"
-        ) as service_class:
-            service = service_class.return_value
-            service.route_context = mock.AsyncMock(
-                return_value=routed_package
-            )
+        self.context_service.route_context.return_value = routed_package
 
-            response = await self._post(
-                "/api/conversations/conv_test_001/messages",
-                json={
-                    "message": "继续完善之前的文档处理日志方案",
-                },
-            )
+        response = await self._post(
+            "/api/conversations/conv_test_001/messages",
+            json={
+                "message": "继续完善之前的文档处理日志方案",
+            },
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), routed_package.model_dump(mode="json"))
-        service_class.assert_called_once_with(
-            agent_router=self.agent_router,
-            route_lock_manager=self.route_lock_manager,
-            resource_service=self.resource_service,
-        )
-        service.route_context.assert_awaited_once_with(
+        self.context_service.route_context.assert_awaited_once_with(
             ContextRouteRequest(
                 conversation_id="conv_test_001",
                 user_input="继续完善之前的文档处理日志方案",

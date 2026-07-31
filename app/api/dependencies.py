@@ -4,15 +4,27 @@ from fastapi import Depends, Request
 
 from app.agents.context_agent import ContextAgentRouter
 from app.agents.deepseek_provider import DeepSeekModelProvider
+from app.bootstrap.container import AppContainer
 from app.integrations.conversation_route_lock import (
     ConversationRouteLockManager,
 )
 from app.services.context_resource_service import ContextResourceService
+from app.services.context_service import ContextService
 
 
-def get_deepseek_provider(request: Request) -> DeepSeekModelProvider:
+def get_container(request: Request) -> AppContainer:
+    """获取应用生命周期内装配完成的统一容器。"""
+    container = getattr(request.app.state, "container", None)
+    if not isinstance(container, AppContainer):
+        raise RuntimeError("应用容器尚未初始化")
+    return container
+
+
+def get_deepseek_provider(
+    container: AppContainer = Depends(get_container),
+) -> DeepSeekModelProvider:
     """获取应用生命周期内共享的 DeepSeek 模型 Provider。"""
-    provider = getattr(request.app.state, "deepseek_provider", None)
+    provider = container.deepseek_provider
 
     if not isinstance(provider, DeepSeekModelProvider):
         raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
@@ -21,35 +33,40 @@ def get_deepseek_provider(request: Request) -> DeepSeekModelProvider:
 
 
 def get_context_agent_router(
-    provider: DeepSeekModelProvider = Depends(get_deepseek_provider),
+    container: AppContainer = Depends(get_container),
 ) -> ContextAgentRouter:
-    """基于应用共享 Provider 构造无状态 Context Agent 路由器。"""
-    return ContextAgentRouter(provider)
+    """获取应用容器中的 Context Agent Router。"""
+    router = container.context_agent_router
+    if not isinstance(router, ContextAgentRouter):
+        raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
+    return router
 
 
 def get_context_route_lock_manager(
-    request: Request,
+    container: AppContainer = Depends(get_container),
 ) -> ConversationRouteLockManager:
     """获取应用生命周期内共享的 Redis Conversation 路由锁管理器。"""
-    manager = getattr(
-        request.app.state,
-        "context_route_lock_manager",
-        None,
-    )
-    if not isinstance(manager, ConversationRouteLockManager):
-        raise RuntimeError("Context 路由锁客户端尚未初始化")
-    return manager
+    return container.context_route_lock_manager
 
 
 def get_context_resource_service(
-    request: Request,
+    container: AppContainer = Depends(get_container),
 ) -> ContextResourceService:
     """获取应用生命周期内共享的 Context 热资源服务。"""
-    service = getattr(
-        request.app.state,
-        "context_resource_service",
-        None,
-    )
-    if not isinstance(service, ContextResourceService):
-        raise RuntimeError("Context 热资源服务尚未初始化")
-    return service
+    return container.context_resource_service
+
+
+def get_context_service(
+    container: AppContainer = Depends(get_container),
+) -> ContextService:
+    """获取应用生命周期内共享的 Context Service。"""
+    return container.context_service
+
+
+def get_context_routing_service(
+    container: AppContainer = Depends(get_container),
+) -> ContextService:
+    """获取已配置 Context Router 的 Context Service。"""
+    if container.context_agent_router is None:
+        raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
+    return container.context_service

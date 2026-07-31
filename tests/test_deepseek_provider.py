@@ -152,6 +152,9 @@ from main_config import environment
 environment.load_local_env_file = lambda project_root: None
 
 from app import main as app_main
+import importlib
+
+lifespan_module = importlib.import_module("app.bootstrap.lifespan")
 
 class FakeRedis:
     def __init__(self):
@@ -166,15 +169,17 @@ class FakeRedis:
         self.aclose_count += 1
 
 redis_client = FakeRedis()
-app_main.create_redis_client = lambda *args, **kwargs: redis_client
+lifespan_module.create_redis_client = lambda *args, **kwargs: redis_client
 
 async def check() -> None:
-    async with app_main.lifespan(app_main.app):
+    async with lifespan_module.lifespan(app_main.app):
         assert redis_client.ping_count == 1
-        assert app_main.app.state.deepseek_provider is None
-        assert app_main.app.state.redis_client is redis_client
-        assert app_main.app.state.context_route_lock_manager is not None
-        assert app_main.app.state.context_resource_service is not None
+        container = app_main.app.state.container
+        assert container.deepseek_provider is None
+        assert container.redis_client is redis_client
+        assert container.context_route_lock_manager is not None
+        assert container.context_resource_service is not None
+        assert container.context_service is not None
     assert redis_client.aclose_count == 1
 
 asyncio.run(check())
@@ -213,6 +218,9 @@ from main_config import environment
 environment.load_local_env_file = lambda project_root: None
 
 from app import main as app_main
+import importlib
+
+lifespan_module = importlib.import_module("app.bootstrap.lifespan")
 
 class FailingRedis:
     def __init__(self):
@@ -225,11 +233,11 @@ class FailingRedis:
         self.aclose_count += 1
 
 redis_client = FailingRedis()
-app_main.create_redis_client = lambda *args, **kwargs: redis_client
+lifespan_module.create_redis_client = lambda *args, **kwargs: redis_client
 
 async def check() -> None:
     try:
-        async with app_main.lifespan(app_main.app):
+        async with lifespan_module.lifespan(app_main.app):
             raise AssertionError("Redis PING 失败时不应进入 lifespan")
     except ConnectionError:
         pass
