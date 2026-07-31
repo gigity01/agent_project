@@ -12,7 +12,15 @@ from types import SimpleNamespace
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-SERVICE_PATH = ROOT_DIR / "app" / "services" / "document_upload_service.py"
+SERVICE_PATH = (
+    ROOT_DIR
+    / "app"
+    / "modules"
+    / "document"
+    / "application"
+    / "use_cases"
+    / "upload_document.py"
+)
 
 
 class _HTTPException(Exception):

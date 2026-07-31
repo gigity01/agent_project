@@ -16,7 +16,9 @@ from app.policies.document_source_policy import (
 )
 
 if TYPE_CHECKING:
-    from app.services.document_processing_service import ProcessingContext
+    from app.modules.document.application.use_cases.process_document import (
+        ProcessingContext,
+    )
 
 
 @dataclass(frozen=True)

@@ -1,11 +1,6 @@
-"""文档向量索引接口的响应模型。"""
+"""文档向量索引 HTTP Schema 的兼容导出。"""
 
-from pydantic import BaseModel
+from app.modules.document.presentation.schemas import VectorIndexingResponse
 
-class VectorIndexingResponse(BaseModel):
-    """一次向量索引任务的处理数量和最终状态。"""
-    document_id: int
-    total_chunks: int
-    indexed_chunks: int
-    failed_chunks: int
-    status: str
+
+__all__ = ["VectorIndexingResponse"]

@@ -18,7 +18,15 @@ from app.constants.document_storage_status import DocumentStorageStatus
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-SERVICE_PATH = ROOT_DIR / "app" / "services" / "document_processing_service.py"
+SERVICE_PATH = (
+    ROOT_DIR
+    / "app"
+    / "modules"
+    / "document"
+    / "application"
+    / "use_cases"
+    / "process_document.py"
+)
 
 
 class _HTTPException(Exception):
