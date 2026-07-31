@@ -15,7 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from app.db.session import Base
+from app.infrastructure.database.base import Base
 
 
 class ContextRouteRecord(Base):

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.modules.document.infrastructure.persistence.models.document_artifact import (
     DocumentArtifact,
 )
-from app.schemas.document_artifact import DocumentArtifactCreate
+from app.modules.document.application.dto import DocumentArtifactCreate
 
 
 class DocumentArtifactRepository:

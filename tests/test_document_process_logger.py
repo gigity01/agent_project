@@ -3,7 +3,7 @@
 import unittest
 from types import SimpleNamespace
 
-from core.observability.document_process_logger import DocumentProcessLogger
+from app.shared.observability.document_process_logger import DocumentProcessLogger
 
 
 class _MemoryWriter:

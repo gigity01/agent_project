@@ -10,9 +10,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_status import DocumentStatus
-from app.constants.document_storage_status import DocumentStorageStatus
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -43,15 +45,25 @@ class _DocumentResponse:
 def _load_service_module():
     """使用轻量替身加载 Service，避免测试依赖未声明的第三方包。"""
     replacements = {
-        "fastapi": types.ModuleType("fastapi"),
-        "app.db.uow": types.ModuleType("app.db.uow"),
-        "app.models.document": types.ModuleType("app.models.document"),
-        "app.schemas.document": types.ModuleType("app.schemas.document"),
+        "app.modules.document.application.dto": types.ModuleType(
+            "app.modules.document.application.dto"
+        ),
+        "app.modules.document.application.errors": types.ModuleType(
+            "app.modules.document.application.errors"
+        ),
+        "app.modules.document.application.ports": types.ModuleType(
+            "app.modules.document.application.ports"
+        ),
     }
-    replacements["fastapi"].HTTPException = _HTTPException
-    replacements["app.db.uow"].SQLAlchemyUnitOfWork = object
-    replacements["app.models.document"].Document = SimpleNamespace
-    replacements["app.schemas.document"].DocumentResponse = _DocumentResponse
+    replacements[
+        "app.modules.document.application.dto"
+    ].DocumentResult = _DocumentResponse
+    replacements[
+        "app.modules.document.application.errors"
+    ].DocumentApplicationError = _HTTPException
+    replacements[
+        "app.modules.document.application.ports"
+    ].create_uow = object
 
     originals = {name: sys.modules.get(name) for name in replacements}
     sys.modules.update(replacements)

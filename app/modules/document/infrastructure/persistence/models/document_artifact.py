@@ -12,7 +12,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.db.session import Base
+from app.infrastructure.database.base import Base
 
 
 class DocumentArtifact(Base):

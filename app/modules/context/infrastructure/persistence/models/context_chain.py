@@ -7,7 +7,7 @@ from sqlalchemy import Boolean, DateTime, Index, Integer, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from app.db.session import Base
+from app.infrastructure.database.base import Base
 
 
 class ContextChain(Base):

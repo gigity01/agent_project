@@ -4,10 +4,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
-from fastapi import HTTPException, UploadFile
-from sqlalchemy.exc import IntegrityError
 
-from app.app_config.settings import (
+from app.config.settings import (
     RAW_LOCAL_STORAGE_DIR,
     RAW_EXTERNAL_STORAGE_DIR,
     MAX_UPLOAD_FILE_SIZE,
@@ -17,21 +15,31 @@ from app.app_config.settings import (
     DOCUMENT_CODE_PREFIX,
     DOCUMENT_CODE_RANDOM_LENGTH,
 )
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_storage_status import DocumentStorageStatus
-from app.db.uow import SQLAlchemyUnitOfWork
-from app.models.document import Document
-from app.policies.document_source_policy import (
+from app.modules.document.application.dto import DocumentResult
+from app.modules.document.application.errors import (
+    DocumentApplicationError as HTTPException,
+)
+from app.modules.document.application.ports import (
+    UploadFilePort,
+    UploadMetadataPort,
+    calculate_file_hash,
+    cleanup_file,
+    create_document as Document,
+    create_uow as SQLAlchemyUnitOfWork,
+    get_safe_extension,
+    is_integrity_error,
+    validate_content_type,
+)
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStorageStatus,
+)
+from app.modules.document.domain.policies import (
     normalize_source_type,
     requires_external_processing,
 )
-from app.schemas.document import DocumentResponse, DocumentUploadFormData
-from core.observability.document_upload_logger import DocumentUploadLogger
-from main_utils.file_cleanup import cleanup_file
-from app.app_utils.file_security import (
-    get_safe_extension,
-    validate_content_type,
-    calculate_file_hash,
+from app.shared.observability.document_upload_logger import (
+    DocumentUploadLogger,
 )
 
 
@@ -40,7 +48,7 @@ DOCUMENT_CONTENT_UNIQUE_CONSTRAINT = "uq_documents_kb_active_content_hash"
 logger = logging.getLogger(__name__)
 
 
-def is_duplicate_content_error(exc: IntegrityError) -> bool:
+def is_duplicate_content_error(exc: BaseException) -> bool:
     """判断完整性错误是否来自知识库内的内容唯一约束。"""
     error_message = str(exc.orig).lower()
     return (
@@ -97,10 +105,10 @@ def get_raw_storage_dir(source_type: str):
 
 
 async def save_uploaded_document(
-    file: UploadFile,
-    meta: DocumentUploadFormData,
+    file: UploadFilePort,
+    meta: UploadMetadataPort,
     created_by_actor_code: str | None = None,
-) -> DocumentResponse:
+) -> DocumentResult:
     """保存上传文件、校验内容去重，并创建 draft 状态文档。
 
     任一步骤失败时会清理已落盘的原始文件，并写入对应审计日志。
@@ -230,12 +238,12 @@ async def save_uploaded_document(
 
             try:
                 created_document = uow.documents.create(document)
-                created_response = DocumentResponse.model_validate(created_document)
+                created_response = DocumentResult.model_validate(created_document)
 
                 # commit 必须是 UoW 内最后一个数据库动作。
                 uow.commit()
-            except IntegrityError as exc:
-                if is_duplicate_content_error(exc):
+            except Exception as exc:
+                if is_integrity_error(exc) and is_duplicate_content_error(exc):
                     raise HTTPException(
                         status_code=409,
                         detail="该知识库中已存在相同有效文件",

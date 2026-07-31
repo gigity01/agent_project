@@ -8,7 +8,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from app.app_config.settings import (
+from app.config.settings import (
     QDRANT_URL,
     QDRANT_COLLECTION_NAME,
     EMBEDDING_VECTOR_SIZE,

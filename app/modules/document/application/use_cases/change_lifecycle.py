@@ -1,15 +1,21 @@
 """文档业务生命周期变更应用用例。"""
 
+from __future__ import annotations
+
 from datetime import datetime
 
-from fastapi import HTTPException
-
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_storage_status import DocumentStorageStatus
-from app.constants.document_status import DocumentStatus
-from app.db.uow import SQLAlchemyUnitOfWork
-from app.models.document import Document
-from app.schemas.document import DocumentResponse
+from app.modules.document.application.dto import DocumentResult
+from app.modules.document.application.errors import (
+    DocumentApplicationError as HTTPException,
+)
+from app.modules.document.application.ports import (
+    create_uow as SQLAlchemyUnitOfWork,
+)
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
 
 
 DEACTIVATION_REASONS = frozenset(
@@ -31,8 +37,8 @@ ACTIVE_LIFECYCLE_STATUSES = frozenset(
 
 
 def _validate_replacement(
-    document: Document,
-    replacement: Document,
+    document,
+    replacement,
 ) -> None:
     """校验替代文档已在同一知识库完成索引并处于业务有效状态。"""
     if replacement.id == document.id:
@@ -82,7 +88,7 @@ def deactivate_document(
     reason: DocumentLifecycleStatus,
     *,
     replaced_by: int | None = None,
-) -> DocumentResponse:
+) -> DocumentResult:
     """在单一事务中失效文档、释放内容 Hash，并标记为等待归档。"""
     if not isinstance(reason, DocumentLifecycleStatus) or reason not in DEACTIVATION_REASONS:
         raise ValueError("不支持的失效原因")
@@ -118,7 +124,7 @@ def deactivate_document(
                     status_code=409,
                     detail="文档已经被其他文档替代",
                 )
-            return DocumentResponse.model_validate(document)
+            return DocumentResult.model_validate(document)
 
         if document.lifecycle_status in INACTIVE_LIFECYCLE_STATUSES:
             raise HTTPException(
@@ -149,7 +155,7 @@ def deactivate_document(
             lifecycle_status=reason.value,
             replaced_by=replaced_by,
         )
-        response = DocumentResponse.model_validate(updated_document)
+        response = DocumentResult.model_validate(updated_document)
         uow.commit()
 
     return response

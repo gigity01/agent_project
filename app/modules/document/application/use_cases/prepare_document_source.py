@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.app_config.settings import SECONDARY_TEXT_STORAGE_DIR
-from app.app_utils.file_security import calculate_file_hash
-from app.integrations.document_converter.docling_client import DoclingClient
-from app.policies.document_source_policy import (
+from app.config.settings import SECONDARY_TEXT_STORAGE_DIR
+from app.modules.document.application.ports import (
+    calculate_file_hash,
+    create_docling_client as DoclingClient,
+)
+from app.modules.document.domain.policies import (
     normalize_source_type,
     requires_external_processing,
 )
@@ -70,7 +72,8 @@ def prepare_process_source(
             source_type=source_type,
         )
 
-    markdown_result = DoclingClient().convert_to_markdown(
+    docling_client = DoclingClient()
+    markdown_result = docling_client.convert_to_markdown(
         source_path=document.source_path,
         source_type=source_type,
     )
@@ -88,7 +91,7 @@ def prepare_process_source(
             artifact_uri=str(secondary_path),
             artifact_hash=calculate_file_hash(secondary_path),
             provider=markdown_result.provider,
-            processor=DoclingClient.__name__,
+            processor=docling_client.__class__.__name__,
             file_size=secondary_path.stat().st_size,
             char_count=len(markdown_result.markdown),
             line_count=len(markdown_result.markdown.splitlines()),

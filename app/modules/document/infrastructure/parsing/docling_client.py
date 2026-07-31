@@ -5,12 +5,12 @@ from typing import Any
 
 import requests
 
-from app.app_config.settings import (
+from app.config.settings import (
     DOCLING_CONVERT_ENDPOINT,
     DOCLING_OUTPUT_TYPE,
     DOCLING_TIMEOUT_SECONDS,
 )
-from app.schemas.markdownconvert import MarkdownConvertResult
+from app.modules.document.domain.models import MarkdownConvertResult
 
 
 class DoclingClient:

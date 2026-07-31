@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from main_config import environment
+from app.config import environment
 
 
 with (
@@ -25,9 +25,9 @@ with (
         },
     ),
 ):
-    from app.constants.context_turn_status import ContextTurnStatus
-    from app.db.session import Base
-    from app.db.uow.sqlalchemy import SQLAlchemyUnitOfWork
+    from app.infrastructure.database.base import Base
+    from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
+    from app.modules.context.domain.enums import ContextTurnStatus
     from app.modules.context.infrastructure.persistence.mapper import (
         SQLAlchemyContextRecordFactory,
         build_context_chain,
@@ -59,7 +59,7 @@ with (
     from app.modules.context.domain.route_policy import (
         validate_route_decision,
     )
-    from app.schemas.context import (
+    from app.modules.context.presentation.schemas import (
         CompleteContextTurnRequest,
         ContextChainTurnUpdate,
         ContextResourceInput,

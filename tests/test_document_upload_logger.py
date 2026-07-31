@@ -3,7 +3,7 @@
 import unittest
 from types import SimpleNamespace
 
-from core.observability.document_upload_logger import DocumentUploadLogger
+from app.shared.observability.document_upload_logger import DocumentUploadLogger
 
 
 class _MemoryWriter:

@@ -5,6 +5,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.modules.document.application.dto import (
+    BuildChunksResult,
+    DocumentResult,
+    IndexVectorsResult,
+    ProcessDocumentResult,
+)
+
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
 
@@ -21,65 +28,25 @@ class DocumentUploadFormData(BaseModel):
     expired_at: datetime | None = None
 
 
-class DocumentResponse(BaseModel):
+class DocumentResponse(DocumentResult):
     """上传成功后返回的完整文档视图。"""
 
-    id: int
-    doc_code: str
-    kb_id: int
-    domain_code: str
-    business_scene: str | None
-    title: str
-    original_filename: str | None
-    file_size: int | None
-    source_type: str
-    source_uri: str
-    cleaned_uri: str | None
-    content_hash: str
-    active_content_hash: str | None
-    lifecycle_status: str
-    storage_status: str
-    version: int
-    status: str
-    replaced_by: int | None
-    risk_level: str | None
-    effective_at: datetime | None
-    expired_at: datetime | None
-    created_by_actor_code: str | None
-    created_at: datetime
-    updated_at: datetime
-    indexed_at: datetime | None
-
-    model_config = {"from_attributes": True}
+    pass
 
 
-class DocumentProcessResponse(BaseModel):
+class DocumentProcessResponse(ProcessDocumentResult):
     """文档清洗或转换完成后的状态视图。"""
 
-    document_id: int
-    doc_code: str
-    source_type: str
-    source_uri: str
-    cleaned_uri: str
-    status: str
+    pass
 
 
-class BuildChunksResponse(BaseModel):
+class BuildChunksResponse(BuildChunksResult):
     """一次切块任务的结果统计。"""
 
-    document_id: int
-    doc_code: str
-    source_type: str
-    parent_count: int
-    child_count: int
-    status: str
+    pass
 
 
-class VectorIndexingResponse(BaseModel):
+class VectorIndexingResponse(IndexVectorsResult):
     """一次向量索引任务的处理数量和最终状态。"""
 
-    document_id: int
-    total_chunks: int
-    indexed_chunks: int
-    failed_chunks: int
-    status: str
+    pass

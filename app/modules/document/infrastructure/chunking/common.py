@@ -1,7 +1,8 @@
 """文档模块切块器共享的文本切分和向量文本组装函数。"""
 
-import hashlib
 import re
+
+from app.modules.document.domain.policies import md5_text
 
 PARENT_BLOCK_MAX_CHARS = 4_000
 CHILD_CHUNK_MAX_CHARS = 600
@@ -18,11 +19,6 @@ def normalize_text(text: str) -> str:
         .replace("\r", "\n")
         .strip()
     )
-
-
-def md5_text(text: str) -> str:
-    """计算文本内容哈希，用于父块去重或变更识别。"""
-    return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
 def split_paragraphs(text: str) -> list[str]:

@@ -11,7 +11,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from app.db.session import Base
+from app.infrastructure.database.base import Base
 from app.modules.document.domain.enums import (
     DocumentLifecycleStatus,
     DocumentStatus,

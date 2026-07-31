@@ -55,7 +55,7 @@ class _Client:
 def _load_store_module(client: _Client):
     qdrant_module = types.ModuleType("qdrant_client")
     qdrant_models_module = types.ModuleType("qdrant_client.models")
-    settings_module = types.ModuleType("app.app_config.settings")
+    settings_module = types.ModuleType("app.config.settings")
     qdrant_module.QdrantClient = lambda url: client
     qdrant_models_module.Distance = _Distance
     qdrant_models_module.PointIdsList = _PointIdsList
@@ -67,7 +67,7 @@ def _load_store_module(client: _Client):
     replacements = {
         "qdrant_client": qdrant_module,
         "qdrant_client.models": qdrant_models_module,
-        "app.app_config.settings": settings_module,
+        "app.config.settings": settings_module,
     }
     originals = {name: sys.modules.get(name) for name in replacements}
     sys.modules.update(replacements)

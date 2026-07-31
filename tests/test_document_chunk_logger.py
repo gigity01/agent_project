@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.observability.document_chunk_logger import DocumentChunkLogger
+from app.shared.observability.document_chunk_logger import DocumentChunkLogger
 
 
 class _MemoryWriter:

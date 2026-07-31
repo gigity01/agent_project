@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.constants.document_status import DocumentStatus
+from app.modules.document.domain.enums import DocumentStatus
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]

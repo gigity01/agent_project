@@ -2,19 +2,8 @@
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
-from pydantic import BaseModel,ConfigDict,Field
 
-
-class ProcessResult(BaseModel):
-    """处理器写入清洗文件后返回的路径、统计信息和元数据。"""
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    source_path: Path
-    cleaned_path: Path
-    source_type: str
-    char_count: int = 0
-    line_count: int = 0
-    metadata: dict[str, Any] = Field(default_factory=dict)
+from app.modules.document.domain.models import ProcessResult
 
 
 class BaseProcessor(ABC):

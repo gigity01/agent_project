@@ -5,8 +5,10 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from qdrant_client.models import PointStruct
+from sqlalchemy.exc import IntegrityError
 
-from app.app_config.settings import (
+from app.config.settings import (
     CONTEXT_RESOURCE_QUEUE_MAX_SIZE,
     CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS,
     CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS,
@@ -16,7 +18,7 @@ from app.app_config.settings import (
     REDIS_URL,
 )
 from app.bootstrap.container import AppContainer
-from app.db.uow.sqlalchemy import SQLAlchemyUnitOfWork
+from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
 from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
 from app.infrastructure.redis.client import (
     close_redis_client,
@@ -39,6 +41,36 @@ from app.modules.context.infrastructure.persistence.mapper import (
 from app.modules.context.application.context_service import ContextService
 from app.modules.context.application.resource_service import (
     ContextResourceService,
+)
+from app.modules.document.application.ports import (
+    DocumentApplicationPorts,
+    configure_document_ports,
+)
+from app.modules.document.infrastructure.chunking.factory import get_chunker
+from app.modules.document.infrastructure.embedding.dashscope import (
+    EmbeddingService,
+)
+from app.modules.document.infrastructure.parsing.docling_client import (
+    DoclingClient,
+)
+from app.modules.document.infrastructure.parsing.factory import get_processor
+from app.modules.document.infrastructure.persistence.models.child_chunk import (
+    ChildChunk,
+)
+from app.modules.document.infrastructure.persistence.models.document import (
+    Document,
+)
+from app.modules.document.infrastructure.persistence.models.parent_block import (
+    ParentBlock,
+)
+from app.modules.document.infrastructure.storage.local import (
+    calculate_file_hash,
+    cleanup_file,
+    get_safe_extension,
+    validate_content_type,
+)
+from app.modules.document.infrastructure.vector_store.qdrant import (
+    QdrantVectorStore,
 )
 
 
@@ -91,6 +123,25 @@ async def build_container() -> AppContainer:
             uow_factory=SQLAlchemyUnitOfWork,
             record_factory=record_factory,
             chain_mapper=build_context_chain,
+        )
+        configure_document_ports(
+            DocumentApplicationPorts(
+                uow_factory=SQLAlchemyUnitOfWork,
+                document_factory=Document,
+                parent_block_factory=ParentBlock,
+                child_chunk_factory=ChildChunk,
+                processor_factory=get_processor,
+                chunker_factory=get_chunker,
+                embedding_factory=EmbeddingService,
+                vector_store_factory=QdrantVectorStore,
+                docling_factory=DoclingClient,
+                point_factory=PointStruct,
+                validate_content_type=validate_content_type,
+                get_safe_extension=get_safe_extension,
+                calculate_file_hash=calculate_file_hash,
+                cleanup_file=cleanup_file,
+                integrity_error_type=IntegrityError,
+            )
         )
         return AppContainer(
             redis_client=redis_client,

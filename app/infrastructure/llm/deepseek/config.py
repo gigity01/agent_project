@@ -1,6 +1,6 @@
 """DeepSeek Provider 配置。"""
 
-from app.app_config.settings import (
+from app.config.settings import (
     DEEPSEEK_API_KEY,
     DEEPSEEK_BASE_URL,
     DEEPSEEK_MAX_RETRIES,

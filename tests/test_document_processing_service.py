@@ -12,9 +12,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_status import DocumentStatus
-from app.constants.document_storage_status import DocumentStorageStatus
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -90,42 +92,46 @@ class _DocumentProcessLogger:
 
 def _load_service_module():
     replacements = {
-        "fastapi": types.ModuleType("fastapi"),
-        "app.app_config.settings": types.ModuleType("app.app_config.settings"),
-        "app.app_utils.file_security": types.ModuleType(
-            "app.app_utils.file_security"
+        "app.config.settings": types.ModuleType("app.config.settings"),
+        "app.modules.document.application.dto": types.ModuleType(
+            "app.modules.document.application.dto"
         ),
-        "app.db.uow": types.ModuleType("app.db.uow"),
-        "app.processors.factory": types.ModuleType("app.processors.factory"),
-        "app.schemas.document": types.ModuleType("app.schemas.document"),
-        "app.schemas.document_artifact": types.ModuleType(
-            "app.schemas.document_artifact"
+        "app.modules.document.application.errors": types.ModuleType(
+            "app.modules.document.application.errors"
         ),
-        "app.services.document_source_prepare_service": types.ModuleType(
-            "app.services.document_source_prepare_service"
+        "app.modules.document.application.ports": types.ModuleType(
+            "app.modules.document.application.ports"
         ),
-        "core.observability.document_process_logger": types.ModuleType(
-            "core.observability.document_process_logger"
+        "app.modules.document.application.use_cases.prepare_document_source": (
+            types.ModuleType(
+                "app.modules.document.application.use_cases."
+                "prepare_document_source"
+            )
+        ),
+        "app.shared.observability.document_process_logger": types.ModuleType(
+            "app.shared.observability.document_process_logger"
         ),
     }
-    replacements["fastapi"].HTTPException = _HTTPException
-    replacements["app.app_config.settings"].CLEANED_STORAGE_DIR = Path("cleaned")
-    replacements["app.app_utils.file_security"].calculate_file_hash = (
-        lambda path: "hash"
-    )
-    replacements["app.db.uow"].SQLAlchemyUnitOfWork = object
-    replacements["app.processors.factory"].get_processor = lambda source_type: None
-    replacements["app.schemas.document"].DocumentProcessResponse = _KeywordModel
-    replacements["app.schemas.document_artifact"].DocumentArtifactCreate = (
-        _KeywordModel
-    )
+    replacements["app.config.settings"].CLEANED_STORAGE_DIR = Path("cleaned")
+    dto = replacements["app.modules.document.application.dto"]
+    dto.ProcessDocumentResult = _KeywordModel
+    dto.DocumentArtifactCreate = _KeywordModel
+    replacements[
+        "app.modules.document.application.errors"
+    ].DocumentApplicationError = _HTTPException
+    ports = replacements["app.modules.document.application.ports"]
+    ports.calculate_file_hash = lambda path: "hash"
+    ports.create_uow = object
+    ports.get_processor = lambda source_type: None
 
-    prepare_module = replacements["app.services.document_source_prepare_service"]
+    prepare_module = replacements[
+        "app.modules.document.application.use_cases.prepare_document_source"
+    ]
     prepare_module.PendingArtifact = _PendingArtifact
     prepare_module.PreparedProcessSource = _PreparedProcessSource
     prepare_module.prepare_process_source = lambda context: None
     replacements[
-        "core.observability.document_process_logger"
+        "app.shared.observability.document_process_logger"
     ].DocumentProcessLogger = _DocumentProcessLogger
 
     originals = {name: sys.modules.get(name) for name in replacements}

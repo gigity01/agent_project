@@ -15,11 +15,11 @@ from agents import Agent, OpenAIChatCompletionsModel, Runner
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 
-from main_config import environment
+from app.config import environment
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-SETTINGS_PATH = ROOT_DIR / "app" / "app_config" / "settings.py"
+SETTINGS_PATH = ROOT_DIR / "app" / "config" / "settings.py"
 PROVIDER_PATH = (
     ROOT_DIR
     / "app"
@@ -31,9 +31,8 @@ PROVIDER_PATH = (
 
 
 def _load_settings_module(*, missing_deepseek_key: bool = False):
-    environment_module = types.ModuleType("main_config.environment")
-    main_config_module = types.ModuleType("main_config")
-
+    environment_module = types.ModuleType("app.config.environment")
+    config_module = types.ModuleType("app.config")
     environment_module.load_local_env_file = lambda project_root: None
     environment_module.get_required_env = (
         lambda name: f"{name.lower()}-test-placeholder"
@@ -45,11 +44,10 @@ def _load_settings_module(*, missing_deepseek_key: bool = False):
     )
     environment_module.get_env = lambda name, default: default
     environment_module.get_int_env = lambda name, default: default
-    main_config_module.environment = environment_module
-
+    config_module.environment = environment_module
     replacements = {
-        "main_config": main_config_module,
-        "main_config.environment": environment_module,
+        "app.config": config_module,
+        "app.config.environment": environment_module,
     }
     originals = {name: sys.modules.get(name) for name in replacements}
     module_name = "agent_settings_under_test"
@@ -166,7 +164,7 @@ import os
 
 os.environ.pop("DEEPSEEK_API_KEY", None)
 
-from main_config import environment
+from app.config import environment
 environment.load_local_env_file = lambda project_root: None
 
 from app import main as app_main
@@ -232,7 +230,7 @@ import os
 
 os.environ.pop("DEEPSEEK_API_KEY", None)
 
-from main_config import environment
+from app.config import environment
 environment.load_local_env_file = lambda project_root: None
 
 from app import main as app_main

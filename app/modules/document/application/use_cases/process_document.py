@@ -5,27 +5,36 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import HTTPException
-
-from app.app_config.settings import CLEANED_STORAGE_DIR
-from app.app_utils.file_security import calculate_file_hash
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_status import DocumentStatus
-from app.constants.document_storage_status import DocumentStorageStatus
-from app.db.uow import SQLAlchemyUnitOfWork
-from app.processors.factory import get_processor
-from app.schemas.document import DocumentProcessResponse
-from app.schemas.document_artifact import DocumentArtifactCreate
-from app.services.document_failure_state import (
+from app.config.settings import CLEANED_STORAGE_DIR
+from app.modules.document.application.dto import (
+    DocumentArtifactCreate,
+    ProcessDocumentResult,
+)
+from app.modules.document.application.errors import (
+    DocumentApplicationError as HTTPException,
+)
+from app.modules.document.application.failure_state import (
     FailureStateResult,
     NO_FAILURE_STATE_CHANGE,
 )
-from app.services.document_source_prepare_service import (
+from app.modules.document.application.ports import (
+    calculate_file_hash,
+    create_uow as SQLAlchemyUnitOfWork,
+    get_processor,
+)
+from app.modules.document.application.use_cases.prepare_document_source import (
     PendingArtifact,
     PreparedProcessSource,
     prepare_process_source,
 )
-from core.observability.document_process_logger import DocumentProcessLogger
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
+from app.shared.observability.document_process_logger import (
+    DocumentProcessLogger,
+)
 
 
 PROCESSABLE_LIFECYCLE_STATUSES = frozenset(
@@ -78,7 +87,7 @@ class ProcessingExecutionResult:
         self.prepared_source.cleanup_generated_file()
 
 
-def process_document(document_id: int) -> DocumentProcessResponse:
+def process_document(document_id: int) -> ProcessDocumentResult:
     """领取文档后在事务外处理，并以独立短事务登记结果或失败。"""
     process_logger = DocumentProcessLogger(document_id=document_id)
     context: ProcessingContext | None = None
@@ -257,7 +266,7 @@ def _execute_processing(
 
 def _complete_processing(
     result: ProcessingExecutionResult,
-) -> DocumentProcessResponse:
+) -> ProcessDocumentResult:
     """在短事务中复核状态、登记 Artifact 并推进到 processed。"""
     with SQLAlchemyUnitOfWork() as uow:
         document = uow.documents.get_by_id_for_update(result.document_id)
@@ -289,7 +298,7 @@ def _complete_processing(
         document.cleaned_uri = str(result.cleaned_path)
         document.status = DocumentStatus.PROCESSED.value
         uow.flush()
-        response = DocumentProcessResponse(
+        response = ProcessDocumentResult(
             document_id=document.id,
             doc_code=document.doc_code,
             source_type=document.source_type,

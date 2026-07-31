@@ -4,7 +4,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from core.observability.document_index_logger import DocumentIndexLogger
+from app.shared.observability.document_index_logger import DocumentIndexLogger
 
 
 class _MemoryWriter:

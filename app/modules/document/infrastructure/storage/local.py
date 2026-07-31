@@ -5,7 +5,7 @@ import hashlib
 
 from fastapi import HTTPException, UploadFile
 
-from app.app_config.settings import (
+from app.config.settings import (
     ALLOWED_EXTENSIONS,
     ALLOWED_CONTENT_TYPES,
 )
@@ -61,3 +61,13 @@ def calculate_file_hash(file_path: Path) -> str:
             sha256.update(chunk)
 
     return sha256.hexdigest()
+
+
+def cleanup_file(path: Path) -> bool:
+    """尽力删除文件；删除失败由调用方决定是否记录。"""
+
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except FileNotFoundError:
+        return False

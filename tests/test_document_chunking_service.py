@@ -12,9 +12,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_status import DocumentStatus
-from app.constants.document_storage_status import DocumentStorageStatus
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -102,98 +104,47 @@ class _DocumentChunkLogger:
 
 def _load_service_module():
     replacements = {
-        "fastapi": types.ModuleType("fastapi"),
-        "app.chunkers.base": types.ModuleType("app.chunkers.base"),
-        "app.chunkers.common": types.ModuleType("app.chunkers.common"),
-        "app.chunkers.factory": types.ModuleType("app.chunkers.factory"),
-        "app.db.uow": types.ModuleType("app.db.uow"),
-        "app.models.child_chunk": types.ModuleType(
-            "app.models.child_chunk"
+        "app.modules.document.application.dto": types.ModuleType(
+            "app.modules.document.application.dto"
         ),
-        "app.models.parent_block": types.ModuleType(
-            "app.models.parent_block"
+        "app.modules.document.application.errors": types.ModuleType(
+            "app.modules.document.application.errors"
         ),
-        "app.policies.document_source_policy": types.ModuleType(
-            "app.policies.document_source_policy"
+        "app.modules.document.application.ports": types.ModuleType(
+            "app.modules.document.application.ports"
         ),
-        "app.schemas.chunking": types.ModuleType(
-            "app.schemas.chunking"
+        "app.modules.document.domain.models": types.ModuleType(
+            "app.modules.document.domain.models"
         ),
-        "core.observability.document_chunk_logger": types.ModuleType(
-            "core.observability.document_chunk_logger"
+        "app.modules.document.domain.policies": types.ModuleType(
+            "app.modules.document.domain.policies"
+        ),
+        "app.shared.observability.document_chunk_logger": types.ModuleType(
+            "app.shared.observability.document_chunk_logger"
         ),
     }
 
+    replacements[
+        "app.modules.document.application.dto"
+    ].BuildChunksResult = _KeywordModel
+    replacements[
+        "app.modules.document.application.errors"
+    ].DocumentApplicationError = _HTTPException
+    ports = replacements["app.modules.document.application.ports"]
+    ports.create_child_chunk = _KeywordModel
+    ports.create_parent_block = _KeywordModel
+    ports.create_uow = object
+    ports.get_chunker = lambda source_type: None
+    domain_models = replacements["app.modules.document.domain.models"]
+    domain_models.ChunkBuildInput = _ChunkBuildInput
+    domain_models.ChunkBuildResult = _ChunkBuildResult
+    domain_models.ParentBlockData = _ParentBlockData
+    domain_models.ChildChunkData = _ChildChunkData
+    policies = replacements["app.modules.document.domain.policies"]
+    policies.get_expected_process_output_type = lambda source_type: source_type
+    policies.md5_text = lambda text: f"md5:{text}"
     setattr(
-        replacements["fastapi"],
-        "HTTPException",
-        _HTTPException,
-    )
-
-    setattr(
-        replacements["app.chunkers.base"],
-        "ChunkBuildInput",
-        _ChunkBuildInput,
-    )
-    setattr(
-        replacements["app.chunkers.base"],
-        "ChunkBuildResult",
-        _ChunkBuildResult,
-    )
-    setattr(
-        replacements["app.chunkers.base"],
-        "ParentBlockData",
-        _ParentBlockData,
-    )
-    setattr(
-        replacements["app.chunkers.base"],
-        "ChildChunkData",
-        _ChildChunkData,
-    )
-
-    setattr(
-        replacements["app.chunkers.common"],
-        "md5_text",
-        lambda text: f"md5:{text}",
-    )
-
-    setattr(
-        replacements["app.chunkers.factory"],
-        "get_chunker",
-        lambda source_type: None,
-    )
-
-    setattr(
-        replacements["app.db.uow"],
-        "SQLAlchemyUnitOfWork",
-        object,
-    )
-
-    setattr(
-        replacements["app.models.child_chunk"],
-        "ChildChunk",
-        _KeywordModel,
-    )
-
-    setattr(
-        replacements["app.models.parent_block"],
-        "ParentBlock",
-        _KeywordModel,
-    )
-
-    setattr(
-        replacements["app.policies.document_source_policy"],
-        "get_expected_process_output_type",
-        lambda source_type: source_type,
-    )
-
-    setattr(
-        replacements["app.schemas.chunking"],
-        "BuildChunksResponse",
-        _KeywordModel,
-    )
-    setattr(
-        replacements["core.observability.document_chunk_logger"],
+        replacements["app.shared.observability.document_chunk_logger"],
         "DocumentChunkLogger",
         _DocumentChunkLogger,
     )

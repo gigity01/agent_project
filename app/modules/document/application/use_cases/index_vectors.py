@@ -3,29 +3,34 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
-from fastapi import HTTPException
-from qdrant_client.models import PointStruct
-
-from app.app_config.settings import (
+from app.config.settings import (
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_MODEL_NAME,
     EMBEDDING_VECTOR_SIZE,
 )
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_status import DocumentStatus
-from app.constants.document_storage_status import DocumentStorageStatus
-from app.db.uow import SQLAlchemyUnitOfWork
-from app.schemas.vector_indexing import VectorIndexingResponse
-from app.services.document_failure_state import (
+from app.modules.document.application.dto import IndexVectorsResult
+from app.modules.document.application.errors import (
+    DocumentApplicationError as HTTPException,
+)
+from app.modules.document.application.failure_state import (
     IndexFailureStateResult,
     NO_INDEX_FAILURE_STATE_CHANGE,
 )
-from app.services.embedding_service import EmbeddingService
-from app.vectorstores.qdrant_store import QdrantVectorStore
-from core.observability.document_index_logger import DocumentIndexLogger
-from main_utils.times import now_ms
+from app.modules.document.application.ports import (
+    create_embedding_client as EmbeddingService,
+    create_uow as SQLAlchemyUnitOfWork,
+    create_vector_point as PointStruct,
+    create_vector_store as QdrantVectorStore,
+)
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
+from app.shared.observability.document_index_logger import DocumentIndexLogger
+from app.shared.time import now_ms
 
 
 logger = logging.getLogger(__name__)
@@ -52,7 +57,7 @@ class VectorStoreClient(Protocol):
     def ensure_collection(self) -> None:
         ...
 
-    def upsert_points(self, points: list[PointStruct]) -> None:
+    def upsert_points(self, points: list[Any]) -> None:
         ...
 
     def delete_points(self, point_ids: list[int]) -> None:
@@ -132,7 +137,7 @@ def index_document_vectors(
     *,
     embedding_client: EmbeddingClient | None = None,
     vector_store: VectorStoreClient | None = None,
-) -> VectorIndexingResponse:
+) -> IndexVectorsResult:
     """领取索引任务，在事务外写 Qdrant，再以短事务登记结果。"""
     index_logger = DocumentIndexLogger(document_id=document_id)
     context: IndexingContext | None = None
@@ -412,7 +417,7 @@ def _execute_indexing(
 
 def _complete_indexing(
     result: IndexingExecutionResult,
-) -> VectorIndexingResponse:
+) -> IndexVectorsResult:
     """在短事务中复核文档和子块状态，并原子登记 indexed。"""
     context = result.context
     chunk_ids = _context_chunk_ids(context)
@@ -450,7 +455,7 @@ def _complete_indexing(
         document.status = DocumentStatus.INDEXED.value
         document.indexed_at = datetime.now()
         uow.flush()
-        response = VectorIndexingResponse(
+        response = IndexVectorsResult(
             document_id=document.id,
             total_chunks=len(chunks),
             indexed_chunks=len(chunks),
@@ -622,7 +627,7 @@ def _build_point(
     context: IndexingContext,
     chunk: IndexingChunkInput,
     vector: list[float],
-) -> PointStruct:
+) -> Any:
     """使用 ChildChunk 主键构造可幂等 upsert 的 Qdrant Point。"""
     return PointStruct(
         id=chunk.chunk_id,

@@ -1,8 +1,16 @@
-"""文档源类型归一化和处理路径判定规则。"""
+"""文档源类型与内容哈希业务规则。"""
+
+import hashlib
 
 LOCAL_PROCESS_SOURCE_TYPES = {"txt", "md", "csv"}
 EXTERNAL_PROCESS_SOURCE_TYPES = {"pdf", "ppt", "pptx", "doc", "docx"}
 SOURCE_TYPE_ALIASES = {"markdown": "md"}
+
+
+def md5_text(text: str) -> str:
+    """计算父块正文哈希，用于重建时识别内容。"""
+
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
 def normalize_source_type(source_type: str) -> str:

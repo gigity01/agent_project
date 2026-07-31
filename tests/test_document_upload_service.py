@@ -66,29 +66,22 @@ class _DocumentUploadLogger:
 
 def _load_service_module():
     replacements = {
-        "fastapi": types.ModuleType("fastapi"),
-        "sqlalchemy": types.ModuleType("sqlalchemy"),
-        "sqlalchemy.exc": types.ModuleType("sqlalchemy.exc"),
-        "app.app_config.settings": types.ModuleType("app.app_config.settings"),
-        "app.app_utils.file_security": types.ModuleType(
-            "app.app_utils.file_security"
+        "app.config.settings": types.ModuleType("app.config.settings"),
+        "app.modules.document.application.dto": types.ModuleType(
+            "app.modules.document.application.dto"
         ),
-        "app.db.uow": types.ModuleType("app.db.uow"),
-        "app.models.document": types.ModuleType("app.models.document"),
-        "app.policies.document_source_policy": types.ModuleType(
-            "app.policies.document_source_policy"
+        "app.modules.document.application.errors": types.ModuleType(
+            "app.modules.document.application.errors"
         ),
-        "app.schemas.document": types.ModuleType("app.schemas.document"),
-        "core.observability.document_upload_logger": types.ModuleType(
-            "core.observability.document_upload_logger"
+        "app.modules.document.application.ports": types.ModuleType(
+            "app.modules.document.application.ports"
         ),
-        "main_utils.file_cleanup": types.ModuleType("main_utils.file_cleanup"),
+        "app.shared.observability.document_upload_logger": types.ModuleType(
+            "app.shared.observability.document_upload_logger"
+        ),
     }
-    replacements["fastapi"].HTTPException = _HTTPException
-    replacements["fastapi"].UploadFile = object
-    replacements["sqlalchemy.exc"].IntegrityError = _IntegrityError
 
-    settings = replacements["app.app_config.settings"]
+    settings = replacements["app.config.settings"]
     settings.RAW_LOCAL_STORAGE_DIR = Path("raw/local")
     settings.RAW_EXTERNAL_STORAGE_DIR = Path("raw/external")
     settings.MAX_UPLOAD_FILE_SIZE = 20 * 1024 * 1024
@@ -98,23 +91,23 @@ def _load_service_module():
     settings.DOCUMENT_CODE_PREFIX = "DOC"
     settings.DOCUMENT_CODE_RANDOM_LENGTH = 8
 
-    security = replacements["app.app_utils.file_security"]
-    security.get_safe_extension = lambda filename: "txt"
-    security.validate_content_type = lambda file: None
-    security.calculate_file_hash = lambda path: "hash"
-    replacements["app.db.uow"].SQLAlchemyUnitOfWork = object
-    replacements["app.models.document"].Document = object
-
-    policy = replacements["app.policies.document_source_policy"]
-    policy.normalize_source_type = lambda extension: extension
-    policy.requires_external_processing = lambda source_type: False
-
-    replacements["app.schemas.document"].DocumentResponse = object
-    replacements["app.schemas.document"].DocumentUploadFormData = object
+    replacements["app.modules.document.application.dto"].DocumentResult = object
     replacements[
-        "core.observability.document_upload_logger"
+        "app.modules.document.application.errors"
+    ].DocumentApplicationError = _HTTPException
+    ports = replacements["app.modules.document.application.ports"]
+    ports.UploadFilePort = object
+    ports.UploadMetadataPort = object
+    ports.calculate_file_hash = lambda path: "hash"
+    ports.cleanup_file = lambda path: True
+    ports.create_document = object
+    ports.create_uow = object
+    ports.get_safe_extension = lambda filename: "txt"
+    ports.is_integrity_error = lambda exc: isinstance(exc, _IntegrityError)
+    ports.validate_content_type = lambda file: None
+    replacements[
+        "app.shared.observability.document_upload_logger"
     ].DocumentUploadLogger = _DocumentUploadLogger
-    replacements["main_utils.file_cleanup"].cleanup_file = lambda path: True
 
     originals = {name: sys.modules.get(name) for name in replacements}
     sys.modules.update(replacements)

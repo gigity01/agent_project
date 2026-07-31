@@ -6,29 +6,36 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import HTTPException
-
-from app.chunkers.base import (
+from app.modules.document.application.dto import BuildChunksResult
+from app.modules.document.application.errors import (
+    DocumentApplicationError as HTTPException,
+)
+from app.modules.document.application.failure_state import (
+    FailureStateResult,
+    NO_FAILURE_STATE_CHANGE,
+)
+from app.modules.document.application.ports import (
+    create_child_chunk as ChildChunk,
+    create_parent_block as ParentBlock,
+    create_uow as SQLAlchemyUnitOfWork,
+    get_chunker,
+)
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
+from app.modules.document.domain.models import (
     ChildChunkData,
     ChunkBuildInput,
     ChunkBuildResult,
     ParentBlockData,
 )
-from app.chunkers.common import md5_text
-from app.chunkers.factory import get_chunker
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_status import DocumentStatus
-from app.constants.document_storage_status import DocumentStorageStatus
-from app.db.uow import SQLAlchemyUnitOfWork
-from app.models.child_chunk import ChildChunk
-from app.models.parent_block import ParentBlock
-from app.policies.document_source_policy import get_expected_process_output_type
-from app.schemas.chunking import BuildChunksResponse
-from app.services.document_failure_state import (
-    FailureStateResult,
-    NO_FAILURE_STATE_CHANGE,
+from app.modules.document.domain.policies import (
+    get_expected_process_output_type,
+    md5_text,
 )
-from core.observability.document_chunk_logger import DocumentChunkLogger
+from app.shared.observability.document_chunk_logger import DocumentChunkLogger
 
 
 CHUNKABLE_LIFECYCLE_STATUSES = frozenset(
@@ -87,7 +94,7 @@ def generate_chunk_code(
     )
 
 
-def build_document_chunks(document_id: int) -> BuildChunksResponse:
+def build_document_chunks(document_id: int) -> BuildChunksResult:
     """领取切块任务后在事务外计算，并以独立短事务登记结果。"""
     chunk_logger = DocumentChunkLogger(document_id=document_id)
     context: ChunkingContext | None = None
@@ -303,7 +310,7 @@ def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
 
 def _complete_chunking(
     result: ChunkingExecutionResult,
-) -> BuildChunksResponse:
+) -> BuildChunksResult:
     """在短事务中复核状态、替换父子块并推进到 chunked。"""
     context = result.context
     with SQLAlchemyUnitOfWork() as uow:
@@ -353,7 +360,7 @@ def _complete_chunking(
 
         document.status = DocumentStatus.CHUNKED.value
         uow.flush()
-        response = BuildChunksResponse(
+        response = BuildChunksResult(
             document_id=document.id,
             doc_code=document.doc_code,
             source_type=document.source_type,

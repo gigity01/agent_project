@@ -16,11 +16,11 @@ from app.modules.context.infrastructure.llm.strict_schema_adapter import (
     ContextAgentOutputError,
     build_context_route_tool_schema,
 )
-from app.schemas.context import (
-    ContextAgentInput,
+from app.modules.context.application.dto import ContextAgentInput
+from app.modules.context.domain.enums import ContextRouteMode
+from app.modules.context.domain.models import (
     ContextChain,
     ContextResourceQueue,
-    ContextRouteMode,
 )
 
 

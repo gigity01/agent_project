@@ -9,9 +9,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.constants.document_lifecycle_status import DocumentLifecycleStatus
-from app.constants.document_status import DocumentStatus
-from app.constants.document_storage_status import DocumentStorageStatus
+from app.modules.document.domain.enums import (
+    DocumentLifecycleStatus,
+    DocumentStatus,
+    DocumentStorageStatus,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -86,37 +88,36 @@ class _DocumentIndexLogger:
 
 def _load_service_module():
     replacements = {
-        "fastapi": types.ModuleType("fastapi"),
-        "qdrant_client": types.ModuleType("qdrant_client"),
-        "qdrant_client.models": types.ModuleType("qdrant_client.models"),
-        "app.app_config.settings": types.ModuleType("app.app_config.settings"),
-        "app.db.uow": types.ModuleType("app.db.uow"),
-        "app.schemas.vector_indexing": types.ModuleType(
-            "app.schemas.vector_indexing"
+        "app.config.settings": types.ModuleType("app.config.settings"),
+        "app.modules.document.application.dto": types.ModuleType(
+            "app.modules.document.application.dto"
         ),
-        "app.services.embedding_service": types.ModuleType(
-            "app.services.embedding_service"
+        "app.modules.document.application.errors": types.ModuleType(
+            "app.modules.document.application.errors"
         ),
-        "app.vectorstores.qdrant_store": types.ModuleType(
-            "app.vectorstores.qdrant_store"
+        "app.modules.document.application.ports": types.ModuleType(
+            "app.modules.document.application.ports"
         ),
-        "core.observability.document_index_logger": types.ModuleType(
-            "core.observability.document_index_logger"
+        "app.shared.observability.document_index_logger": types.ModuleType(
+            "app.shared.observability.document_index_logger"
         ),
     }
-    replacements["fastapi"].HTTPException = _HTTPException
-    replacements["qdrant_client.models"].PointStruct = _PointStruct
-    replacements["app.app_config.settings"].EMBEDDING_BATCH_SIZE = 2
-    replacements["app.app_config.settings"].EMBEDDING_MODEL_NAME = "test-model"
-    replacements["app.app_config.settings"].EMBEDDING_VECTOR_SIZE = 3
-    replacements["app.db.uow"].SQLAlchemyUnitOfWork = object
-    replacements["app.schemas.vector_indexing"].VectorIndexingResponse = (
-        _KeywordModel
-    )
-    replacements["app.services.embedding_service"].EmbeddingService = object
-    replacements["app.vectorstores.qdrant_store"].QdrantVectorStore = object
+    replacements["app.config.settings"].EMBEDDING_BATCH_SIZE = 2
+    replacements["app.config.settings"].EMBEDDING_MODEL_NAME = "test-model"
+    replacements["app.config.settings"].EMBEDDING_VECTOR_SIZE = 3
     replacements[
-        "core.observability.document_index_logger"
+        "app.modules.document.application.dto"
+    ].IndexVectorsResult = _KeywordModel
+    replacements[
+        "app.modules.document.application.errors"
+    ].DocumentApplicationError = _HTTPException
+    ports = replacements["app.modules.document.application.ports"]
+    ports.create_embedding_client = object
+    ports.create_uow = object
+    ports.create_vector_point = _PointStruct
+    ports.create_vector_store = object
+    replacements[
+        "app.shared.observability.document_index_logger"
     ].DocumentIndexLogger = _DocumentIndexLogger
 
     originals = {name: sys.modules.get(name) for name in replacements}

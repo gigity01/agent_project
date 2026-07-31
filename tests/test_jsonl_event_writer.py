@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from core.observability.jsonl_event_writer import JsonlEventWriter
+from app.shared.observability.jsonl_writer import JsonlEventWriter
 
 
 class JsonlEventWriterTest(unittest.TestCase):
@@ -32,7 +32,7 @@ class JsonlEventWriterTest(unittest.TestCase):
             "mkdir",
             side_effect=OSError("read only"),
         ), mock.patch(
-            "core.observability.jsonl_event_writer.logger.exception"
+            "app.shared.observability.jsonl_writer.logger.exception"
         ) as log_exception:
             result = writer.write({"event": "document_test"})
 
@@ -45,7 +45,7 @@ class JsonlEventWriterTest(unittest.TestCase):
         fixed_now = datetime(2026, 7, 22, 23, 59, tzinfo=timezone.utc)
 
         with mock.patch(
-            "core.observability.jsonl_event_writer.datetime"
+            "app.shared.observability.jsonl_writer.datetime"
         ) as datetime_mock:
             datetime_mock.now.return_value = fixed_now
             datetime_mock.side_effect = datetime
