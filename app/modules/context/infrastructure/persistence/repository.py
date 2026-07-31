@@ -6,14 +6,24 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.context_chain import ContextChain
-from app.models.context_chain_node import ContextChainNode
-from app.models.context_chain_resource import ContextChainResource
-from app.models.context_chain_resource_event import (
+from app.modules.context.infrastructure.persistence.models.context_chain import (
+    ContextChain,
+)
+from app.modules.context.infrastructure.persistence.models.context_chain_node import (
+    ContextChainNode,
+)
+from app.modules.context.infrastructure.persistence.models.context_resource import (
+    ContextChainResource,
+)
+from app.modules.context.infrastructure.persistence.models.context_resource_event import (
     ContextChainResourceEvent,
 )
-from app.models.context_route_record import ContextRouteRecord
-from app.models.conversation_turn import ConversationTurn
+from app.modules.context.infrastructure.persistence.models.context_route_record import (
+    ContextRouteRecord,
+)
+from app.modules.context.infrastructure.persistence.models.conversation_turn import (
+    ConversationTurn,
+)
 
 
 class ContextRepository:

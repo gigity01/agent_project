@@ -32,16 +32,22 @@ with (
         SQLAlchemyContextRecordFactory,
         build_context_chain,
     )
-    from app.models.context_chain import ContextChain as ContextChainModel
-    from app.models.context_chain_node import (
+    from app.modules.context.infrastructure.persistence.models.context_chain import (
+        ContextChain as ContextChainModel,
+    )
+    from app.modules.context.infrastructure.persistence.models.context_chain_node import (
         ContextChainNode as ContextChainNodeModel,
     )
-    from app.models.context_chain_resource import ContextChainResource
-    from app.models.context_chain_resource_event import (
+    from app.modules.context.infrastructure.persistence.models.context_resource import (
+        ContextChainResource,
+    )
+    from app.modules.context.infrastructure.persistence.models.context_resource_event import (
         ContextChainResourceEvent,
     )
-    from app.models.context_route_record import ContextRouteRecord
-    from app.models.conversation_turn import (
+    from app.modules.context.infrastructure.persistence.models.context_route_record import (
+        ContextRouteRecord,
+    )
+    from app.modules.context.infrastructure.persistence.models.conversation_turn import (
         ConversationTurn as ConversationTurnModel,
     )
     from app.modules.context.domain.enums import ContextRouteMode

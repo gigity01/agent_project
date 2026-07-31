@@ -2,11 +2,21 @@
 
 from typing import Any
 
-from app.models.context_chain import ContextChain as ContextChainModel
-from app.models.context_chain_node import ContextChainNode
-from app.models.context_chain_resource_event import ContextChainResourceEvent
-from app.models.context_route_record import ContextRouteRecord
-from app.models.conversation_turn import ConversationTurn as TurnModel
+from app.modules.context.infrastructure.persistence.models.context_chain import (
+    ContextChain as ContextChainModel,
+)
+from app.modules.context.infrastructure.persistence.models.context_chain_node import (
+    ContextChainNode,
+)
+from app.modules.context.infrastructure.persistence.models.context_resource_event import (
+    ContextChainResourceEvent,
+)
+from app.modules.context.infrastructure.persistence.models.context_route_record import (
+    ContextRouteRecord,
+)
+from app.modules.context.infrastructure.persistence.models.conversation_turn import (
+    ConversationTurn as TurnModel,
+)
 from app.modules.context.domain.models import (
     ContextChain,
     ContextChainNodeContext,
