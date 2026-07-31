@@ -8,17 +8,19 @@ from unittest import mock
 import httpx
 from fastapi import FastAPI
 
-from app.api.conversations import router
-from app.api.dependencies import (
+from app.modules.context.presentation.router import router
+from app.modules.context.presentation.dependencies import (
     get_context_routing_service,
 )
-from app.modules.context.application.dto import SendMessageCommand
-from app.modules.context.application.errors import ContextRoutingError
-from app.schemas.context import (
-    ContextRouteDecision,
-    ContextRouteMode,
-    RoutedContextPackage,
+from app.modules.context.application.dto import (
+    RouteContextResult,
+    SendMessageCommand,
 )
+from app.modules.context.application.errors import ContextRoutingError
+from app.modules.context.domain.models import (
+    ContextRouteDecision,
+)
+from app.modules.context.domain.enums import ContextRouteMode
 
 
 class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
@@ -43,13 +45,14 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         ) as client:
             return await client.post(path, json=json)
 
-    async def test_message_is_adapted_to_context_route_request(self) -> None:
-        routed_package = RoutedContextPackage(
-            current_turn_id="turn-1",
-            current_user_input="继续完善之前的文档处理日志方案",
+    async def test_message_is_adapted_to_application_command(self) -> None:
+        result = RouteContextResult(
+            conversation_id="conv_test_001",
+            turn_id="turn-1",
+            message="继续完善之前的文档处理日志方案",
             selected_chains=[],
             new_chain_id="chain-1",
-            route_decision=ContextRouteDecision(
+            decision=ContextRouteDecision(
                 selected_chain_ids=[],
                 create_new_chain=True,
                 route_mode=ContextRouteMode.NEW_CHAIN,
@@ -57,13 +60,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.context_service.send_message.return_value = mock.Mock(
-            turn_id=routed_package.current_turn_id,
-            message=routed_package.current_user_input,
-            selected_chains=routed_package.selected_chains,
-            new_chain_id=routed_package.new_chain_id,
-            decision=routed_package.route_decision,
-        )
+        self.context_service.send_message.return_value = result
 
         response = await self._post(
             "/api/conversations/conv_test_001/messages",
@@ -73,7 +70,24 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), routed_package.model_dump(mode="json"))
+        self.assertEqual(
+            response.json(),
+            {
+                "conversation_id": "conv_test_001",
+                "turn_id": "turn-1",
+                "status": "routed",
+                "routing": {
+                    "route_mode": "new_chain",
+                    "selected_chain_ids": [],
+                    "new_chain_id": "chain-1",
+                    "reason_summary": (
+                        "当前会话没有可关联的已有上下文链。"
+                    ),
+                },
+            },
+        )
+        self.assertNotIn("selected_chains", response.json())
+        self.assertNotIn("resource_queue", response.text)
         self.context_service.send_message.assert_awaited_once_with(
             SendMessageCommand(
                 conversation_id="conv_test_001",
@@ -121,7 +135,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_request_schema_exposes_only_message(self) -> None:
         schema = self.app.openapi()
         request_schema = schema["components"]["schemas"][
-            "SendConversationMessageRequest"
+            "SendMessageRequest"
         ]
 
         self.assertEqual(
