@@ -86,6 +86,10 @@ DEEPSEEK_BASE_URL: Final[str] = environment.get_env(
     "DEEPSEEK_BASE_URL",
     "https://api.deepseek.com",
 )
+DEEPSEEK_STRICT_TOOL_BASE_URL: Final[str] = environment.get_env(
+    "DEEPSEEK_STRICT_TOOL_BASE_URL",
+    "https://api.deepseek.com/beta",
+)
 DEEPSEEK_MODEL_NAME: Final[str] = environment.get_env(
     "DEEPSEEK_MODEL_NAME",
     "deepseek-v4-flash",

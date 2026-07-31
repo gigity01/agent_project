@@ -6,12 +6,14 @@ from dataclasses import dataclass
 
 from redis.asyncio import Redis
 
-from app.agents.context_agent import ContextAgentRouter
-from app.agents.deepseek_provider import DeepSeekModelProvider
-from app.integrations.conversation_route_lock import (
+from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
+from app.infrastructure.redis.client import close_redis_client
+from app.modules.context.infrastructure.llm.deepseek_router import (
+    DeepSeekContextRouter,
+)
+from app.modules.context.infrastructure.locking.redis_conversation_lock import (
     ConversationRouteLockManager,
 )
-from app.integrations.redis_client import close_redis_client
 from app.modules.context.application.context_service import ContextService
 from app.modules.context.application.resource_service import (
     ContextResourceService,
@@ -24,7 +26,7 @@ class AppContainer:
 
     redis_client: Redis
     deepseek_provider: DeepSeekModelProvider | None
-    context_agent_router: ContextAgentRouter | None
+    context_agent_router: DeepSeekContextRouter | None
     context_route_lock_manager: ConversationRouteLockManager
     context_resource_service: ContextResourceService
     context_service: ContextService

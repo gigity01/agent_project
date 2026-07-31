@@ -6,8 +6,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.agents.context_agent import ContextAgentRouter
-from app.agents.deepseek_provider import DeepSeekModelProvider
 from app.app_config.settings import (
     CONTEXT_RESOURCE_QUEUE_MAX_SIZE,
     CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS,
@@ -19,24 +17,28 @@ from app.app_config.settings import (
 )
 from app.bootstrap.container import AppContainer
 from app.db.uow.sqlalchemy import SQLAlchemyUnitOfWork
-from app.integrations.context_resource_queue import (
-    ContextResourceQueueRepository,
-)
-from app.integrations.conversation_route_lock import (
-    ConversationRouteLockManager,
-)
-from app.integrations.redis_client import (
+from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
+from app.infrastructure.redis.client import (
     close_redis_client,
     create_redis_client,
     ping_redis_client,
 )
+from app.modules.context.infrastructure.cache.redis_resource_queue import (
+    ContextResourceQueueRepository,
+)
+from app.modules.context.infrastructure.llm.deepseek_router import (
+    DeepSeekContextRouter,
+)
+from app.modules.context.infrastructure.locking.redis_conversation_lock import (
+    ConversationRouteLockManager,
+)
+from app.modules.context.infrastructure.persistence.mapper import (
+    SQLAlchemyContextRecordFactory,
+    build_context_chain,
+)
 from app.modules.context.application.context_service import ContextService
 from app.modules.context.application.resource_service import (
     ContextResourceService,
-)
-from app.services.context_projection import build_context_chain
-from app.repositories.context_record_factory import (
-    SQLAlchemyContextRecordFactory,
 )
 
 
@@ -78,7 +80,7 @@ async def build_container() -> AppContainer:
             else None
         )
         agent_router = (
-            ContextAgentRouter(deepseek_provider)
+            DeepSeekContextRouter(deepseek_provider)
             if deepseek_provider is not None
             else None
         )

@@ -8,10 +8,12 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest import mock
 
-from app.agents.context_agent import (
+from app.modules.context.infrastructure.llm.deepseek_router import (
     CONTEXT_ROUTE_TOOL_NAME,
+    DeepSeekContextRouter,
+)
+from app.modules.context.infrastructure.llm.strict_schema_adapter import (
     ContextAgentOutputError,
-    ContextAgentRouter,
     build_context_route_tool_schema,
 )
 from app.schemas.context import (
@@ -20,6 +22,9 @@ from app.schemas.context import (
     ContextResourceQueue,
     ContextRouteMode,
 )
+
+
+ContextAgentRouter = DeepSeekContextRouter
 
 
 def _existing_chain() -> ContextChain:

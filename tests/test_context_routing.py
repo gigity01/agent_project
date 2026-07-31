@@ -28,8 +28,9 @@ with (
     from app.constants.context_turn_status import ContextTurnStatus
     from app.db.session import Base
     from app.db.uow.sqlalchemy import SQLAlchemyUnitOfWork
-    from app.repositories.context_record_factory import (
+    from app.modules.context.infrastructure.persistence.mapper import (
         SQLAlchemyContextRecordFactory,
+        build_context_chain,
     )
     from app.models.context_chain import ContextChain as ContextChainModel
     from app.models.context_chain_node import (
@@ -62,7 +63,6 @@ with (
     from app.modules.context.application.resource_service import (
         ContextResourceService,
     )
-    from app.services.context_projection import build_context_chain
 
 
 class _AgentRouter:

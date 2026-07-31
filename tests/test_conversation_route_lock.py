@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.integrations.conversation_route_lock import (
+from app.modules.context.infrastructure.locking.redis_conversation_lock import (
     ConversationRouteLockManager,
     ConversationRouteLockUnavailable,
 )

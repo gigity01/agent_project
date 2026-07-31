@@ -2,10 +2,12 @@
 
 from fastapi import Depends, Request
 
-from app.agents.context_agent import ContextAgentRouter
-from app.agents.deepseek_provider import DeepSeekModelProvider
 from app.bootstrap.container import AppContainer
-from app.integrations.conversation_route_lock import (
+from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
+from app.modules.context.infrastructure.llm.deepseek_router import (
+    DeepSeekContextRouter,
+)
+from app.modules.context.infrastructure.locking.redis_conversation_lock import (
     ConversationRouteLockManager,
 )
 from app.modules.context.application.context_service import ContextService
@@ -36,10 +38,10 @@ def get_deepseek_provider(
 
 def get_context_agent_router(
     container: AppContainer = Depends(get_container),
-) -> ContextAgentRouter:
+) -> DeepSeekContextRouter:
     """获取应用容器中的 Context Agent Router。"""
     router = container.context_agent_router
-    if not isinstance(router, ContextAgentRouter):
+    if not isinstance(router, DeepSeekContextRouter):
         raise RuntimeError("Agent 功能未配置 DEEPSEEK_API_KEY")
     return router
 

@@ -7,16 +7,16 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-from app.integrations.context_resource_queue import (
+from app.modules.context.infrastructure.cache.redis_resource_queue import (
     REFRESH_QUEUE_LUA,
     REPLACE_QUEUE_LUA,
     ContextResourceQueueRepository,
 )
-from app.integrations.redis_client import (
+from app.infrastructure.redis.client import (
     close_redis_client,
     create_redis_client,
 )
-from app.schemas.context import ContextResourceRef
+from app.modules.context.domain.models import ContextResourceRef
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]

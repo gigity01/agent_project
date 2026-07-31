@@ -20,7 +20,14 @@ from main_config import environment
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SETTINGS_PATH = ROOT_DIR / "app" / "app_config" / "settings.py"
-PROVIDER_PATH = ROOT_DIR / "app" / "agents" / "deepseek_provider.py"
+PROVIDER_PATH = (
+    ROOT_DIR
+    / "app"
+    / "infrastructure"
+    / "llm"
+    / "deepseek"
+    / "provider.py"
+)
 
 
 def _load_settings_module(*, missing_deepseek_key: bool = False):
@@ -66,14 +73,21 @@ def _load_settings_module(*, missing_deepseek_key: bool = False):
 
 
 def _load_provider_module(*, api_key: str | None = "deepseek-test-placeholder"):
-    settings_module = types.ModuleType("app.app_config.settings")
-    settings_module.DEEPSEEK_API_KEY = api_key
-    settings_module.DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-    settings_module.DEEPSEEK_MODEL_NAME = "deepseek-v4-flash"
-    settings_module.DEEPSEEK_TIMEOUT_SECONDS = 60
-    settings_module.DEEPSEEK_MAX_RETRIES = 2
+    config_module = types.ModuleType(
+        "app.infrastructure.llm.deepseek.config"
+    )
+    config_module.DEEPSEEK_API_KEY = api_key
+    config_module.DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+    config_module.DEEPSEEK_STRICT_TOOL_BASE_URL = (
+        "https://api.deepseek.com/beta"
+    )
+    config_module.DEEPSEEK_MODEL_NAME = "deepseek-v4-flash"
+    config_module.DEEPSEEK_TIMEOUT_SECONDS = 60
+    config_module.DEEPSEEK_MAX_RETRIES = 2
 
-    replacements = {"app.app_config.settings": settings_module}
+    replacements = {
+        "app.infrastructure.llm.deepseek.config": config_module
+    }
     originals = {name: sys.modules.get(name) for name in replacements}
     module_name = "deepseek_provider_under_test"
 
@@ -131,6 +145,10 @@ class AgentSettingsTest(unittest.TestCase):
         settings = _load_settings_module()
 
         self.assertEqual(settings.DEEPSEEK_BASE_URL, "https://api.deepseek.com")
+        self.assertEqual(
+            settings.DEEPSEEK_STRICT_TOOL_BASE_URL,
+            "https://api.deepseek.com/beta",
+        )
         self.assertEqual(settings.DEEPSEEK_MODEL_NAME, "deepseek-v4-flash")
         self.assertEqual(settings.DEEPSEEK_TIMEOUT_SECONDS, 60)
         self.assertEqual(settings.DEEPSEEK_MAX_RETRIES, 2)
@@ -286,6 +304,10 @@ class DeepSeekModelProviderTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 str(provider.client.base_url).rstrip("/"),
                 "https://api.deepseek.com",
+            )
+            self.assertEqual(
+                str(provider.strict_tool_client.base_url).rstrip("/"),
+                "https://api.deepseek.com/beta",
             )
             self.assertEqual(provider.client.max_retries, 2)
             self.assertEqual(provider.client.timeout, 60)
