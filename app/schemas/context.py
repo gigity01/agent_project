@@ -137,6 +137,12 @@ class ContextRouteRequest(BaseModel):
     user_input: str = Field(min_length=1)
 
 
+class SendConversationMessageRequest(BaseModel):
+    """用户发送 Conversation Message 的外部请求。"""
+
+    message: str = Field(min_length=1)
+
+
 class ContextChainTurnUpdate(BaseModel):
     """下游完成后写入某条链的本轮资源事实。"""
 
