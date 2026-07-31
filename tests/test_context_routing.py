@@ -28,6 +28,9 @@ with (
     from app.constants.context_turn_status import ContextTurnStatus
     from app.db.session import Base
     from app.db.uow.sqlalchemy import SQLAlchemyUnitOfWork
+    from app.repositories.context_record_factory import (
+        SQLAlchemyContextRecordFactory,
+    )
     from app.models.context_chain import ContextChain as ContextChainModel
     from app.models.context_chain_node import (
         ContextChainNode as ContextChainNodeModel,
@@ -55,8 +58,11 @@ with (
         ContextResourceInput,
         ContextRouteRequest,
     )
-    from app.services.context_service import ContextService
-    from app.services.context_resource_service import ContextResourceService
+    from app.modules.context.application.context_service import ContextService
+    from app.modules.context.application.resource_service import (
+        ContextResourceService,
+    )
+    from app.services.context_projection import build_context_chain
 
 
 class _AgentRouter:
@@ -255,11 +261,13 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.lock_manager = _RouteLockManager()
         self.queue_repository = _QueueRepository()
+        self.record_factory = SQLAlchemyContextRecordFactory()
         self.resource_service = ContextResourceService(
             queue_repository=self.queue_repository,
             uow_factory=lambda: SQLAlchemyUnitOfWork(
                 self.session_factory
             ),
+            record_factory=self.record_factory,
         )
         self.agent_router = _AgentRouter(
             ContextRouteDecision(
@@ -276,6 +284,8 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             uow_factory=lambda: SQLAlchemyUnitOfWork(
                 self.session_factory
             ),
+            record_factory=self.record_factory,
+            chain_mapper=build_context_chain,
         )
 
     def tearDown(self) -> None:

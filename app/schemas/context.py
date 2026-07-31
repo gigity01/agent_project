@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.modules.context.application.dto import ContextAgentInput
 from app.modules.context.domain.enums import ContextRouteMode
 from app.modules.context.domain.models import (
     ContextChain,
@@ -31,15 +32,6 @@ class ContextResourceInput(BaseModel):
     @property
     def resource_key(self) -> str:
         return f"{self.resource_type}:{self.resource_id}"
-
-
-class ContextAgentInput(BaseModel):
-    """Context Agent 单次路由所需的全部输入。"""
-
-    conversation_id: str
-    current_turn_id: str
-    current_user_input: str
-    chains: list[ContextChain]
 
 
 class RoutedContextPackage(BaseModel):

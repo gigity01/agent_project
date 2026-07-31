@@ -18,6 +18,7 @@ from app.app_config.settings import (
     REDIS_URL,
 )
 from app.bootstrap.container import AppContainer
+from app.db.uow.sqlalchemy import SQLAlchemyUnitOfWork
 from app.integrations.context_resource_queue import (
     ContextResourceQueueRepository,
 )
@@ -29,8 +30,14 @@ from app.integrations.redis_client import (
     create_redis_client,
     ping_redis_client,
 )
-from app.services.context_resource_service import ContextResourceService
-from app.services.context_service import ContextService
+from app.modules.context.application.context_service import ContextService
+from app.modules.context.application.resource_service import (
+    ContextResourceService,
+)
+from app.services.context_projection import build_context_chain
+from app.repositories.context_record_factory import (
+    SQLAlchemyContextRecordFactory,
+)
 
 
 async def build_container() -> AppContainer:
@@ -59,8 +66,11 @@ async def build_container() -> AppContainer:
             redis_client,
             capacity=CONTEXT_RESOURCE_QUEUE_MAX_SIZE,
         )
+        record_factory = SQLAlchemyContextRecordFactory()
         resource_service = ContextResourceService(
             queue_repository=queue_repository,
+            uow_factory=SQLAlchemyUnitOfWork,
+            record_factory=record_factory,
         )
         deepseek_provider = (
             DeepSeekModelProvider.create()
@@ -76,6 +86,9 @@ async def build_container() -> AppContainer:
             agent_router=agent_router,
             route_lock_manager=route_lock_manager,
             resource_service=resource_service,
+            uow_factory=SQLAlchemyUnitOfWork,
+            record_factory=record_factory,
+            chain_mapper=build_context_chain,
         )
         return AppContainer(
             redis_client=redis_client,

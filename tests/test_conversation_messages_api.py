@@ -12,10 +12,11 @@ from app.api.conversations import router
 from app.api.dependencies import (
     get_context_routing_service,
 )
+from app.modules.context.application.dto import SendMessageCommand
+from app.modules.context.application.errors import ContextRoutingError
 from app.schemas.context import (
     ContextRouteDecision,
     ContextRouteMode,
-    ContextRouteRequest,
     RoutedContextPackage,
 )
 
@@ -25,7 +26,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         self.app = FastAPI()
         self.app.include_router(router, prefix="/api")
         self.context_service = mock.Mock()
-        self.context_service.route_context = mock.AsyncMock()
+        self.context_service.send_message = mock.AsyncMock()
 
         async def get_service():
             return self.context_service
@@ -56,7 +57,13 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        self.context_service.route_context.return_value = routed_package
+        self.context_service.send_message.return_value = mock.Mock(
+            turn_id=routed_package.current_turn_id,
+            message=routed_package.current_user_input,
+            selected_chains=routed_package.selected_chains,
+            new_chain_id=routed_package.new_chain_id,
+            decision=routed_package.route_decision,
+        )
 
         response = await self._post(
             "/api/conversations/conv_test_001/messages",
@@ -67,10 +74,10 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), routed_package.model_dump(mode="json"))
-        self.context_service.route_context.assert_awaited_once_with(
-            ContextRouteRequest(
+        self.context_service.send_message.assert_awaited_once_with(
+            SendMessageCommand(
                 conversation_id="conv_test_001",
-                user_input="继续完善之前的文档处理日志方案",
+                message="继续完善之前的文档处理日志方案",
             )
         )
 
@@ -86,6 +93,22 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(missing_response.status_code, 422)
         self.assertEqual(empty_response.status_code, 422)
+
+    async def test_routing_error_is_mapped_to_bad_gateway(self) -> None:
+        self.context_service.send_message.side_effect = ContextRoutingError(
+            "Context Agent 路由失败"
+        )
+
+        response = await self._post(
+            "/api/conversations/conv_test_001/messages",
+            json={"message": "继续之前的方案"},
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json(),
+            {"detail": "Context Agent 路由失败"},
+        )
 
     async def test_conversation_id_must_not_exceed_service_limit(self) -> None:
         response = await self._post(

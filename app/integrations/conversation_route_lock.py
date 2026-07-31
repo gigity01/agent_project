@@ -8,9 +8,12 @@ from contextlib import asynccontextmanager
 from redis.asyncio import Redis
 from redis.exceptions import LockError
 
+from app.modules.context.application.errors import (
+    ConversationLockUnavailable,
+)
 
-class ConversationRouteLockUnavailable(RuntimeError):
-    """同一 Conversation 的路由锁在等待窗口内不可用。"""
+
+ConversationRouteLockUnavailable = ConversationLockUnavailable
 
 
 class ConversationRouteLockManager:

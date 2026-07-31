@@ -12,8 +12,10 @@ from app.integrations.conversation_route_lock import (
     ConversationRouteLockManager,
 )
 from app.integrations.redis_client import close_redis_client
-from app.services.context_resource_service import ContextResourceService
-from app.services.context_service import ContextService
+from app.modules.context.application.context_service import ContextService
+from app.modules.context.application.resource_service import (
+    ContextResourceService,
+)
 
 
 @dataclass

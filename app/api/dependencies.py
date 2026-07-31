@@ -8,8 +8,10 @@ from app.bootstrap.container import AppContainer
 from app.integrations.conversation_route_lock import (
     ConversationRouteLockManager,
 )
-from app.services.context_resource_service import ContextResourceService
-from app.services.context_service import ContextService
+from app.modules.context.application.context_service import ContextService
+from app.modules.context.application.resource_service import (
+    ContextResourceService,
+)
 
 
 def get_container(request: Request) -> AppContainer:
