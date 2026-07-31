@@ -1,12 +1,6 @@
-"""Conversation Turn 在 Context 子系统中的处理状态。"""
+"""Context Turn 状态兼容导出。"""
 
-from enum import Enum
+from app.modules.context.domain.enums import ContextTurnStatus
 
 
-class ContextTurnStatus(str, Enum):
-    """Turn 从创建、完成路由到下游处理完成的状态。"""
-
-    ROUTING = "routing"
-    ROUTED = "routed"
-    COMPLETED = "completed"
-    FAILED = "failed"
+__all__ = ["ContextTurnStatus"]

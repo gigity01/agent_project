@@ -40,18 +40,20 @@ with (
     from app.models.conversation_turn import (
         ConversationTurn as ConversationTurnModel,
     )
-    from app.schemas.context import (
-        CompleteContextTurnRequest,
+    from app.modules.context.domain.enums import ContextRouteMode
+    from app.modules.context.domain.models import (
         ContextChain,
-        ContextChainTurnUpdate,
-        ContextResourceInput,
         ContextResourceQueue,
         ContextRouteDecision,
-        ContextRouteMode,
-        ContextRouteRequest,
     )
-    from app.services.context_route_validation import (
+    from app.modules.context.domain.route_policy import (
         validate_route_decision,
+    )
+    from app.schemas.context import (
+        CompleteContextTurnRequest,
+        ContextChainTurnUpdate,
+        ContextResourceInput,
+        ContextRouteRequest,
     )
     from app.services.context_service import ContextService
     from app.services.context_resource_service import ContextResourceService
