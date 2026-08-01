@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.settings import SECONDARY_TEXT_STORAGE_DIR
-from app.modules.document.application.ports import (
-    calculate_file_hash,
-    create_docling_client as DoclingClient,
+from app.modules.document.application.ports import DocumentApplicationPorts
+from app.modules.document.application.settings import (
+    DocumentProcessingSettings,
 )
 from app.modules.document.domain.policies import (
     normalize_source_type,
@@ -61,6 +60,9 @@ class PreparedProcessSource:
 
 def prepare_process_source(
     document: ProcessingContext,
+    *,
+    ports: DocumentApplicationPorts,
+    settings: DocumentProcessingSettings,
 ) -> PreparedProcessSource:
     """在事务外转换复杂格式并返回内存产物，不访问数据库。"""
     source_type = normalize_source_type(document.source_type)
@@ -72,15 +74,17 @@ def prepare_process_source(
             source_type=source_type,
         )
 
-    docling_client = DoclingClient()
+    docling_client = ports.docling_factory()
     markdown_result = docling_client.convert_to_markdown(
         source_path=document.source_path,
         source_type=source_type,
     )
-    SECONDARY_TEXT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    settings.secondary_text_storage_dir.mkdir(parents=True, exist_ok=True)
 
     artifact_code = _generate_artifact_code(document.doc_code)
-    secondary_path = SECONDARY_TEXT_STORAGE_DIR / f"{artifact_code}.md"
+    secondary_path = (
+        settings.secondary_text_storage_dir / f"{artifact_code}.md"
+    )
 
     try:
         secondary_path.write_text(markdown_result.markdown, encoding="utf-8")
@@ -89,7 +93,7 @@ def prepare_process_source(
             artifact_role="process_input",
             artifact_format="md",
             artifact_uri=str(secondary_path),
-            artifact_hash=calculate_file_hash(secondary_path),
+            artifact_hash=ports.calculate_file_hash(secondary_path),
             provider=markdown_result.provider,
             processor=docling_client.__class__.__name__,
             file_size=secondary_path.stat().st_size,

@@ -9,13 +9,10 @@ from alembic import context
 
 from app.config.settings import SQLALCHEMY_DATABASE_URL
 from app.infrastructure.database.base import Base
+from app.infrastructure.database.model_registry import load_all_models
 
-import app.modules.context.infrastructure.persistence.models
-import app.modules.document.infrastructure.persistence.models.child_chunk
-import app.modules.document.infrastructure.persistence.models.document
-import app.modules.document.infrastructure.persistence.models.document_artifact
-import app.modules.document.infrastructure.persistence.models.knowledge_base
-import app.modules.document.infrastructure.persistence.models.parent_block
+
+load_all_models()
 
 # Alembic 配置对象来自 alembic.ini；运行时 URL 由应用统一配置覆盖，避免迁移
 # 与服务连接到不同数据库。

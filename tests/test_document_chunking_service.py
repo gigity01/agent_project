@@ -131,10 +131,7 @@ def _load_service_module():
         "app.modules.document.application.errors"
     ].DocumentApplicationError = _HTTPException
     ports = replacements["app.modules.document.application.ports"]
-    ports.create_child_chunk = _KeywordModel
-    ports.create_parent_block = _KeywordModel
-    ports.create_uow = object
-    ports.get_chunker = lambda source_type: None
+    ports.DocumentApplicationPorts = object
     domain_models = replacements["app.modules.document.domain.models"]
     domain_models.ChunkBuildInput = _ChunkBuildInput
     domain_models.ChunkBuildResult = _ChunkBuildResult
@@ -168,6 +165,49 @@ def _load_service_module():
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+
+        module.HTTPException = module.DocumentApplicationError
+        module.SQLAlchemyUnitOfWork = object
+        module.ParentBlock = _KeywordModel
+        module.ChildChunk = _KeywordModel
+        module.get_chunker = lambda source_type: None
+        module.test_ports = SimpleNamespace(
+            uow_factory=lambda: module.SQLAlchemyUnitOfWork(),
+            parent_block_factory=lambda **values: module.ParentBlock(
+                **values
+            ),
+            child_chunk_factory=lambda **values: module.ChildChunk(
+                **values
+            ),
+            chunker_factory=lambda source_type: module.get_chunker(
+                source_type
+            ),
+        )
+        original_claim = module._claim_chunking
+        original_complete = module._complete_chunking
+        original_fail = module._fail_chunking
+        module._claim_chunking = lambda document_id, *, ports=None: (
+            original_claim(
+                document_id,
+                ports=ports or module.test_ports,
+            )
+        )
+        module._complete_chunking = lambda result, *, ports=None: (
+            original_complete(
+                result,
+                ports=ports or module.test_ports,
+            )
+        )
+        module._fail_chunking = (
+            lambda document_id, error, *, ports=None: original_fail(
+                document_id,
+                error,
+                ports=ports or module.test_ports,
+            )
+        )
+        module.build_document_chunks = module.BuildChunksUseCase(
+            ports=module.test_ports
+        ).execute
 
         return module
 

@@ -5,24 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from app.config.settings import (
-    EMBEDDING_BATCH_SIZE,
-    EMBEDDING_MODEL_NAME,
-    EMBEDDING_VECTOR_SIZE,
-)
 from app.modules.document.application.dto import IndexVectorsResult
-from app.modules.document.application.errors import (
-    DocumentApplicationError as HTTPException,
-)
+from app.modules.document.application.errors import DocumentApplicationError
 from app.modules.document.application.failure_state import (
     IndexFailureStateResult,
     NO_INDEX_FAILURE_STATE_CHANGE,
 )
-from app.modules.document.application.ports import (
-    create_embedding_client as EmbeddingService,
-    create_uow as SQLAlchemyUnitOfWork,
-    create_vector_point as PointStruct,
-    create_vector_store as QdrantVectorStore,
+from app.modules.document.application.ports import DocumentApplicationPorts
+from app.modules.document.application.settings import (
+    DocumentIndexingSettings,
 )
 from app.modules.document.domain.enums import (
     DocumentLifecycleStatus,
@@ -132,9 +123,39 @@ class IndexingExecutionResult:
     point_ids: tuple[int, ...]
 
 
-def index_document_vectors(
+class IndexVectorsUseCase:
+    """在短事务之间编排 Embedding 与 Qdrant 索引。"""
+
+    def __init__(
+        self,
+        *,
+        ports: DocumentApplicationPorts,
+        settings: DocumentIndexingSettings,
+    ) -> None:
+        self._ports = ports
+        self._settings = settings
+
+    def execute(
+        self,
+        document_id: int,
+        *,
+        embedding_client: EmbeddingClient | None = None,
+        vector_store: VectorStoreClient | None = None,
+    ) -> IndexVectorsResult:
+        return _index_document_vectors(
+            document_id,
+            ports=self._ports,
+            settings=self._settings,
+            embedding_client=embedding_client,
+            vector_store=vector_store,
+        )
+
+
+def _index_document_vectors(
     document_id: int,
     *,
+    ports: DocumentApplicationPorts,
+    settings: DocumentIndexingSettings,
     embedding_client: EmbeddingClient | None = None,
     vector_store: VectorStoreClient | None = None,
 ) -> IndexVectorsResult:
@@ -147,22 +168,28 @@ def index_document_vectors(
     phase = "claim"
 
     try:
-        context = _claim_indexing(document_id)
+        context = _claim_indexing(document_id, ports=ports)
         index_logger.claimed(context)
 
         phase = "execute"
-        resolved_embedding_client = embedding_client or EmbeddingService()
-        resolved_vector_store = resolved_vector_store or QdrantVectorStore()
+        resolved_embedding_client = (
+            embedding_client or ports.embedding_factory()
+        )
+        resolved_vector_store = (
+            resolved_vector_store or ports.vector_store_factory()
+        )
         execution_result = _execute_indexing(
             context,
             embedding_client=resolved_embedding_client,
             vector_store=resolved_vector_store,
             index_logger=index_logger,
+            ports=ports,
+            settings=settings,
         )
         confirmed_point_ids = execution_result.point_ids
 
         phase = "finalize"
-        response = _complete_indexing(execution_result)
+        response = _complete_indexing(execution_result, ports=ports)
         index_logger.completed(response)
         return response
     except IndexingExecutionError as exc:
@@ -180,8 +207,9 @@ def index_document_vectors(
             operation=exc.operation,
             batch_index=exc.batch_index,
             batch_size=exc.batch_size,
+            ports=ports,
         )
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=500,
             detail="向量索引失败，请稍后重试或联系管理员",
         ) from exc
@@ -195,9 +223,13 @@ def index_document_vectors(
             vector_store=resolved_vector_store,
             error=exc,
             index_logger=index_logger,
+            ports=ports,
         )
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except HTTPException as exc:
+        raise DocumentApplicationError(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+    except DocumentApplicationError as exc:
         _handle_indexing_failure(
             document_id=document_id,
             context=context,
@@ -207,6 +239,7 @@ def index_document_vectors(
             vector_store=resolved_vector_store,
             error=exc,
             index_logger=index_logger,
+            ports=ports,
         )
         raise
     except Exception as exc:
@@ -219,38 +252,49 @@ def index_document_vectors(
             vector_store=resolved_vector_store,
             error=exc,
             index_logger=index_logger,
+            ports=ports,
         )
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=500,
             detail="向量索引失败，请稍后重试或联系管理员",
         ) from exc
 
 
-def _claim_indexing(document_id: int) -> IndexingContext:
+def _claim_indexing(
+    document_id: int,
+    *,
+    ports: DocumentApplicationPorts,
+) -> IndexingContext:
     """以行锁领取索引权，并提交 Document/Chunk 的 indexing 状态。"""
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
 
         if document is None:
-            raise HTTPException(status_code=404, detail="文档不存在")
+            raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status not in {
             DocumentStatus.CHUNKED.value,
             DocumentStatus.FAILED.value,
         }:
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail=f"当前文档状态不允许索引: {document.status}",
             )
         if document.lifecycle_status not in INDEXABLE_LIFECYCLE_STATUSES:
-            raise HTTPException(status_code=409, detail="失效文档不能索引")
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="失效文档不能索引",
+            )
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
-            raise HTTPException(status_code=409, detail="文档不在活跃存储区")
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="文档不在活跃存储区",
+            )
 
         if uow.child_chunks.exists_by_doc_id_and_vector_status(
             document.id,
             "indexing",
         ):
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail="文档存在未完成的索引任务，请先执行恢复操作",
             )
@@ -265,7 +309,7 @@ def _claim_indexing(document_id: int) -> IndexingContext:
                 if document.status == DocumentStatus.FAILED.value
                 else "文档没有可索引的子块"
             )
-            raise HTTPException(status_code=409, detail=detail)
+            raise DocumentApplicationError(status_code=409, detail=detail)
 
         _validate_indexing_chunk_ownership(document, chunks)
 
@@ -304,9 +348,11 @@ def _execute_indexing(
     embedding_client: EmbeddingClient,
     vector_store: VectorStoreClient,
     index_logger: DocumentIndexLogger | None = None,
+    ports: DocumentApplicationPorts,
+    settings: DocumentIndexingSettings,
 ) -> IndexingExecutionResult:
     """在数据库事务外分批生成向量并以稳定 ID upsert Qdrant。"""
-    if EMBEDDING_BATCH_SIZE <= 0:
+    if settings.embedding_batch_size <= 0:
         raise IndexingExecutionError(
             "EMBEDDING_BATCH_SIZE 必须大于 0",
             operation="vector_validation",
@@ -336,19 +382,25 @@ def _execute_indexing(
                 "collection_name",
                 None,
             ),
-            vector_size=EMBEDDING_VECTOR_SIZE,
+            vector_size=settings.embedding_vector_size,
         )
 
-    for start in range(0, len(context.chunks), EMBEDDING_BATCH_SIZE):
-        batch = context.chunks[start:start + EMBEDDING_BATCH_SIZE]
-        batch_index = start // EMBEDDING_BATCH_SIZE + 1
+    for start in range(
+        0,
+        len(context.chunks),
+        settings.embedding_batch_size,
+    ):
+        batch = context.chunks[
+            start:start + settings.embedding_batch_size
+        ]
+        batch_index = start // settings.embedding_batch_size + 1
         batch_point_ids = [chunk.chunk_id for chunk in batch]
         embedding_started_at_ms = now_ms()
         if index_logger is not None:
             embedding_started_at_ms = index_logger.embedding_batch_started(
                 batch_index=batch_index,
                 batch_size=len(batch),
-                embedding_model=EMBEDDING_MODEL_NAME,
+                embedding_model=settings.embedding_model_name,
             )
         try:
             vectors = embedding_client.embed_texts(
@@ -365,9 +417,9 @@ def _execute_indexing(
             ) from exc
 
         try:
-            _validate_vectors(batch, vectors)
+            _validate_vectors(batch, vectors, settings=settings)
             points = [
-                _build_point(context, chunk, vector)
+                _build_point(context, chunk, vector, ports=ports)
                 for chunk, vector in zip(batch, vectors)
             ]
         except Exception as exc:
@@ -417,17 +469,19 @@ def _execute_indexing(
 
 def _complete_indexing(
     result: IndexingExecutionResult,
+    *,
+    ports: DocumentApplicationPorts,
 ) -> IndexVectorsResult:
     """在短事务中复核文档和子块状态，并原子登记 indexed。"""
     context = result.context
     chunk_ids = _context_chunk_ids(context)
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(context.document_id)
 
         if document is None:
-            raise HTTPException(status_code=404, detail="文档不存在")
+            raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status != DocumentStatus.INDEXING.value:
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail=f"文档索引状态已经变化: {document.status}",
             )
@@ -471,10 +525,12 @@ def _fail_indexing(
     document_id: int,
     chunk_ids: tuple[int, ...],
     error: Exception,
+    *,
+    ports: DocumentApplicationPorts,
 ) -> IndexFailureStateResult:
     """以独立短事务把本次 indexing Document/Chunk 标记为 failed。"""
     del error
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
         if document is None:
             return NO_INDEX_FAILURE_STATE_CHANGE
@@ -515,6 +571,7 @@ def _handle_indexing_failure(
     operation: str | None = None,
     batch_index: int | None = None,
     batch_size: int | None = None,
+    ports: DocumentApplicationPorts,
 ) -> IndexFailureStateResult:
     """不掩盖原异常地执行数据库失败登记和 Qdrant Point 补偿。"""
     failure_result = NO_INDEX_FAILURE_STATE_CHANGE
@@ -524,6 +581,7 @@ def _handle_indexing_failure(
                 document_id,
                 _context_chunk_ids(context),
                 error,
+                ports=ports,
             )
         except Exception:
             logger.exception(
@@ -615,11 +673,16 @@ def _to_chunk_input(chunk) -> IndexingChunkInput:
 def _validate_vectors(
     chunks: tuple[IndexingChunkInput, ...],
     vectors: list[list[float]],
+    *,
+    settings: DocumentIndexingSettings,
 ) -> None:
     """校验一个批次的 Embedding 数量和维度。"""
     if len(vectors) != len(chunks):
         raise RuntimeError("Embedding 返回数量不一致")
-    if any(len(vector) != EMBEDDING_VECTOR_SIZE for vector in vectors):
+    if any(
+        len(vector) != settings.embedding_vector_size
+        for vector in vectors
+    ):
         raise RuntimeError("Embedding 维度不一致")
 
 
@@ -627,9 +690,11 @@ def _build_point(
     context: IndexingContext,
     chunk: IndexingChunkInput,
     vector: list[float],
+    *,
+    ports: DocumentApplicationPorts,
 ) -> Any:
     """使用 ChildChunk 主键构造可幂等 upsert 的 Qdrant Point。"""
-    return PointStruct(
+    return ports.point_factory(
         id=chunk.chunk_id,
         vector=vector,
         payload={

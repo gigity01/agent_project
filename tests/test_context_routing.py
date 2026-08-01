@@ -63,8 +63,8 @@ with (
         CompleteContextTurnRequest,
         ContextChainTurnUpdate,
         ContextResourceInput,
-        ContextRouteRequest,
     )
+    from app.modules.context.application.dto import SendMessageCommand
     from app.modules.context.application.context_service import ContextService
     from app.modules.context.application.resource_service import (
         ContextResourceService,
@@ -300,10 +300,10 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_route_and_complete_create_one_turn_and_one_new_chain(
         self,
     ) -> None:
-        package = await self.service.route_context(
-            ContextRouteRequest(
+        package = await self.service.send_message(
+            SendMessageCommand(
                 conversation_id="conversation-1",
-                user_input="设计一个新的日志告警模块。",
+                message="设计一个新的日志告警模块。",
             )
         )
 
@@ -313,7 +313,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent_router.inputs[0].chains, [])
 
         response = await self.service.complete_turn(
-            package.current_turn_id,
+            package.turn_id,
             CompleteContextTurnRequest(
                 assistant_content="已完成日志告警模块设计。",
                 task_ids=["task-1"],
@@ -383,10 +383,10 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_complete_rejects_chain_outside_saved_route(self) -> None:
-        package = await self.service.route_context(
-            ContextRouteRequest(
+        package = await self.service.send_message(
+            SendMessageCommand(
                 conversation_id="conversation-1",
-                user_input="创建新上下文。",
+                message="创建新上下文。",
             )
         )
 
@@ -395,7 +395,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             "Context Chain 不在已路由范围内",
         ):
             await self.service.complete_turn(
-                package.current_turn_id,
+                package.turn_id,
                 CompleteContextTurnRequest(
                     chain_updates=[
                         ContextChainTurnUpdate(chain_id="other-chain")
@@ -406,16 +406,16 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_redis_refresh_failure_keeps_committed_resource_facts(
         self,
     ) -> None:
-        package = await self.service.route_context(
-            ContextRouteRequest(
+        package = await self.service.send_message(
+            SendMessageCommand(
                 conversation_id="conversation-1",
-                user_input="创建资源事实。",
+                message="创建资源事实。",
             )
         )
         self.queue_repository.fail_refresh = True
 
         response = await self.service.complete_turn(
-            package.current_turn_id,
+            package.turn_id,
             CompleteContextTurnRequest(
                 chain_updates=[
                     ContextChainTurnUpdate(
@@ -451,14 +451,14 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_refreshes_and_removes_resources_without_losing_history(
         self,
     ) -> None:
-        first_package = await self.service.route_context(
-            ContextRouteRequest(
+        first_package = await self.service.send_message(
+            SendMessageCommand(
                 conversation_id="conversation-1",
-                user_input="处理文档 A 和 B。",
+                message="处理文档 A 和 B。",
             )
         )
         await self.service.complete_turn(
-            first_package.current_turn_id,
+            first_package.turn_id,
             CompleteContextTurnRequest(
                 chain_updates=[
                     ContextChainTurnUpdate(
@@ -488,10 +488,10 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             route_mode=ContextRouteMode.SINGLE_MATCH,
             reason_summary="继续已有文档链。",
         )
-        second_package = await self.service.route_context(
-            ContextRouteRequest(
+        second_package = await self.service.send_message(
+            SendMessageCommand(
                 conversation_id="conversation-1",
-                user_input="继续使用 B，移除 A。",
+                message="继续使用 B，移除 A。",
             )
         )
         self.assertEqual(
@@ -505,7 +505,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
         await self.service.complete_turn(
-            second_package.current_turn_id,
+            second_package.turn_id,
             CompleteContextTurnRequest(
                 chain_updates=[
                     ContextChainTurnUpdate(

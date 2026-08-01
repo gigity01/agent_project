@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 from uuid import uuid4
 
 from starlette.concurrency import run_in_threadpool
@@ -182,17 +181,6 @@ class ContextService:
                 except Exception:
                     pass
             raise
-
-    async def route_context(self, request: Any) -> RouteContextResult:
-        """兼容旧应用调用，转发到 ``send_message()``。"""
-        if isinstance(request, SendMessageCommand):
-            command = request
-        else:
-            command = SendMessageCommand(
-                conversation_id=request.conversation_id,
-                message=request.user_input,
-            )
-        return await self.send_message(command)
 
     async def complete_turn(
         self,

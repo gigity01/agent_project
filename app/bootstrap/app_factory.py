@@ -3,15 +3,13 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-import app.modules.context.infrastructure.persistence.models
-import app.modules.document.infrastructure.persistence.models.child_chunk
-import app.modules.document.infrastructure.persistence.models.document
-import app.modules.document.infrastructure.persistence.models.document_artifact
-import app.modules.document.infrastructure.persistence.models.knowledge_base
-import app.modules.document.infrastructure.persistence.models.parent_block
 from app.api.router import api_router
 from app.bootstrap.lifespan import lifespan
+from app.infrastructure.database.model_registry import load_all_models
 from app.modules.document.application.errors import DocumentApplicationError
+
+
+load_all_models()
 
 
 async def _document_application_error_handler(

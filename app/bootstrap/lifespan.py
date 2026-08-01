@@ -12,10 +12,23 @@ from app.config.settings import (
     CONTEXT_RESOURCE_QUEUE_MAX_SIZE,
     CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS,
     CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS,
+    CLEANED_STORAGE_DIR,
+    DEFAULT_CREATED_BY_ACTOR_CODE,
+    DEFAULT_DOCUMENT_STATUS,
+    DEFAULT_DOCUMENT_VERSION,
     DEEPSEEK_API_KEY,
+    DOCUMENT_CODE_PREFIX,
+    DOCUMENT_CODE_RANDOM_LENGTH,
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_MODEL_NAME,
+    EMBEDDING_VECTOR_SIZE,
+    MAX_UPLOAD_FILE_SIZE,
+    RAW_EXTERNAL_STORAGE_DIR,
+    RAW_LOCAL_STORAGE_DIR,
     REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
     REDIS_SOCKET_TIMEOUT_SECONDS,
     REDIS_URL,
+    SECONDARY_TEXT_STORAGE_DIR,
 )
 from app.bootstrap.container import AppContainer
 from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
@@ -44,7 +57,23 @@ from app.modules.context.application.resource_service import (
 )
 from app.modules.document.application.ports import (
     DocumentApplicationPorts,
-    configure_document_ports,
+)
+from app.modules.document.application.settings import (
+    DocumentIndexingSettings,
+    DocumentProcessingSettings,
+    DocumentUploadSettings,
+)
+from app.modules.document.application.use_cases.build_chunks import (
+    BuildChunksUseCase,
+)
+from app.modules.document.application.use_cases.index_vectors import (
+    IndexVectorsUseCase,
+)
+from app.modules.document.application.use_cases.process_document import (
+    ProcessDocumentUseCase,
+)
+from app.modules.document.application.use_cases.upload_document import (
+    UploadDocumentUseCase,
 )
 from app.modules.document.infrastructure.chunking.factory import get_chunker
 from app.modules.document.infrastructure.embedding.dashscope import (
@@ -75,7 +104,7 @@ from app.modules.document.infrastructure.vector_store.qdrant import (
 
 
 async def build_container() -> AppContainer:
-    """创建外部客户端并装配 Context 应用服务。"""
+    """创建外部客户端并装配应用级共享对象。"""
     redis_client = create_redis_client(
         REDIS_URL,
         socket_connect_timeout_seconds=(
@@ -124,24 +153,57 @@ async def build_container() -> AppContainer:
             record_factory=record_factory,
             chain_mapper=build_context_chain,
         )
-        configure_document_ports(
-            DocumentApplicationPorts(
-                uow_factory=SQLAlchemyUnitOfWork,
-                document_factory=Document,
-                parent_block_factory=ParentBlock,
-                child_chunk_factory=ChildChunk,
-                processor_factory=get_processor,
-                chunker_factory=get_chunker,
-                embedding_factory=EmbeddingService,
-                vector_store_factory=QdrantVectorStore,
-                docling_factory=DoclingClient,
-                point_factory=PointStruct,
-                validate_content_type=validate_content_type,
-                get_safe_extension=get_safe_extension,
-                calculate_file_hash=calculate_file_hash,
-                cleanup_file=cleanup_file,
-                integrity_error_type=IntegrityError,
-            )
+        document_ports = DocumentApplicationPorts(
+            uow_factory=SQLAlchemyUnitOfWork,
+            document_factory=Document,
+            parent_block_factory=ParentBlock,
+            child_chunk_factory=ChildChunk,
+            processor_factory=get_processor,
+            chunker_factory=get_chunker,
+            embedding_factory=EmbeddingService,
+            vector_store_factory=QdrantVectorStore,
+            docling_factory=DoclingClient,
+            point_factory=PointStruct,
+            validate_content_type=validate_content_type,
+            get_safe_extension=get_safe_extension,
+            calculate_file_hash=calculate_file_hash,
+            cleanup_file=cleanup_file,
+            integrity_error_type=IntegrityError,
+        )
+        upload_document = UploadDocumentUseCase(
+            ports=document_ports,
+            settings=DocumentUploadSettings(
+                raw_local_storage_dir=RAW_LOCAL_STORAGE_DIR,
+                raw_external_storage_dir=RAW_EXTERNAL_STORAGE_DIR,
+                max_upload_file_size=MAX_UPLOAD_FILE_SIZE,
+                default_document_status=DEFAULT_DOCUMENT_STATUS,
+                default_document_version=DEFAULT_DOCUMENT_VERSION,
+                default_created_by_actor_code=(
+                    DEFAULT_CREATED_BY_ACTOR_CODE
+                ),
+                document_code_prefix=DOCUMENT_CODE_PREFIX,
+                document_code_random_length=(
+                    DOCUMENT_CODE_RANDOM_LENGTH
+                ),
+            ),
+        )
+        process_document = ProcessDocumentUseCase(
+            ports=document_ports,
+            settings=DocumentProcessingSettings(
+                cleaned_storage_dir=CLEANED_STORAGE_DIR,
+                secondary_text_storage_dir=(
+                    SECONDARY_TEXT_STORAGE_DIR
+                ),
+            ),
+        )
+        build_chunks = BuildChunksUseCase(ports=document_ports)
+        index_vectors = IndexVectorsUseCase(
+            ports=document_ports,
+            settings=DocumentIndexingSettings(
+                embedding_batch_size=EMBEDDING_BATCH_SIZE,
+                embedding_model_name=EMBEDDING_MODEL_NAME,
+                embedding_vector_size=EMBEDDING_VECTOR_SIZE,
+            ),
         )
         return AppContainer(
             redis_client=redis_client,
@@ -150,6 +212,10 @@ async def build_container() -> AppContainer:
             context_route_lock_manager=route_lock_manager,
             context_resource_service=resource_service,
             context_service=context_service,
+            upload_document=upload_document,
+            process_document=process_document,
+            build_chunks=build_chunks,
+            index_vectors=index_vectors,
         )
     except Exception:
         try:

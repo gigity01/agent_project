@@ -5,22 +5,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from app.config.settings import CLEANED_STORAGE_DIR
 from app.modules.document.application.dto import (
     DocumentArtifactCreate,
     ProcessDocumentResult,
 )
-from app.modules.document.application.errors import (
-    DocumentApplicationError as HTTPException,
-)
+from app.modules.document.application.errors import DocumentApplicationError
 from app.modules.document.application.failure_state import (
     FailureStateResult,
     NO_FAILURE_STATE_CHANGE,
 )
-from app.modules.document.application.ports import (
-    calculate_file_hash,
-    create_uow as SQLAlchemyUnitOfWork,
-    get_processor,
+from app.modules.document.application.ports import DocumentApplicationPorts
+from app.modules.document.application.settings import (
+    DocumentProcessingSettings,
 )
 from app.modules.document.application.use_cases.prepare_document_source import (
     PendingArtifact,
@@ -87,21 +83,50 @@ class ProcessingExecutionResult:
         self.prepared_source.cleanup_generated_file()
 
 
-def process_document(document_id: int) -> ProcessDocumentResult:
+class ProcessDocumentUseCase:
+    """在短事务之间编排 Document 转换与清洗。"""
+
+    def __init__(
+        self,
+        *,
+        ports: DocumentApplicationPorts,
+        settings: DocumentProcessingSettings,
+    ) -> None:
+        self._ports = ports
+        self._settings = settings
+
+    def execute(self, document_id: int) -> ProcessDocumentResult:
+        return _process_document(
+            document_id,
+            ports=self._ports,
+            settings=self._settings,
+        )
+
+
+def _process_document(
+    document_id: int,
+    *,
+    ports: DocumentApplicationPorts,
+    settings: DocumentProcessingSettings,
+) -> ProcessDocumentResult:
     """领取文档后在事务外处理，并以独立短事务登记结果或失败。"""
     process_logger = DocumentProcessLogger(document_id=document_id)
     context: ProcessingContext | None = None
     execution_result: ProcessingExecutionResult | None = None
     phase = "claim"
     try:
-        context = _claim_processing(document_id)
+        context = _claim_processing(document_id, ports=ports)
         process_logger.claimed(context)
 
         phase = "execute"
-        execution_result = _execute_processing(context)
+        execution_result = _execute_processing(
+            context,
+            ports=ports,
+            settings=settings,
+        )
 
         phase = "finalize"
-        response = _complete_processing(execution_result)
+        response = _complete_processing(execution_result, ports=ports)
         process_logger.completed(
             processed_source_type=(
                 execution_result.cleaned_artifact.artifact_format
@@ -114,6 +139,7 @@ def process_document(document_id: int) -> ProcessDocumentResult:
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            ports=ports,
         )
         if execution_result is not None:
             execution_result.cleanup_generated_files()
@@ -125,12 +151,16 @@ def process_document(document_id: int) -> ProcessDocumentResult:
             status_before=failure_result.status_before,
             status_after=failure_result.status_after,
         )
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except HTTPException as exc:
+        raise DocumentApplicationError(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+    except DocumentApplicationError as exc:
         failure_result = _register_processing_failure(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            ports=ports,
         )
         if execution_result is not None:
             execution_result.cleanup_generated_files()
@@ -148,6 +178,7 @@ def process_document(document_id: int) -> ProcessDocumentResult:
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            ports=ports,
         )
         if execution_result is not None:
             execution_result.cleanup_generated_files()
@@ -159,31 +190,41 @@ def process_document(document_id: int) -> ProcessDocumentResult:
             status_before=failure_result.status_before,
             status_after=failure_result.status_after,
         )
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=500,
             detail="文档处理失败，请稍后重试或联系管理员",
         ) from exc
 
 
-def _claim_processing(document_id: int) -> ProcessingContext:
+def _claim_processing(
+    document_id: int,
+    *,
+    ports: DocumentApplicationPorts,
+) -> ProcessingContext:
     """以行锁领取处理权，并立即提交 processing 状态。"""
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
 
         if document is None:
-            raise HTTPException(status_code=404, detail="文档不存在")
+            raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status not in {
             DocumentStatus.UPLOADED.value,
             DocumentStatus.FAILED.value,
         }:
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail=f"当前文档状态不允许处理: {document.status}",
             )
         if document.lifecycle_status not in PROCESSABLE_LIFECYCLE_STATUSES:
-            raise HTTPException(status_code=409, detail="失效文档不能处理")
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="失效文档不能处理",
+            )
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
-            raise HTTPException(status_code=409, detail="文档不在活跃存储区")
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="文档不在活跃存储区",
+            )
 
         status_before = document.status
         context = ProcessingContext(
@@ -206,15 +247,18 @@ def _claim_processing(document_id: int) -> ProcessingContext:
 
 def _execute_processing(
     context: ProcessingContext,
+    *,
+    ports: DocumentApplicationPorts,
+    settings: DocumentProcessingSettings,
 ) -> ProcessingExecutionResult:
     """在数据库事务外执行源检查、转换、清洗和文件元数据计算。"""
     if not context.source_path.exists():
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=404,
             detail=f"原始文件不存在: {context.source_path}",
         )
     if not context.source_path.is_file():
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=400,
             detail=f"原始路径不是有效文件: {context.source_path}",
         )
@@ -222,13 +266,17 @@ def _execute_processing(
     prepared_source: PreparedProcessSource | None = None
     cleaned_path: Path | None = None
     try:
-        prepared_source = prepare_process_source(context)
-        CLEANED_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        prepared_source = prepare_process_source(
+            context,
+            ports=ports,
+            settings=settings,
+        )
+        settings.cleaned_storage_dir.mkdir(parents=True, exist_ok=True)
         cleaned_filename = (
             f"{context.doc_code}.cleaned.{prepared_source.source_type}"
         )
-        cleaned_path = CLEANED_STORAGE_DIR / cleaned_filename
-        processor = get_processor(prepared_source.source_type)
+        cleaned_path = settings.cleaned_storage_dir / cleaned_filename
+        processor = ports.processor_factory(prepared_source.source_type)
         process_result = processor.process(
             source_path=prepared_source.source_path,
             cleaned_path=cleaned_path,
@@ -239,7 +287,7 @@ def _execute_processing(
             artifact_role="process_output",
             artifact_format=process_result.source_type,
             artifact_uri=str(cleaned_path),
-            artifact_hash=calculate_file_hash(cleaned_path),
+            artifact_hash=ports.calculate_file_hash(cleaned_path),
             provider=None,
             processor=processor.__class__.__name__,
             file_size=cleaned_path.stat().st_size,
@@ -266,15 +314,17 @@ def _execute_processing(
 
 def _complete_processing(
     result: ProcessingExecutionResult,
+    *,
+    ports: DocumentApplicationPorts,
 ) -> ProcessDocumentResult:
     """在短事务中复核状态、登记 Artifact 并推进到 processed。"""
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(result.document_id)
 
         if document is None:
-            raise HTTPException(status_code=404, detail="文档不存在")
+            raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status != DocumentStatus.PROCESSING.value:
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail=f"文档处理状态已经变化: {document.status}",
             )
@@ -316,12 +366,13 @@ def _register_processing_failure(
     document_id: int,
     error: Exception,
     claimed: bool,
+    ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
     """尽力登记失败状态；登记异常时保留原始业务异常。"""
     if not claimed:
         return NO_FAILURE_STATE_CHANGE
     try:
-        return _fail_processing(document_id, error)
+        return _fail_processing(document_id, error, ports=ports)
     except Exception:
         logger.exception(
             "文档处理失败状态登记失败",
@@ -333,10 +384,12 @@ def _register_processing_failure(
 def _fail_processing(
     document_id: int,
     error: Exception,
+    *,
+    ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
     """仅在任务仍为 processing 时，以独立短事务标记处理失败。"""
     del error
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
         if document is None:
             return NO_FAILURE_STATE_CHANGE

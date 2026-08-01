@@ -7,7 +7,9 @@ from unittest import mock
 
 import httpx
 from fastapi import FastAPI
+from types import SimpleNamespace
 
+from app.bootstrap.dependencies import get_container
 from app.modules.context.presentation.router import router
 from app.modules.context.presentation.dependencies import (
     get_context_routing_service,
@@ -122,6 +124,32 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             response.json(),
             {"detail": "Context Agent 路由失败"},
+        )
+
+    async def test_unconfigured_agent_is_service_unavailable(self) -> None:
+        async def get_unconfigured_container():
+            return SimpleNamespace(
+                context_agent_router=None,
+                context_service=self.context_service,
+            )
+
+        self.app.dependency_overrides.pop(
+            get_context_routing_service,
+            None,
+        )
+        self.app.dependency_overrides[get_container] = (
+            get_unconfigured_container
+        )
+
+        response = await self._post(
+            "/api/conversations/conv_test_001/messages",
+            json={"message": "继续之前的方案"},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"detail": "Context Agent 服务未配置"},
         )
 
     async def test_conversation_id_must_not_exceed_service_limit(self) -> None:

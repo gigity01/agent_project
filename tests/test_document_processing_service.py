@@ -92,7 +92,6 @@ class _DocumentProcessLogger:
 
 def _load_service_module():
     replacements = {
-        "app.config.settings": types.ModuleType("app.config.settings"),
         "app.modules.document.application.dto": types.ModuleType(
             "app.modules.document.application.dto"
         ),
@@ -101,6 +100,9 @@ def _load_service_module():
         ),
         "app.modules.document.application.ports": types.ModuleType(
             "app.modules.document.application.ports"
+        ),
+        "app.modules.document.application.settings": types.ModuleType(
+            "app.modules.document.application.settings"
         ),
         "app.modules.document.application.use_cases.prepare_document_source": (
             types.ModuleType(
@@ -112,7 +114,6 @@ def _load_service_module():
             "app.shared.observability.document_process_logger"
         ),
     }
-    replacements["app.config.settings"].CLEANED_STORAGE_DIR = Path("cleaned")
     dto = replacements["app.modules.document.application.dto"]
     dto.ProcessDocumentResult = _KeywordModel
     dto.DocumentArtifactCreate = _KeywordModel
@@ -120,16 +121,17 @@ def _load_service_module():
         "app.modules.document.application.errors"
     ].DocumentApplicationError = _HTTPException
     ports = replacements["app.modules.document.application.ports"]
-    ports.calculate_file_hash = lambda path: "hash"
-    ports.create_uow = object
-    ports.get_processor = lambda source_type: None
+    ports.DocumentApplicationPorts = object
+    replacements[
+        "app.modules.document.application.settings"
+    ].DocumentProcessingSettings = object
 
     prepare_module = replacements[
         "app.modules.document.application.use_cases.prepare_document_source"
     ]
     prepare_module.PendingArtifact = _PendingArtifact
     prepare_module.PreparedProcessSource = _PreparedProcessSource
-    prepare_module.prepare_process_source = lambda context: None
+    prepare_module.prepare_process_source = lambda context, **kwargs: None
     replacements[
         "app.shared.observability.document_process_logger"
     ].DocumentProcessLogger = _DocumentProcessLogger
@@ -146,6 +148,41 @@ def _load_service_module():
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        module.HTTPException = module.DocumentApplicationError
+        module.SQLAlchemyUnitOfWork = object
+        module.get_processor = lambda source_type: None
+        module.calculate_file_hash = lambda path: "hash"
+        module.test_ports = SimpleNamespace(
+            uow_factory=lambda: module.SQLAlchemyUnitOfWork(),
+            processor_factory=lambda source_type: module.get_processor(
+                source_type
+            ),
+            calculate_file_hash=lambda path: module.calculate_file_hash(path),
+        )
+        module.test_settings = SimpleNamespace(
+            cleaned_storage_dir=Path("cleaned"),
+            secondary_text_storage_dir=Path("secondary"),
+        )
+        original_claim = module._claim_processing
+        original_complete = module._complete_processing
+        original_fail = module._fail_processing
+        module._claim_processing = lambda document_id, *, ports=None: original_claim(
+            document_id,
+            ports=ports or module.test_ports,
+        )
+        module._complete_processing = lambda result, *, ports=None: original_complete(
+            result,
+            ports=ports or module.test_ports,
+        )
+        module._fail_processing = lambda document_id, error, *, ports=None: original_fail(
+            document_id,
+            error,
+            ports=ports or module.test_ports,
+        )
+        module.process_document = module.ProcessDocumentUseCase(
+            ports=module.test_ports,
+            settings=module.test_settings,
+        ).execute
         return module
     finally:
         sys.modules.pop("document_processing_service_under_test", None)
@@ -392,7 +429,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
             )
             factory = self._use_document(document)
 
-            def fail_docling(context):
+            def fail_docling(context, **kwargs):
                 self.assertFalse(any(uow.active for uow in factory.instances))
                 raise RuntimeError("Docling failed")
 
@@ -482,7 +519,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
                 cleaned_artifact=cleaned,
             )
 
-            def finish_after_deletion(context):
+            def finish_after_deletion(context, **kwargs):
                 document.lifecycle_status = DocumentLifecycleStatus.DELETED.value
                 document.storage_status = DocumentStorageStatus.ARCHIVING.value
                 document.active_content_hash = None

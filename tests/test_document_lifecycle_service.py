@@ -51,9 +51,6 @@ def _load_service_module():
         "app.modules.document.application.errors": types.ModuleType(
             "app.modules.document.application.errors"
         ),
-        "app.modules.document.application.ports": types.ModuleType(
-            "app.modules.document.application.ports"
-        ),
     }
     replacements[
         "app.modules.document.application.dto"
@@ -61,9 +58,6 @@ def _load_service_module():
     replacements[
         "app.modules.document.application.errors"
     ].DocumentApplicationError = _HTTPException
-    replacements[
-        "app.modules.document.application.ports"
-    ].create_uow = object
 
     originals = {name: sys.modules.get(name) for name in replacements}
     sys.modules.update(replacements)
@@ -76,6 +70,13 @@ def _load_service_module():
             raise RuntimeError("无法加载待测试的文档生命周期 Service")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        module.HTTPException = module.DocumentApplicationError
+        module.SQLAlchemyUnitOfWork = object
+        module.deactivate_document = lambda document_id, reason, **kwargs: (
+            module.ChangeDocumentLifecycleUseCase(
+                uow_factory=lambda: module.SQLAlchemyUnitOfWork()
+            ).execute(document_id, reason, **kwargs)
+        )
         return module
     finally:
         for name, original in originals.items():

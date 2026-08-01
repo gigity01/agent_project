@@ -88,7 +88,6 @@ class _DocumentIndexLogger:
 
 def _load_service_module():
     replacements = {
-        "app.config.settings": types.ModuleType("app.config.settings"),
         "app.modules.document.application.dto": types.ModuleType(
             "app.modules.document.application.dto"
         ),
@@ -98,13 +97,13 @@ def _load_service_module():
         "app.modules.document.application.ports": types.ModuleType(
             "app.modules.document.application.ports"
         ),
+        "app.modules.document.application.settings": types.ModuleType(
+            "app.modules.document.application.settings"
+        ),
         "app.shared.observability.document_index_logger": types.ModuleType(
             "app.shared.observability.document_index_logger"
         ),
     }
-    replacements["app.config.settings"].EMBEDDING_BATCH_SIZE = 2
-    replacements["app.config.settings"].EMBEDDING_MODEL_NAME = "test-model"
-    replacements["app.config.settings"].EMBEDDING_VECTOR_SIZE = 3
     replacements[
         "app.modules.document.application.dto"
     ].IndexVectorsResult = _KeywordModel
@@ -112,10 +111,10 @@ def _load_service_module():
         "app.modules.document.application.errors"
     ].DocumentApplicationError = _HTTPException
     ports = replacements["app.modules.document.application.ports"]
-    ports.create_embedding_client = object
-    ports.create_uow = object
-    ports.create_vector_point = _PointStruct
-    ports.create_vector_store = object
+    ports.DocumentApplicationPorts = object
+    replacements[
+        "app.modules.document.application.settings"
+    ].DocumentIndexingSettings = object
     replacements[
         "app.shared.observability.document_index_logger"
     ].DocumentIndexLogger = _DocumentIndexLogger
@@ -132,6 +131,61 @@ def _load_service_module():
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        module.HTTPException = module.DocumentApplicationError
+        module.SQLAlchemyUnitOfWork = object
+        module.EmbeddingService = object
+        module.QdrantVectorStore = object
+        module.PointStruct = _PointStruct
+        module.test_ports = SimpleNamespace(
+            uow_factory=lambda: module.SQLAlchemyUnitOfWork(),
+            embedding_factory=lambda: module.EmbeddingService(),
+            vector_store_factory=lambda: module.QdrantVectorStore(),
+            point_factory=lambda **values: module.PointStruct(**values),
+        )
+        module.test_settings = SimpleNamespace(
+            embedding_batch_size=2,
+            embedding_model_name="test-model",
+            embedding_vector_size=3,
+        )
+        original_claim = module._claim_indexing
+        original_execute = module._execute_indexing
+        original_complete = module._complete_indexing
+        original_fail = module._fail_indexing
+        module._claim_indexing = lambda document_id, *, ports=None: (
+            original_claim(
+                document_id,
+                ports=ports or module.test_ports,
+            )
+        )
+        module._execute_indexing = (
+            lambda context, *, embedding_client, vector_store,
+            index_logger=None, ports=None, settings=None: original_execute(
+                context,
+                embedding_client=embedding_client,
+                vector_store=vector_store,
+                index_logger=index_logger,
+                ports=ports or module.test_ports,
+                settings=settings or module.test_settings,
+            )
+        )
+        module._complete_indexing = lambda result, *, ports=None: (
+            original_complete(
+                result,
+                ports=ports or module.test_ports,
+            )
+        )
+        module._fail_indexing = (
+            lambda document_id, chunk_ids, error, *, ports=None: original_fail(
+                document_id,
+                chunk_ids,
+                error,
+                ports=ports or module.test_ports,
+            )
+        )
+        module.index_document_vectors = module.IndexVectorsUseCase(
+            ports=module.test_ports,
+            settings=module.test_settings,
+        ).execute
         return module
     finally:
         sys.modules.pop("vector_indexing_service_under_test", None)

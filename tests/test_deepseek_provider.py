@@ -196,6 +196,10 @@ async def check() -> None:
         assert container.context_route_lock_manager is not None
         assert container.context_resource_service is not None
         assert container.context_service is not None
+        assert container.upload_document is not None
+        assert container.process_document is not None
+        assert container.build_chunks is not None
+        assert container.index_vectors is not None
     assert redis_client.aclose_count == 1
 
 asyncio.run(check())

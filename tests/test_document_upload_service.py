@@ -66,7 +66,6 @@ class _DocumentUploadLogger:
 
 def _load_service_module():
     replacements = {
-        "app.config.settings": types.ModuleType("app.config.settings"),
         "app.modules.document.application.dto": types.ModuleType(
             "app.modules.document.application.dto"
         ),
@@ -76,35 +75,25 @@ def _load_service_module():
         "app.modules.document.application.ports": types.ModuleType(
             "app.modules.document.application.ports"
         ),
+        "app.modules.document.application.settings": types.ModuleType(
+            "app.modules.document.application.settings"
+        ),
         "app.shared.observability.document_upload_logger": types.ModuleType(
             "app.shared.observability.document_upload_logger"
         ),
     }
-
-    settings = replacements["app.config.settings"]
-    settings.RAW_LOCAL_STORAGE_DIR = Path("raw/local")
-    settings.RAW_EXTERNAL_STORAGE_DIR = Path("raw/external")
-    settings.MAX_UPLOAD_FILE_SIZE = 20 * 1024 * 1024
-    settings.DEFAULT_DOCUMENT_STATUS = "uploaded"
-    settings.DEFAULT_DOCUMENT_VERSION = 1
-    settings.DEFAULT_CREATED_BY_ACTOR_CODE = "operator"
-    settings.DOCUMENT_CODE_PREFIX = "DOC"
-    settings.DOCUMENT_CODE_RANDOM_LENGTH = 8
 
     replacements["app.modules.document.application.dto"].DocumentResult = object
     replacements[
         "app.modules.document.application.errors"
     ].DocumentApplicationError = _HTTPException
     ports = replacements["app.modules.document.application.ports"]
+    ports.DocumentApplicationPorts = object
     ports.UploadFilePort = object
     ports.UploadMetadataPort = object
-    ports.calculate_file_hash = lambda path: "hash"
-    ports.cleanup_file = lambda path: True
-    ports.create_document = object
-    ports.create_uow = object
-    ports.get_safe_extension = lambda filename: "txt"
-    ports.is_integrity_error = lambda exc: isinstance(exc, _IntegrityError)
-    ports.validate_content_type = lambda file: None
+    replacements[
+        "app.modules.document.application.settings"
+    ].DocumentUploadSettings = object
     replacements[
         "app.shared.observability.document_upload_logger"
     ].DocumentUploadLogger = _DocumentUploadLogger
@@ -121,6 +110,25 @@ def _load_service_module():
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
+        module.test_ports = SimpleNamespace(
+            validate_content_type=lambda file: None,
+            get_safe_extension=lambda filename: "txt",
+            calculate_file_hash=lambda path: "hash",
+            cleanup_file=lambda path: True,
+            uow_factory=object,
+            document_factory=object,
+            is_integrity_error=lambda exc: isinstance(exc, _IntegrityError),
+        )
+        module.test_settings = SimpleNamespace(
+            raw_local_storage_dir=Path("raw/local"),
+            raw_external_storage_dir=Path("raw/external"),
+            max_upload_file_size=20 * 1024 * 1024,
+            default_document_status="uploaded",
+            default_document_version=1,
+            default_created_by_actor_code="operator",
+            document_code_prefix="DOC",
+            document_code_random_length=8,
+        )
         return module
     finally:
         sys.modules.pop("document_upload_service_under_test", None)
@@ -152,12 +160,16 @@ class DocumentUploadServiceTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.service = _load_service_module()
+        cls.use_case = cls.service.UploadDocumentUseCase(
+            ports=cls.service.test_ports,
+            settings=cls.service.test_settings,
+        )
 
     def test_empty_filename_is_logged_in_validate_phase(self) -> None:
         file = SimpleNamespace(filename=None)
 
-        with self.assertRaises(self.service.HTTPException) as raised:
-            asyncio.run(self.service.save_uploaded_document(file, _meta()))
+        with self.assertRaises(self.service.DocumentApplicationError) as raised:
+            asyncio.run(self.use_case.execute(file, _meta()))
 
         upload_logger = self.service.DocumentUploadLogger.instances[-1]
         self.assertEqual(raised.exception.status_code, 400)
@@ -169,13 +181,17 @@ class DocumentUploadServiceTest(unittest.TestCase):
 
     def test_storage_directory_failure_is_logged_before_upload_started(self) -> None:
         file = SimpleNamespace(filename="document.txt")
-        original_external = self.service.RAW_EXTERNAL_STORAGE_DIR
-        self.service.RAW_EXTERNAL_STORAGE_DIR = _FailingStoragePath()
+        original_external = self.service.test_settings.raw_external_storage_dir
+        self.service.test_settings.raw_external_storage_dir = (
+            _FailingStoragePath()
+        )
         try:
             with self.assertRaises(OSError):
-                asyncio.run(self.service.save_uploaded_document(file, _meta()))
+                asyncio.run(self.use_case.execute(file, _meta()))
         finally:
-            self.service.RAW_EXTERNAL_STORAGE_DIR = original_external
+            self.service.test_settings.raw_external_storage_dir = (
+                original_external
+            )
 
         upload_logger = self.service.DocumentUploadLogger.instances[-1]
         self.assertEqual(

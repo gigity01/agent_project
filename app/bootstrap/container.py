@@ -18,6 +18,18 @@ from app.modules.context.application.context_service import ContextService
 from app.modules.context.application.resource_service import (
     ContextResourceService,
 )
+from app.modules.document.application.use_cases.build_chunks import (
+    BuildChunksUseCase,
+)
+from app.modules.document.application.use_cases.index_vectors import (
+    IndexVectorsUseCase,
+)
+from app.modules.document.application.use_cases.process_document import (
+    ProcessDocumentUseCase,
+)
+from app.modules.document.application.use_cases.upload_document import (
+    UploadDocumentUseCase,
+)
 
 
 @dataclass
@@ -30,6 +42,10 @@ class AppContainer:
     context_route_lock_manager: ConversationRouteLockManager
     context_resource_service: ContextResourceService
     context_service: ContextService
+    upload_document: UploadDocumentUseCase
+    process_document: ProcessDocumentUseCase
+    build_chunks: BuildChunksUseCase
+    index_vectors: IndexVectorsUseCase
 
     async def aclose(self) -> None:
         """按依赖顺序释放外部客户端。"""

@@ -3,8 +3,22 @@
 from datetime import datetime
 from typing import Literal
 
-from fastapi import Form
+from fastapi import Depends, Form
 
+from app.bootstrap.container import AppContainer
+from app.bootstrap.dependencies import get_container
+from app.modules.document.application.use_cases.build_chunks import (
+    BuildChunksUseCase,
+)
+from app.modules.document.application.use_cases.index_vectors import (
+    IndexVectorsUseCase,
+)
+from app.modules.document.application.use_cases.process_document import (
+    ProcessDocumentUseCase,
+)
+from app.modules.document.application.use_cases.upload_document import (
+    UploadDocumentUseCase,
+)
 from app.modules.document.presentation.schemas import DocumentUploadFormData
 
 
@@ -27,3 +41,27 @@ def document_upload_form(
         effective_at=effective_at,
         expired_at=expired_at,
     )
+
+
+def get_upload_document_use_case(
+    container: AppContainer = Depends(get_container),
+) -> UploadDocumentUseCase:
+    return container.upload_document
+
+
+def get_process_document_use_case(
+    container: AppContainer = Depends(get_container),
+) -> ProcessDocumentUseCase:
+    return container.process_document
+
+
+def get_build_chunks_use_case(
+    container: AppContainer = Depends(get_container),
+) -> BuildChunksUseCase:
+    return container.build_chunks
+
+
+def get_index_vectors_use_case(
+    container: AppContainer = Depends(get_container),
+) -> IndexVectorsUseCase:
+    return container.index_vectors

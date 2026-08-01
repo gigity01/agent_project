@@ -7,19 +7,12 @@ from typing import Any
 from uuid import uuid4
 
 from app.modules.document.application.dto import BuildChunksResult
-from app.modules.document.application.errors import (
-    DocumentApplicationError as HTTPException,
-)
+from app.modules.document.application.errors import DocumentApplicationError
 from app.modules.document.application.failure_state import (
     FailureStateResult,
     NO_FAILURE_STATE_CHANGE,
 )
-from app.modules.document.application.ports import (
-    create_child_chunk as ChildChunk,
-    create_parent_block as ParentBlock,
-    create_uow as SQLAlchemyUnitOfWork,
-    get_chunker,
-)
+from app.modules.document.application.ports import DocumentApplicationPorts
 from app.modules.document.domain.enums import (
     DocumentLifecycleStatus,
     DocumentStatus,
@@ -94,20 +87,38 @@ def generate_chunk_code(
     )
 
 
-def build_document_chunks(document_id: int) -> BuildChunksResult:
+class BuildChunksUseCase:
+    """在短事务之间编排父块与子块构建。"""
+
+    def __init__(self, *, ports: DocumentApplicationPorts) -> None:
+        self._ports = ports
+
+    def execute(self, document_id: int) -> BuildChunksResult:
+        return _build_document_chunks(document_id, ports=self._ports)
+
+
+def _build_document_chunks(
+    document_id: int,
+    *,
+    ports: DocumentApplicationPorts,
+) -> BuildChunksResult:
     """领取切块任务后在事务外计算，并以独立短事务登记结果。"""
     chunk_logger = DocumentChunkLogger(document_id=document_id)
     context: ChunkingContext | None = None
     phase = "claim"
     try:
-        context = _claim_chunking(document_id)
+        context = _claim_chunking(document_id, ports=ports)
         chunk_logger.claimed(context)
 
         phase = "execute"
-        execution_result = _execute_chunking(context, chunk_logger=chunk_logger)
+        execution_result = _execute_chunking(
+            context,
+            ports=ports,
+            chunk_logger=chunk_logger,
+        )
 
         phase = "finalize"
-        response = _complete_chunking(execution_result)
+        response = _complete_chunking(execution_result, ports=ports)
         chunk_logger.completed(response)
         return response
     except ChunkingAbortedError as exc:
@@ -115,6 +126,7 @@ def build_document_chunks(document_id: int) -> BuildChunksResult:
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            ports=ports,
         )
         chunk_logger.failed(
             error=exc,
@@ -124,12 +136,16 @@ def build_document_chunks(document_id: int) -> BuildChunksResult:
             status_before=failure_result.status_before,
             status_after=failure_result.status_after,
         )
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except HTTPException as exc:
+        raise DocumentApplicationError(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+    except DocumentApplicationError as exc:
         failure_result = _register_chunking_failure(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            ports=ports,
         )
         chunk_logger.failed(
             error=exc,
@@ -145,6 +161,7 @@ def build_document_chunks(document_id: int) -> BuildChunksResult:
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            ports=ports,
         )
         chunk_logger.failed(
             error=exc,
@@ -154,36 +171,46 @@ def build_document_chunks(document_id: int) -> BuildChunksResult:
             status_before=failure_result.status_before,
             status_after=failure_result.status_after,
         )
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=500,
             detail="构建 chunks 失败，请稍后重试或联系管理员",
         ) from exc
 
 
-def _claim_chunking(document_id: int) -> ChunkingContext:
+def _claim_chunking(
+    document_id: int,
+    *,
+    ports: DocumentApplicationPorts,
+) -> ChunkingContext:
     """以行锁领取切块权，并立即提交 chunking 状态。"""
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
 
         if document is None:
-            raise HTTPException(status_code=404, detail="文档不存在")
+            raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status not in {
             DocumentStatus.PROCESSED.value,
             DocumentStatus.FAILED.value,
         }:
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail=f"当前文档状态不允许切块: {document.status}",
             )
         if document.lifecycle_status not in CHUNKABLE_LIFECYCLE_STATUSES:
-            raise HTTPException(status_code=409, detail="失效文档不能切块")
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="失效文档不能切块",
+            )
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
-            raise HTTPException(status_code=409, detail="文档不在活跃存储区")
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="文档不在活跃存储区",
+            )
         if (
             document.status == DocumentStatus.FAILED.value
             and uow.child_chunks.exists_by_doc_id(document.id)
         ):
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail="文档已有切块结果，不能通过切块接口重试",
             )
@@ -200,7 +227,10 @@ def _claim_chunking(document_id: int) -> ChunkingContext:
         else:
             # 兼容 Artifact 表接入前仅保留 cleaned_uri 的历史记录。
             if document.cleaned_uri is None:
-                raise HTTPException(status_code=400, detail="文档尚未处理")
+                raise DocumentApplicationError(
+                    status_code=400,
+                    detail="文档尚未处理",
+                )
             cleaned_path = Path(document.cleaned_uri)
             chunk_source_type = get_expected_process_output_type(
                 document.source_type
@@ -232,21 +262,22 @@ def _claim_chunking(document_id: int) -> ChunkingContext:
 def _execute_chunking(
     context: ChunkingContext,
     *,
+    ports: DocumentApplicationPorts,
     chunk_logger: DocumentChunkLogger | None = None,
 ) -> ChunkingExecutionResult:
     """在数据库事务外读取 cleaned 文件并生成父子块 DTO。"""
     if not context.cleaned_path.exists():
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=404,
             detail=f"cleaned 文件不存在: {context.cleaned_path}",
         )
     if not context.cleaned_path.is_file():
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=400,
             detail=f"cleaned 路径不是有效文件: {context.cleaned_path}",
         )
 
-    chunker = get_chunker(context.chunk_source_type)
+    chunker = ports.chunker_factory(context.chunk_source_type)
     chunker_name = chunker.__class__.__name__
     if chunk_logger is not None:
         chunk_logger.build_started(context, chunker=chunker_name)
@@ -268,12 +299,15 @@ def _execute_chunking(
 def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
     """拒绝无法安全持久化或无法进入向量索引阶段的切块结果。"""
     if not chunks.parents:
-        raise HTTPException(status_code=400, detail="未生成任何 parent block")
+        raise DocumentApplicationError(
+            status_code=400,
+            detail="未生成任何 parent block",
+        )
 
     parent_indices = [parent.block_index for parent in chunks.parents]
     parent_index_set = set(parent_indices)
     if len(parent_indices) != len(parent_index_set):
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=500,
             detail="切块结果包含重复的 parent block_index",
         )
@@ -283,10 +317,13 @@ def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
         for children in chunks.children_by_parent_index.values()
     )
     if child_count == 0:
-        raise HTTPException(status_code=400, detail="未生成任何 child chunk")
+        raise DocumentApplicationError(
+            status_code=400,
+            detail="未生成任何 child chunk",
+        )
 
     if set(chunks.children_by_parent_index) - parent_index_set:
-        raise HTTPException(
+        raise DocumentApplicationError(
             status_code=500,
             detail="切块结果引用了不存在的 parent block",
         )
@@ -294,7 +331,7 @@ def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
     for children in chunks.children_by_parent_index.values():
         chunk_indices = [child.chunk_index for child in children]
         if len(chunk_indices) != len(set(chunk_indices)):
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=500,
                 detail="切块结果包含重复的 chunk_index",
             )
@@ -302,7 +339,7 @@ def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
             not child.embedding_text or not child.embedding_text.strip()
             for child in children
         ):
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=500,
                 detail="切块结果包含空的 embedding_text",
             )
@@ -310,16 +347,18 @@ def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
 
 def _complete_chunking(
     result: ChunkingExecutionResult,
+    *,
+    ports: DocumentApplicationPorts,
 ) -> BuildChunksResult:
     """在短事务中复核状态、替换父子块并推进到 chunked。"""
     context = result.context
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(context.document_id)
 
         if document is None:
-            raise HTTPException(status_code=404, detail="文档不存在")
+            raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status != DocumentStatus.CHUNKING.value:
-            raise HTTPException(
+            raise DocumentApplicationError(
                 status_code=409,
                 detail=f"文档切块状态已经变化: {document.status}",
             )
@@ -333,7 +372,7 @@ def _complete_chunking(
         uow.parent_blocks.delete_by_doc_id(document.id)
 
         parent_blocks = [
-            _build_parent_block(context, parent_data)
+            _build_parent_block(context, parent_data, ports=ports)
             for parent_data in result.chunks.parents
         ]
         saved_parents = uow.parent_blocks.create_many(parent_blocks)
@@ -341,7 +380,7 @@ def _complete_chunking(
             parent.block_index: parent for parent in saved_parents
         }
 
-        child_chunks: list[ChildChunk] = []
+        child_chunks: list[Any] = []
         for parent_data in result.chunks.parents:
             parent_block = parents_by_block_index[parent_data.block_index]
             for child_data in result.chunks.children_by_parent_index.get(
@@ -354,6 +393,7 @@ def _complete_chunking(
                         parent_id=parent_block.id,
                         parent_index=parent_data.block_index,
                         child_data=child_data,
+                        ports=ports,
                     )
                 )
         uow.child_chunks.create_many(child_chunks)
@@ -378,12 +418,13 @@ def _register_chunking_failure(
     document_id: int,
     error: Exception,
     claimed: bool,
+    ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
     """尽力登记失败状态；登记异常时保留原始业务异常。"""
     if not claimed:
         return NO_FAILURE_STATE_CHANGE
     try:
-        return _fail_chunking(document_id, error)
+        return _fail_chunking(document_id, error, ports=ports)
     except Exception:
         logger.exception(
             "文档切块失败状态登记失败",
@@ -395,10 +436,12 @@ def _register_chunking_failure(
 def _fail_chunking(
     document_id: int,
     error: Exception,
+    *,
+    ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
     """仅在任务仍为 chunking 时，以独立短事务标记切块失败。"""
     del error
-    with SQLAlchemyUnitOfWork() as uow:
+    with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
         if document is None:
             return NO_FAILURE_STATE_CHANGE
@@ -422,9 +465,11 @@ def _fail_chunking(
 def _build_parent_block(
     context: ChunkingContext,
     parent_data: ParentBlockData,
-) -> ParentBlock:
+    *,
+    ports: DocumentApplicationPorts,
+) -> Any:
     """把事务外父块 DTO 转换为待持久化 ORM 对象。"""
-    return ParentBlock(
+    return ports.parent_block_factory(
         parent_code=generate_parent_code(
             doc_code=context.doc_code,
             block_index=parent_data.block_index,
@@ -452,9 +497,10 @@ def _build_child_chunk(
     parent_id: int,
     parent_index: int,
     child_data: ChildChunkData,
-) -> ChildChunk:
+    ports: DocumentApplicationPorts,
+) -> Any:
     """把事务外子块 DTO 转换为待持久化 ORM 对象。"""
-    return ChildChunk(
+    return ports.child_chunk_factory(
         chunk_code=generate_chunk_code(
             doc_code=context.doc_code,
             parent_index=parent_index,

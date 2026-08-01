@@ -57,6 +57,8 @@ class ImportBoundariesTest(unittest.TestCase):
                         or imported.startswith(
                             f"app.modules.{module_name}.infrastructure"
                         )
+                        or imported == "app.config"
+                        or imported.startswith("app.config.")
                     ):
                         violations.append(f"{relative}: {imported}")
 
@@ -75,6 +77,24 @@ class ImportBoundariesTest(unittest.TestCase):
                         violations.append(
                             f"{relative}: cross-module {imported}"
                         )
+
+        self.assertEqual([], violations, "\n".join(violations))
+
+    def test_application_has_no_global_port_configurator(self) -> None:
+        violations: list[str] = []
+        for path in sorted(MODULES_DIR.glob("*/application/**/*.py")):
+            relative = path.relative_to(MODULES_DIR)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(
+                    node,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                ) and node.name.startswith("configure_"):
+                    violations.append(f"{relative}: {node.name}")
+                if isinstance(node, ast.Global):
+                    violations.append(
+                        f"{relative}: global {', '.join(node.names)}"
+                    )
 
         self.assertEqual([], violations, "\n".join(violations))
 
