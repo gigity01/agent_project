@@ -153,7 +153,7 @@ class ContextService:
                     else None
                 )
                 await run_in_threadpool(
-                    self._save_route_decision,
+                    self._persist_routing_result,
                     turn_id,
                     command.conversation_id,
                     decision,
@@ -243,7 +243,7 @@ class ContextService:
             uow.commit()
         return chains
 
-    def _save_route_decision(
+    def _persist_routing_result(
         self,
         turn_id: str,
         conversation_id: str,
@@ -280,6 +280,29 @@ class ContextService:
                         f"Selected Context Chain was archived: {chain_id}"
                     )
 
+            target_chain_ids = list(decision.selected_chain_ids)
+            now = datetime.now()
+            if decision.create_new_chain:
+                if new_chain_id is None:
+                    raise RuntimeError(
+                        "Context routing decision is missing new chain ID"
+                    )
+                if uow.context.get_chain_for_update(new_chain_id) is not None:
+                    raise RuntimeError(
+                        "Preallocated Context Chain ID already exists"
+                    )
+                uow.context.create_chain(
+                    self._record_factory.context_chain(
+                        chain_id=new_chain_id,
+                        conversation_id=conversation_id,
+                        resources={},
+                        resource_version=0,
+                        last_active_at=now,
+                        archived=False,
+                    )
+                )
+                target_chain_ids.append(new_chain_id)
+
             uow.context.create_route_record(
                 self._record_factory.context_route_record(
                     route_id=_new_id("route"),
@@ -294,6 +317,17 @@ class ContextService:
                     new_chain_id=new_chain_id,
                 )
             )
+            for chain_id in target_chain_ids:
+                uow.context.create_node(
+                    self._record_factory.context_chain_node(
+                        node_id=_new_id("node"),
+                        chain_id=chain_id,
+                        turn_id=turn_id,
+                        sequence=uow.context.get_next_sequence(chain_id),
+                        related_task_ids=[],
+                        related_resource_refs=[],
+                    )
+                )
             uow.context.set_turn_status(
                 turn,
                 ContextTurnStatus.ROUTED.value,
@@ -370,14 +404,13 @@ class ContextService:
                 target_chain_ids=target_chain_ids,
                 turn_task_ids=command.task_ids,
             )
-            existing_ids = list(route_record.selected_chain_ids or [])
-            existing_chains = uow.context.get_chains_by_ids_for_update(
-                existing_ids
+            target_chains = uow.context.get_chains_by_ids_for_update(
+                target_chain_ids
             )
             chain_map = {
-                chain.chain_id: chain for chain in existing_chains
+                chain.chain_id: chain for chain in target_chains
             }
-            for chain_id in existing_ids:
+            for chain_id in target_chain_ids:
                 chain = chain_map.get(chain_id)
                 if chain is None:
                     raise ContextConflictError(
@@ -389,24 +422,6 @@ class ContextService:
                     )
 
             now = datetime.now()
-            if route_record.create_new_chain:
-                new_chain_id = route_record.new_chain_id
-                if uow.context.get_chain_for_update(new_chain_id) is not None:
-                    raise ContextConflictError(
-                        "预分配的 Context Chain ID 已存在"
-                    )
-                new_chain = uow.context.create_chain(
-                    self._record_factory.context_chain(
-                        chain_id=new_chain_id,
-                        conversation_id=conversation_id,
-                        resources={},
-                        resource_version=0,
-                        last_active_at=now,
-                        archived=False,
-                    )
-                )
-                chain_map[new_chain_id] = new_chain
-
             normalized_task_ids = list(dict.fromkeys(command.task_ids))
             uow.context.complete_turn(
                 turn,
@@ -435,19 +450,23 @@ class ContextService:
                     if update is not None
                     else []
                 )
-                uow.context.create_node(
-                    self._record_factory.context_chain_node(
-                        node_id=_new_id("node"),
-                        chain_id=chain_id,
-                        turn_id=turn_id,
-                        sequence=uow.context.get_next_sequence(chain_id),
-                        related_task_ids=(
-                            list(dict.fromkeys(update.related_task_ids))
-                            if update is not None
-                            else []
-                        ),
-                        related_resource_refs=related_resource_refs,
+                node = uow.context.get_node_for_update(
+                    chain_id=chain_id,
+                    turn_id=turn_id,
+                )
+                if node is None:
+                    raise ContextConflictError(
+                        "Context Chain 缺少路由阶段占位节点: "
+                        f"{chain_id}"
                     )
+                uow.context.update_node_relations(
+                    node,
+                    related_task_ids=(
+                        list(dict.fromkeys(update.related_task_ids))
+                        if update is not None
+                        else []
+                    ),
+                    related_resource_refs=related_resource_refs,
                 )
                 resource_refresh = (
                     self._resource_service.apply_in_transaction(

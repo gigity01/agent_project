@@ -65,6 +65,7 @@ with (
         ContextResourceInput,
     )
     from app.modules.context.application.dto import SendMessageCommand
+    from app.modules.context.application.errors import ContextConflictError
     from app.modules.context.application.context_service import ContextService
     from app.modules.context.application.resource_service import (
         ContextResourceService,
@@ -297,6 +298,38 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self.engine.dispose()
 
+    def _insert_chain(
+        self,
+        chain_id: str,
+        *,
+        last_active_at: datetime | None = None,
+    ) -> None:
+        with self.session_factory() as session:
+            session.add(
+                ContextChainModel(
+                    chain_id=chain_id,
+                    conversation_id="conversation-1",
+                    resources={},
+                    resource_version=0,
+                    last_active_at=last_active_at or datetime.now(),
+                    archived=False,
+                )
+            )
+            session.commit()
+
+    async def _send(
+        self,
+        message: str,
+        decision: ContextRouteDecision,
+    ):
+        self.agent_router.decision = decision
+        return await self.service.send_message(
+            SendMessageCommand(
+                conversation_id="conversation-1",
+                message=message,
+            )
+        )
+
     async def test_route_and_complete_create_one_turn_and_one_new_chain(
         self,
     ) -> None:
@@ -311,6 +344,28 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(package.new_chain_id)
         self.assertEqual(len(self.agent_router.inputs), 1)
         self.assertEqual(self.agent_router.inputs[0].chains, [])
+
+        with self.session_factory() as session:
+            routed_turn = session.query(ConversationTurnModel).one()
+            routed_chain = session.query(ContextChainModel).one()
+            placeholder = session.query(ContextChainNodeModel).one()
+            route_record = session.query(ContextRouteRecord).one()
+
+        self.assertEqual(
+            routed_turn.status,
+            ContextTurnStatus.ROUTED.value,
+        )
+        self.assertIsNone(routed_turn.assistant_content)
+        self.assertIsNone(routed_turn.assistant_compact)
+        self.assertEqual(routed_turn.task_ids, [])
+        self.assertIsNone(routed_turn.task_result_summary)
+        self.assertEqual(routed_chain.chain_id, package.new_chain_id)
+        self.assertEqual(placeholder.chain_id, package.new_chain_id)
+        self.assertEqual(placeholder.turn_id, package.turn_id)
+        self.assertEqual(placeholder.sequence, 0)
+        self.assertEqual(placeholder.related_task_ids, [])
+        self.assertEqual(placeholder.related_resource_refs, [])
+        self.assertEqual(route_record.new_chain_id, package.new_chain_id)
 
         response = await self.service.complete_turn(
             package.turn_id,
@@ -381,6 +436,275 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             self.lock_manager.conversation_ids,
             ["conversation-1", "conversation-1"],
         )
+
+    async def test_second_message_loads_first_routed_chain(self) -> None:
+        first = await self.service.send_message(
+            SendMessageCommand(
+                conversation_id="conversation-1",
+                message="创建第一条上下文。",
+            )
+        )
+        second = await self._send(
+            "继续第一条上下文。",
+            ContextRouteDecision(
+                selected_chain_ids=[first.new_chain_id],
+                create_new_chain=False,
+                route_mode=ContextRouteMode.SINGLE_MATCH,
+                reason_summary="继续第一条上下文。",
+            ),
+        )
+
+        self.assertEqual(len(self.agent_router.inputs), 2)
+        second_input = self.agent_router.inputs[1]
+        self.assertEqual(
+            [chain.chain_id for chain in second_input.chains],
+            [first.new_chain_id],
+        )
+        self.assertEqual(
+            [node.turn_id for node in second_input.chains[0].nodes],
+            [first.turn_id],
+        )
+        self.assertEqual(second.selected_chain_ids, [first.new_chain_id])
+
+        with self.session_factory() as session:
+            nodes = (
+                session.query(ContextChainNodeModel)
+                .filter(
+                    ContextChainNodeModel.chain_id == first.new_chain_id
+                )
+                .order_by(ContextChainNodeModel.sequence)
+                .all()
+            )
+
+        self.assertEqual(
+            [(node.turn_id, node.sequence) for node in nodes],
+            [(first.turn_id, 0), (second.turn_id, 1)],
+        )
+
+    async def test_multi_match_creates_placeholder_for_every_chain(
+        self,
+    ) -> None:
+        self._insert_chain("chain-a")
+        self._insert_chain("chain-b")
+
+        package = await self._send(
+            "同时关联 A 和 B。",
+            ContextRouteDecision(
+                selected_chain_ids=["chain-a", "chain-b"],
+                create_new_chain=False,
+                route_mode=ContextRouteMode.MULTI_MATCH,
+                reason_summary="消息同时关联两条链。",
+            ),
+        )
+
+        with self.session_factory() as session:
+            nodes = (
+                session.query(ContextChainNodeModel)
+                .filter(ContextChainNodeModel.turn_id == package.turn_id)
+                .order_by(ContextChainNodeModel.chain_id)
+                .all()
+            )
+
+        self.assertEqual(
+            [(node.chain_id, node.sequence) for node in nodes],
+            [("chain-a", 0), ("chain-b", 0)],
+        )
+
+    async def test_existing_and_new_creates_both_placeholders(self) -> None:
+        self._insert_chain("chain-existing")
+
+        package = await self._send(
+            "继续已有内容并加入新主题。",
+            ContextRouteDecision(
+                selected_chain_ids=["chain-existing"],
+                create_new_chain=True,
+                route_mode=ContextRouteMode.EXISTING_AND_NEW,
+                reason_summary="同时包含已有上下文和新上下文。",
+            ),
+        )
+
+        with self.session_factory() as session:
+            chains = session.query(ContextChainModel).all()
+            nodes = (
+                session.query(ContextChainNodeModel)
+                .filter(ContextChainNodeModel.turn_id == package.turn_id)
+                .order_by(ContextChainNodeModel.chain_id)
+                .all()
+            )
+
+        self.assertEqual(len(chains), 2)
+        self.assertEqual(
+            {node.chain_id for node in nodes},
+            {"chain-existing", package.new_chain_id},
+        )
+        self.assertTrue(all(node.sequence == 0 for node in nodes))
+
+    async def test_fallback_latest_creates_latest_chain_placeholder(
+        self,
+    ) -> None:
+        now = datetime.now()
+        self._insert_chain("chain-old", last_active_at=now)
+        self._insert_chain(
+            "chain-new",
+            last_active_at=now + timedelta(seconds=1),
+        )
+
+        package = await self._send(
+            "继续刚才那个。",
+            ContextRouteDecision(
+                selected_chain_ids=["chain-old"],
+                create_new_chain=True,
+                route_mode=ContextRouteMode.FALLBACK_LATEST,
+                reason_summary="存在关联但无法判断具体归属。",
+            ),
+        )
+
+        with self.session_factory() as session:
+            nodes = (
+                session.query(ContextChainNodeModel)
+                .filter(ContextChainNodeModel.turn_id == package.turn_id)
+                .all()
+            )
+
+        self.assertEqual(package.decision.selected_chain_ids, ["chain-new"])
+        self.assertFalse(package.decision.create_new_chain)
+        self.assertIsNone(package.new_chain_id)
+        self.assertEqual([node.chain_id for node in nodes], ["chain-new"])
+
+    async def test_complete_turn_rejects_missing_placeholder(self) -> None:
+        package = await self.service.send_message(
+            SendMessageCommand(
+                conversation_id="conversation-1",
+                message="创建会被破坏的占位节点。",
+            )
+        )
+        with self.session_factory() as session:
+            node = session.query(ContextChainNodeModel).one()
+            session.delete(node)
+            session.commit()
+
+        with self.assertRaisesRegex(
+            ContextConflictError,
+            "缺少路由阶段占位节点",
+        ):
+            await self.service.complete_turn(
+                package.turn_id,
+                CompleteContextTurnRequest(),
+            )
+
+        with self.session_factory() as session:
+            turn = session.query(ConversationTurnModel).one()
+            node_count = session.query(ContextChainNodeModel).count()
+
+        self.assertEqual(turn.status, ContextTurnStatus.ROUTED.value)
+        self.assertEqual(node_count, 0)
+
+    async def test_repeated_complete_turn_is_idempotent(self) -> None:
+        package = await self.service.send_message(
+            SendMessageCommand(
+                conversation_id="conversation-1",
+                message="创建可幂等完成的上下文。",
+            )
+        )
+        command = CompleteContextTurnRequest(
+            assistant_content="完成。",
+            chain_updates=[
+                ContextChainTurnUpdate(
+                    chain_id=package.new_chain_id,
+                    related_resources=[
+                        ContextResourceInput(
+                            resource_type="document",
+                            resource_id="42",
+                        )
+                    ],
+                )
+            ],
+        )
+
+        first = await self.service.complete_turn(package.turn_id, command)
+        second = await self.service.complete_turn(package.turn_id, command)
+
+        with self.session_factory() as session:
+            node_count = session.query(ContextChainNodeModel).count()
+            resource = session.query(ContextChainResource).one()
+            event_count = session.query(ContextChainResourceEvent).count()
+
+        self.assertEqual(first.turn.status, ContextTurnStatus.COMPLETED.value)
+        self.assertEqual(second.turn.status, ContextTurnStatus.COMPLETED.value)
+        self.assertEqual(second.linked_chain_ids, [package.new_chain_id])
+        self.assertEqual(node_count, 1)
+        self.assertEqual(resource.use_count, 1)
+        self.assertEqual(event_count, 1)
+
+    async def test_sequence_follows_entry_order_not_completion_order(
+        self,
+    ) -> None:
+        first = await self.service.send_message(
+            SendMessageCommand(
+                conversation_id="conversation-1",
+                message="第一条消息。",
+            )
+        )
+        second = await self._send(
+            "第二条消息。",
+            ContextRouteDecision(
+                selected_chain_ids=[first.new_chain_id],
+                create_new_chain=False,
+                route_mode=ContextRouteMode.SINGLE_MATCH,
+                reason_summary="第二条消息继续第一条链。",
+            ),
+        )
+
+        await self.service.complete_turn(
+            second.turn_id,
+            CompleteContextTurnRequest(),
+        )
+        await self.service.complete_turn(
+            first.turn_id,
+            CompleteContextTurnRequest(),
+        )
+
+        with self.session_factory() as session:
+            nodes = (
+                session.query(ContextChainNodeModel)
+                .order_by(ContextChainNodeModel.sequence)
+                .all()
+            )
+
+        self.assertEqual(
+            [(node.turn_id, node.sequence) for node in nodes],
+            [(first.turn_id, 0), (second.turn_id, 1)],
+        )
+
+    async def test_routing_persistence_failure_rolls_back_and_fails_turn(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            self.record_factory,
+            "context_chain_node",
+            side_effect=RuntimeError("node persistence failed"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "node persistence failed",
+            ):
+                await self.service.send_message(
+                    SendMessageCommand(
+                        conversation_id="conversation-1",
+                        message="触发路由事务回滚。",
+                    )
+                )
+
+        with self.session_factory() as session:
+            turn = session.query(ConversationTurnModel).one()
+            route_count = session.query(ContextRouteRecord).count()
+            chain_count = session.query(ContextChainModel).count()
+            node_count = session.query(ContextChainNodeModel).count()
+
+        self.assertEqual(turn.status, ContextTurnStatus.FAILED.value)
+        self.assertEqual(route_count, 0)
+        self.assertEqual(chain_count, 0)
+        self.assertEqual(node_count, 0)
 
     async def test_complete_rejects_chain_outside_saved_route(self) -> None:
         package = await self.service.send_message(

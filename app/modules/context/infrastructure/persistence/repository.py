@@ -151,6 +151,22 @@ class ContextRepository:
             .first()
         )
 
+    def get_node_for_update(
+        self,
+        chain_id: str,
+        turn_id: str,
+    ) -> ContextChainNode | None:
+        """锁定路由阶段创建的占位 Node，供完成流程回填。"""
+        return (
+            self.db.query(ContextChainNode)
+            .filter(
+                ContextChainNode.chain_id == chain_id,
+                ContextChainNode.turn_id == turn_id,
+            )
+            .with_for_update()
+            .first()
+        )
+
     def get_next_sequence(self, chain_id: str) -> int:
         current = (
             self.db.query(func.max(ContextChainNode.sequence))
@@ -161,6 +177,19 @@ class ContextRepository:
 
     def create_node(self, node: ContextChainNode) -> ContextChainNode:
         self.db.add(node)
+        self.db.flush()
+        return node
+
+    def update_node_relations(
+        self,
+        node: ContextChainNode,
+        *,
+        related_task_ids: list[str],
+        related_resource_refs: list[str],
+    ) -> ContextChainNode:
+        """回填占位 Node 的 Task 与资源关联，不改变其顺序。"""
+        node.related_task_ids = related_task_ids
+        node.related_resource_refs = related_resource_refs
         self.db.flush()
         return node
 
