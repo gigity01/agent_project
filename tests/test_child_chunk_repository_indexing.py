@@ -48,8 +48,15 @@ class _ChildChunkModel:
     vector_status = _Field("vector_status")
 
 
+class _Func:
+    @staticmethod
+    def count(field):
+        return ("count", field.name)
+
+
 def _load_repository_module():
     sqlalchemy_module = types.ModuleType("sqlalchemy")
+    sqlalchemy_module.func = _Func()
     sqlalchemy_orm_module = types.ModuleType("sqlalchemy.orm")
     sqlalchemy_orm_module.Session = object
     model_module_name = (
@@ -87,6 +94,7 @@ class _Query:
         self.result = result
         self.filters = []
         self.order_by_fields = []
+        self.group_by_fields = []
         self.with_for_update_count = 0
 
     def filter(self, *criteria):
@@ -95,6 +103,10 @@ class _Query:
 
     def order_by(self, *fields):
         self.order_by_fields.extend(fields)
+        return self
+
+    def group_by(self, *fields):
+        self.group_by_fields.extend(fields)
         return self
 
     def with_for_update(self):
@@ -117,8 +129,8 @@ class _Session:
         self.queried_models = []
         self.flush_count = 0
 
-    def query(self, model):
-        self.queried_models.append(model)
+    def query(self, *models):
+        self.queried_models.extend(models)
         return self.query_result
 
     def flush(self) -> None:
@@ -195,6 +207,22 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
         self.assertIn(("eq", "doc_id", 7), query.filters)
         self.assertIn(("eq", "status", "active"), query.filters)
         self.assertIn(("ne", "vector_status", "indexed"), query.filters)
+
+    def test_count_by_vector_status_groups_active_chunks(self) -> None:
+        query = _Query([("pending", 2), ("indexed", 3)])
+        repository = self.repository_module.ChildChunkRepository(
+            _Session(query)
+        )
+
+        result = repository.count_by_vector_status_for_document(7)
+
+        self.assertEqual(result, {"pending": 2, "indexed": 3})
+        self.assertIn(("eq", "doc_id", 7), query.filters)
+        self.assertIn(("eq", "status", "active"), query.filters)
+        self.assertEqual(
+            query.group_by_fields,
+            [self.repository_module.ChildChunk.vector_status],
+        )
 
     def test_batch_indexed_and_failed_updates_only_flush(self) -> None:
         session = _Session(_Query([]))

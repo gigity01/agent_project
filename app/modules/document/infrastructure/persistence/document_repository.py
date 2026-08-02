@@ -37,6 +37,65 @@ class DocumentRepository:
             .first()
         )
 
+    def list_filtered(
+        self,
+        *,
+        kb_id: int,
+        status: str | None = None,
+        source_type: str | None = None,
+        lifecycle_status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Document]:
+        """按 Agent 查询所需条件稳定分页返回文档。"""
+        query = self._filtered_query(
+            kb_id=kb_id,
+            status=status,
+            source_type=source_type,
+            lifecycle_status=lifecycle_status,
+        )
+        return (
+            query.order_by(Document.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+    def count_filtered(
+        self,
+        *,
+        kb_id: int,
+        status: str | None = None,
+        source_type: str | None = None,
+        lifecycle_status: str | None = None,
+    ) -> int:
+        """统计与列表查询相同过滤条件下的文档总数。"""
+        return self._filtered_query(
+            kb_id=kb_id,
+            status=status,
+            source_type=source_type,
+            lifecycle_status=lifecycle_status,
+        ).count()
+
+    def _filtered_query(
+        self,
+        *,
+        kb_id: int,
+        status: str | None,
+        source_type: str | None,
+        lifecycle_status: str | None,
+    ):
+        query = self.db.query(Document).filter(Document.kb_id == kb_id)
+        if status is not None:
+            query = query.filter(Document.status == status)
+        if source_type is not None:
+            query = query.filter(Document.source_type == source_type)
+        if lifecycle_status is not None:
+            query = query.filter(
+                Document.lifecycle_status == lifecycle_status
+            )
+        return query
+
     def get_active_by_hash_in_kb(
         self,
         kb_id: int,

@@ -70,6 +70,23 @@ class ImportBoundariesTest(unittest.TestCase):
                     ):
                         violations.append(f"{relative}: {imported}")
 
+                if layer == "agent_tools":
+                    forbidden = (
+                        "fastapi",
+                        "sqlalchemy",
+                        "redis",
+                        "app.bootstrap",
+                    )
+                    if (
+                        imported.startswith(forbidden)
+                        or ".infrastructure" in imported
+                        or ".presentation" in imported
+                        or ".domain" in imported
+                        or "repository" in imported.lower()
+                        or ".models" in imported
+                    ):
+                        violations.append(f"{relative}: {imported}")
+
                 prefix = "app.modules."
                 if imported.startswith(prefix) and ".infrastructure" in imported:
                     imported_module = imported[len(prefix):].split(".", 1)[0]

@@ -38,6 +38,17 @@ class ParentBlockRepository:
             .delete(synchronize_session=False)
         )
 
+    def count_active_by_doc_id(self, doc_id: int) -> int:
+        """统计文档当前 active 父块数量。"""
+        return (
+            self.db.query(ParentBlock.id)
+            .filter(
+                ParentBlock.doc_id == doc_id,
+                ParentBlock.status == "active",
+            )
+            .count()
+        )
+
     def list_by_semantic_group(
         self,
         *,

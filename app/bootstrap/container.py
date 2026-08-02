@@ -24,6 +24,18 @@ from app.modules.document.application.use_cases.build_chunks import (
 from app.modules.document.application.use_cases.index_vectors import (
     IndexVectorsUseCase,
 )
+from app.modules.document.application.use_cases.get_document import (
+    GetDocumentUseCase,
+)
+from app.modules.document.application.use_cases.get_pipeline_state import (
+    GetDocumentPipelineStateUseCase,
+)
+from app.modules.document.application.use_cases.list_artifacts import (
+    ListDocumentArtifactsUseCase,
+)
+from app.modules.document.application.use_cases.list_documents import (
+    ListDocumentsUseCase,
+)
 from app.modules.document.application.use_cases.process_document import (
     ProcessDocumentUseCase,
 )
@@ -43,6 +55,10 @@ class AppContainer:
     context_resource_service: ContextResourceService
     context_service: ContextService
     upload_document: UploadDocumentUseCase
+    get_document: GetDocumentUseCase
+    list_documents: ListDocumentsUseCase
+    get_document_pipeline_state: GetDocumentPipelineStateUseCase
+    list_document_artifacts: ListDocumentArtifactsUseCase
     process_document: ProcessDocumentUseCase
     build_chunks: BuildChunksUseCase
     index_vectors: IndexVectorsUseCase

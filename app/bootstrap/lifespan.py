@@ -69,6 +69,18 @@ from app.modules.document.application.use_cases.build_chunks import (
 from app.modules.document.application.use_cases.index_vectors import (
     IndexVectorsUseCase,
 )
+from app.modules.document.application.use_cases.get_document import (
+    GetDocumentUseCase,
+)
+from app.modules.document.application.use_cases.get_pipeline_state import (
+    GetDocumentPipelineStateUseCase,
+)
+from app.modules.document.application.use_cases.list_artifacts import (
+    ListDocumentArtifactsUseCase,
+)
+from app.modules.document.application.use_cases.list_documents import (
+    ListDocumentsUseCase,
+)
 from app.modules.document.application.use_cases.process_document import (
     ProcessDocumentUseCase,
 )
@@ -197,6 +209,18 @@ async def build_container() -> AppContainer:
             ),
         )
         build_chunks = BuildChunksUseCase(ports=document_ports)
+        get_document = GetDocumentUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
+        list_documents = ListDocumentsUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
+        get_document_pipeline_state = GetDocumentPipelineStateUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
+        list_document_artifacts = ListDocumentArtifactsUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
         index_vectors = IndexVectorsUseCase(
             ports=document_ports,
             settings=DocumentIndexingSettings(
@@ -213,6 +237,10 @@ async def build_container() -> AppContainer:
             context_resource_service=resource_service,
             context_service=context_service,
             upload_document=upload_document,
+            get_document=get_document,
+            list_documents=list_documents,
+            get_document_pipeline_state=get_document_pipeline_state,
+            list_document_artifacts=list_document_artifacts,
             process_document=process_document,
             build_chunks=build_chunks,
             index_vectors=index_vectors,

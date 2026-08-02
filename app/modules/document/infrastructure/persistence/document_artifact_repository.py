@@ -56,6 +56,21 @@ class DocumentArtifactRepository:
             .first()
         )
 
+    def list_by_document_id(
+        self,
+        document_id: int,
+    ) -> list[DocumentArtifact]:
+        """按创建时间和主键稳定返回文档的全部派生产物。"""
+        return (
+            self.db.query(DocumentArtifact)
+            .filter(DocumentArtifact.document_id == document_id)
+            .order_by(
+                DocumentArtifact.created_at.asc(),
+                DocumentArtifact.id.asc(),
+            )
+            .all()
+        )
+
     def get_latest_active(
         self,
         *,

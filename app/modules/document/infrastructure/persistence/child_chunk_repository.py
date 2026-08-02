@@ -3,6 +3,7 @@
 from collections.abc import Iterable
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.modules.document.infrastructure.persistence.models.child_chunk import (
@@ -79,6 +80,25 @@ class ChildChunkRepository:
             )
             .count()
         )
+
+    def count_by_vector_status_for_document(
+        self,
+        doc_id: int,
+    ) -> dict[str, int]:
+        """按向量状态汇总文档的 active 子块。"""
+        rows = (
+            self.db.query(
+                ChildChunk.vector_status,
+                func.count(ChildChunk.id),
+            )
+            .filter(
+                ChildChunk.doc_id == doc_id,
+                ChildChunk.status == "active",
+            )
+            .group_by(ChildChunk.vector_status)
+            .all()
+        )
+        return {status: count for status, count in rows}
 
     def list_indexable_by_doc_id(
         self,
