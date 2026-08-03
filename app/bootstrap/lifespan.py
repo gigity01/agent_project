@@ -72,17 +72,35 @@ from app.modules.document.application.use_cases.index_vectors import (
 from app.modules.document.application.use_cases.get_document import (
     GetDocumentUseCase,
 )
+from app.modules.document.application.use_cases.get_chunk_statistics import (
+    GetDocumentChunkStatisticsUseCase,
+)
+from app.modules.document.application.use_cases.get_knowledge_base_statistics import (
+    GetKnowledgeBaseStatisticsUseCase,
+)
 from app.modules.document.application.use_cases.get_pipeline_state import (
     GetDocumentPipelineStateUseCase,
 )
 from app.modules.document.application.use_cases.list_artifacts import (
     ListDocumentArtifactsUseCase,
 )
+from app.modules.document.application.use_cases.list_child_chunks import (
+    ListChildChunksUseCase,
+)
 from app.modules.document.application.use_cases.list_documents import (
     ListDocumentsUseCase,
 )
+from app.modules.document.application.use_cases.list_parent_blocks import (
+    ListParentBlocksUseCase,
+)
 from app.modules.document.application.use_cases.process_document import (
     ProcessDocumentUseCase,
+)
+from app.modules.document.application.use_cases.search_artifacts import (
+    SearchDocumentArtifactsUseCase,
+)
+from app.modules.document.application.use_cases.search_documents import (
+    SearchDocumentsUseCase,
 )
 from app.modules.document.application.use_cases.upload_document import (
     UploadDocumentUseCase,
@@ -215,11 +233,33 @@ async def build_container() -> AppContainer:
         list_documents = ListDocumentsUseCase(
             uow_factory=SQLAlchemyUnitOfWork
         )
+        search_documents = SearchDocumentsUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
         get_document_pipeline_state = GetDocumentPipelineStateUseCase(
             uow_factory=SQLAlchemyUnitOfWork
         )
         list_document_artifacts = ListDocumentArtifactsUseCase(
             uow_factory=SQLAlchemyUnitOfWork
+        )
+        search_document_artifacts = SearchDocumentArtifactsUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
+        list_parent_blocks = ListParentBlocksUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
+        list_child_chunks = ListChildChunksUseCase(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
+        get_document_chunk_statistics = (
+            GetDocumentChunkStatisticsUseCase(
+                uow_factory=SQLAlchemyUnitOfWork
+            )
+        )
+        get_knowledge_base_statistics = (
+            GetKnowledgeBaseStatisticsUseCase(
+                uow_factory=SQLAlchemyUnitOfWork
+            )
         )
         index_vectors = IndexVectorsUseCase(
             ports=document_ports,
@@ -239,8 +279,14 @@ async def build_container() -> AppContainer:
             upload_document=upload_document,
             get_document=get_document,
             list_documents=list_documents,
+            search_documents=search_documents,
             get_document_pipeline_state=get_document_pipeline_state,
             list_document_artifacts=list_document_artifacts,
+            search_document_artifacts=search_document_artifacts,
+            list_parent_blocks=list_parent_blocks,
+            list_child_chunks=list_child_chunks,
+            get_document_chunk_statistics=get_document_chunk_statistics,
+            get_knowledge_base_statistics=get_knowledge_base_statistics,
             process_document=process_document,
             build_chunks=build_chunks,
             index_vectors=index_vectors,

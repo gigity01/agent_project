@@ -5,10 +5,18 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.modules.document.application.dto import (
+    ChildChunkResult,
+    ChildChunkSearchQuery,
     DocumentArtifactResult,
+    DocumentArtifactSearchQuery,
+    DocumentChunkStatisticsResult,
     DocumentListItem,
+    DocumentSearchQuery,
     DocumentPipelineStateResult,
     DocumentResult,
+    KnowledgeBaseStatisticsResult,
+    ParentBlockResult,
+    ParentBlockSearchQuery,
 )
 
 
@@ -25,12 +33,36 @@ class ListDocumentsToolInput(BaseModel):
     offset: int = Field(default=0, ge=0)
 
 
+class SearchDocumentsToolInput(DocumentSearchQuery):
+    """文档高级查询 Tool 输入。"""
+
+
 class GetDocumentPipelineStateToolInput(BaseModel):
     document_id: int = Field(..., gt=0)
 
 
 class ListDocumentArtifactsToolInput(BaseModel):
     document_id: int = Field(..., gt=0)
+
+
+class SearchDocumentArtifactsToolInput(DocumentArtifactSearchQuery):
+    """派生产物高级查询 Tool 输入。"""
+
+
+class ListParentBlocksToolInput(ParentBlockSearchQuery):
+    """父级语义块查询 Tool 输入。"""
+
+
+class ListChildChunksToolInput(ChildChunkSearchQuery):
+    """子块查询 Tool 输入。"""
+
+
+class GetDocumentChunkStatisticsToolInput(BaseModel):
+    document_id: int = Field(..., gt=0)
+
+
+class GetKnowledgeBaseStatisticsToolInput(BaseModel):
+    kb_id: int = Field(..., gt=0)
 
 
 class ProcessDocumentToolInput(BaseModel):
@@ -71,6 +103,22 @@ class DocumentArtifactToolView(DocumentArtifactResult):
     """Document Tool 使用的派生产物视图。"""
 
 
+class ParentBlockToolView(ParentBlockResult):
+    """Document Tool 使用的父级语义块视图。"""
+
+
+class ChildChunkToolView(ChildChunkResult):
+    """Document Tool 使用的子块视图。"""
+
+
+class DocumentChunkStatisticsToolView(DocumentChunkStatisticsResult):
+    """Document Tool 使用的切块统计视图。"""
+
+
+class KnowledgeBaseStatisticsToolView(KnowledgeBaseStatisticsResult):
+    """Document Tool 使用的知识库统计视图。"""
+
+
 class GetDocumentToolOutput(ToolResult):
     document: DocumentToolView | None = None
 
@@ -80,6 +128,10 @@ class ListDocumentsToolOutput(ToolResult):
     total: int = 0
     limit: int = 0
     offset: int = 0
+
+
+class SearchDocumentsToolOutput(ListDocumentsToolOutput):
+    """文档高级查询 Tool 输出。"""
 
 
 class GetDocumentPipelineStateToolOutput(ToolResult):
@@ -92,6 +144,35 @@ class ListDocumentArtifactsToolOutput(ToolResult):
     source_type: str | None = None
     original_filename: str | None = None
     artifacts: list[DocumentArtifactToolView] = Field(default_factory=list)
+
+
+class SearchDocumentArtifactsToolOutput(ToolResult):
+    artifacts: list[DocumentArtifactToolView] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+
+
+class ListParentBlocksToolOutput(ToolResult):
+    parent_blocks: list[ParentBlockToolView] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+
+
+class ListChildChunksToolOutput(ToolResult):
+    child_chunks: list[ChildChunkToolView] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+
+
+class GetDocumentChunkStatisticsToolOutput(ToolResult):
+    statistics: DocumentChunkStatisticsToolView | None = None
+
+
+class GetKnowledgeBaseStatisticsToolOutput(ToolResult):
+    statistics: KnowledgeBaseStatisticsToolView | None = None
 
 
 class ProcessDocumentToolOutput(ToolResult):

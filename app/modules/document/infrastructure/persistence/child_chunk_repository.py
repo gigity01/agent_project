@@ -3,9 +3,10 @@
 from collections.abc import Iterable
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import String, cast, func, or_
 from sqlalchemy.orm import Session
 
+from app.modules.document.application.dto import ChildChunkSearchQuery
 from app.modules.document.infrastructure.persistence.models.child_chunk import (
     ChildChunk,
 )
@@ -93,6 +94,160 @@ class ChildChunkRepository:
             )
             .filter(
                 ChildChunk.doc_id == doc_id,
+                ChildChunk.status == "active",
+            )
+            .group_by(ChildChunk.vector_status)
+            .all()
+        )
+        return {status: count for status, count in rows}
+
+    def search(self, filters: ChildChunkSearchQuery) -> list[ChildChunk]:
+        """按向量状态、章节和 CSV 行范围稳定分页返回子块。"""
+        return (
+            self._search_query(filters)
+            .order_by(
+                ChildChunk.doc_id.asc(),
+                ChildChunk.parent_id.asc(),
+                ChildChunk.chunk_index.asc(),
+                ChildChunk.id.asc(),
+            )
+            .offset(filters.offset)
+            .limit(filters.limit)
+            .all()
+        )
+
+    def count_search(self, filters: ChildChunkSearchQuery) -> int:
+        return self._search_query(filters).count()
+
+    def _search_query(self, filters: ChildChunkSearchQuery):
+        query = self.db.query(ChildChunk)
+        scalar_filters = (
+            (ChildChunk.doc_id, filters.document_id),
+            (ChildChunk.parent_id, filters.parent_id),
+            (ChildChunk.kb_id, filters.kb_id),
+        )
+        for column, value in scalar_filters:
+            if value is not None:
+                query = query.filter(column == value)
+        if filters.vector_statuses:
+            query = query.filter(
+                ChildChunk.vector_status.in_(filters.vector_statuses)
+            )
+        if filters.statuses:
+            query = query.filter(ChildChunk.status.in_(filters.statuses))
+        section_path = (
+            filters.section_path_contains.strip()
+            if filters.section_path_contains
+            else None
+        )
+        if section_path:
+            query = query.filter(
+                cast(ChildChunk.section_path, String).contains(
+                    section_path,
+                    autoescape=True,
+                )
+            )
+        if filters.source_row_from is not None:
+            query = query.filter(
+                ChildChunk.source_row_index >= filters.source_row_from
+            )
+        if filters.source_row_to is not None:
+            query = query.filter(
+                ChildChunk.source_row_index <= filters.source_row_to
+            )
+        if filters.has_vector_id is True:
+            query = query.filter(ChildChunk.qdrant_point_id.is_not(None))
+        elif filters.has_vector_id is False:
+            query = query.filter(ChildChunk.qdrant_point_id.is_(None))
+        keyword = filters.keyword.strip() if filters.keyword else None
+        if keyword:
+            query = query.filter(
+                or_(
+                    ChildChunk.content.contains(keyword, autoescape=True),
+                    ChildChunk.embedding_text.contains(
+                        keyword,
+                        autoescape=True,
+                    ),
+                )
+            )
+        return query
+
+    def count_by_status_for_document(self, doc_id: int) -> dict[str, int]:
+        rows = (
+            self.db.query(ChildChunk.status, func.count(ChildChunk.id))
+            .filter(ChildChunk.doc_id == doc_id)
+            .group_by(ChildChunk.status)
+            .all()
+        )
+        return {status: count for status, count in rows}
+
+    def count_all_by_vector_status_for_document(
+        self,
+        doc_id: int,
+    ) -> dict[str, int]:
+        rows = (
+            self.db.query(
+                ChildChunk.vector_status,
+                func.count(ChildChunk.id),
+            )
+            .filter(ChildChunk.doc_id == doc_id)
+            .group_by(ChildChunk.vector_status)
+            .all()
+        )
+        return {status: count for status, count in rows}
+
+    def count_by_chunk_type_for_document(
+        self,
+        doc_id: int,
+    ) -> dict[str, int]:
+        rows = (
+            self.db.query(ChildChunk.chunk_type, func.count(ChildChunk.id))
+            .filter(ChildChunk.doc_id == doc_id)
+            .group_by(ChildChunk.chunk_type)
+            .all()
+        )
+        return {chunk_type: count for chunk_type, count in rows}
+
+    def count_vector_id_presence_for_document(
+        self,
+        doc_id: int,
+    ) -> tuple[int, int]:
+        with_vector_id = (
+            self.db.query(ChildChunk.id)
+            .filter(
+                ChildChunk.doc_id == doc_id,
+                ChildChunk.qdrant_point_id.is_not(None),
+            )
+            .count()
+        )
+        without_vector_id = (
+            self.db.query(ChildChunk.id)
+            .filter(
+                ChildChunk.doc_id == doc_id,
+                ChildChunk.qdrant_point_id.is_(None),
+            )
+            .count()
+        )
+        return with_vector_id, without_vector_id
+
+    def count_active_for_kb(self, kb_id: int) -> int:
+        return (
+            self.db.query(ChildChunk.id)
+            .filter(
+                ChildChunk.kb_id == kb_id,
+                ChildChunk.status == "active",
+            )
+            .count()
+        )
+
+    def count_by_vector_status_for_kb(self, kb_id: int) -> dict[str, int]:
+        rows = (
+            self.db.query(
+                ChildChunk.vector_status,
+                func.count(ChildChunk.id),
+            )
+            .filter(
+                ChildChunk.kb_id == kb_id,
                 ChildChunk.status == "active",
             )
             .group_by(ChildChunk.vector_status)

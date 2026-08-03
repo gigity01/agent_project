@@ -5,7 +5,10 @@ from sqlalchemy.orm import Session
 from app.modules.document.infrastructure.persistence.models.document_artifact import (
     DocumentArtifact,
 )
-from app.modules.document.application.dto import DocumentArtifactCreate
+from app.modules.document.application.dto import (
+    DocumentArtifactCreate,
+    DocumentArtifactSearchQuery,
+)
 
 
 class DocumentArtifactRepository:
@@ -70,6 +73,54 @@ class DocumentArtifactRepository:
             )
             .all()
         )
+
+    def search(
+        self,
+        filters: DocumentArtifactSearchQuery,
+    ) -> list[DocumentArtifact]:
+        """按受限条件筛选并分页返回派生产物。"""
+        return (
+            self._search_query(filters)
+            .order_by(
+                DocumentArtifact.created_at.desc(),
+                DocumentArtifact.id.desc(),
+            )
+            .offset(filters.offset)
+            .limit(filters.limit)
+            .all()
+        )
+
+    def count_search(self, filters: DocumentArtifactSearchQuery) -> int:
+        """统计与派生产物查询相同条件下的结果数量。"""
+        return self._search_query(filters).count()
+
+    def _search_query(self, filters: DocumentArtifactSearchQuery):
+        query = self.db.query(DocumentArtifact)
+        list_filters = (
+            (DocumentArtifact.document_id, filters.document_ids),
+            (DocumentArtifact.artifact_type, filters.artifact_types),
+            (DocumentArtifact.artifact_role, filters.artifact_roles),
+            (DocumentArtifact.artifact_format, filters.artifact_formats),
+            (DocumentArtifact.status, filters.statuses),
+            (DocumentArtifact.provider, filters.providers),
+            (DocumentArtifact.processor, filters.processors),
+        )
+        for column, values in list_filters:
+            if values:
+                query = query.filter(column.in_(values))
+        if filters.created_from is not None:
+            query = query.filter(
+                DocumentArtifact.created_at >= filters.created_from
+            )
+        if filters.created_to is not None:
+            query = query.filter(
+                DocumentArtifact.created_at <= filters.created_to
+            )
+        if filters.active_only is True:
+            query = query.filter(DocumentArtifact.status == "active")
+        elif filters.active_only is False:
+            query = query.filter(DocumentArtifact.status != "active")
+        return query
 
     def get_latest_active(
         self,

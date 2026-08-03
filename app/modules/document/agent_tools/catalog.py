@@ -18,9 +18,14 @@ from app.modules.document.agent_tools.command_tools import (
 from app.modules.document.agent_tools.query_tools import (
     DOCUMENT_READ_PERMISSION,
     get_document,
+    get_document_chunk_statistics,
     get_document_pipeline_state,
+    get_knowledge_base_statistics,
+    list_child_chunks,
     list_document_artifacts,
-    list_documents,
+    list_parent_blocks,
+    search_document_artifacts,
+    search_documents,
 )
 
 
@@ -36,6 +41,8 @@ class DocumentToolRegistration:
 def _query_registration(
     tool: FunctionTool,
     description: str,
+    *,
+    resource_types: list[str] | None = None,
 ) -> DocumentToolRegistration:
     return DocumentToolRegistration(
         tool=tool,
@@ -46,7 +53,7 @@ def _query_registration(
             side_effect=False,
             idempotency="read_only",
             required_permissions=[DOCUMENT_READ_PERMISSION],
-            resource_types=["document"],
+            resource_types=resource_types or ["document"],
             approval_required=False,
         ),
     )
@@ -74,12 +81,37 @@ def _command_registration(
 
 DOCUMENT_COLLECTOR_CATALOG = (
     _query_registration(get_document, "获取文档完整状态"),
-    _query_registration(list_documents, "筛选知识库中的文档"),
+    _query_registration(search_documents, "按高级条件查询文档"),
     _query_registration(
         get_document_pipeline_state,
         "获取文档处理、切块和索引状态",
     ),
     _query_registration(list_document_artifacts, "列出文档派生产物"),
+    _query_registration(
+        search_document_artifacts,
+        "按高级条件查询文档派生产物",
+        resource_types=["document", "document_artifact"],
+    ),
+    _query_registration(
+        list_parent_blocks,
+        "查询父级语义块明细",
+        resource_types=["document", "parent_block"],
+    ),
+    _query_registration(
+        list_child_chunks,
+        "查询可向量化子块明细",
+        resource_types=["document", "parent_block", "child_chunk"],
+    ),
+    _query_registration(
+        get_document_chunk_statistics,
+        "获取文档切块与向量状态统计",
+        resource_types=["document", "parent_block", "child_chunk"],
+    ),
+    _query_registration(
+        get_knowledge_base_statistics,
+        "获取知识库文档与切块统计",
+        resource_types=["knowledge_base", "document", "child_chunk"],
+    ),
 )
 
 DOCUMENT_EXECUTOR_CATALOG = (

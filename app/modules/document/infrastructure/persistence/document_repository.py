@@ -2,8 +2,10 @@
 
 from collections.abc import Iterable
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.modules.document.application.dto import DocumentSearchQuery
 from app.modules.document.domain.enums import (
     DocumentLifecycleStatus,
     DocumentStorageStatus,
@@ -76,6 +78,129 @@ class DocumentRepository:
             source_type=source_type,
             lifecycle_status=lifecycle_status,
         ).count()
+
+    def search(self, query: DocumentSearchQuery) -> list[Document]:
+        """按白名单字段筛选并以显式排序稳定分页。"""
+        filtered = self._search_query(query)
+        sort_column = {
+            "id": Document.id,
+            "created_at": Document.created_at,
+            "updated_at": Document.updated_at,
+            "indexed_at": Document.indexed_at,
+            "title": Document.title,
+        }[query.sort_by]
+        order = sort_column.asc if query.sort_order == "asc" else sort_column.desc
+        id_order = Document.id.asc if query.sort_order == "asc" else Document.id.desc
+        order_by = [order()]
+        if query.sort_by != "id":
+            order_by.append(id_order())
+        return (
+            filtered.order_by(*order_by)
+            .offset(query.offset)
+            .limit(query.limit)
+            .all()
+        )
+
+    def count_search(self, query: DocumentSearchQuery) -> int:
+        """统计与高级查询同一过滤条件下的文档数量。"""
+        return self._search_query(query).count()
+
+    def count_for_kb(
+        self,
+        kb_id: int,
+        *,
+        status: str | None = None,
+        lifecycle_status: str | None = None,
+    ) -> int:
+        """按知识库和可选状态轴统计文档。"""
+        query = self.db.query(Document.id).filter(Document.kb_id == kb_id)
+        if status is not None:
+            query = query.filter(Document.status == status)
+        if lifecycle_status is not None:
+            query = query.filter(
+                Document.lifecycle_status == lifecycle_status
+            )
+        return query.count()
+
+    def _search_query(self, filters: DocumentSearchQuery):
+        query = self.db.query(Document)
+        list_filters = (
+            (Document.kb_id, filters.kb_ids),
+            (Document.id, filters.document_ids),
+            (Document.doc_code, filters.doc_codes),
+            (Document.domain_code, filters.domain_codes),
+            (Document.business_scene, filters.business_scenes),
+            (Document.status, filters.statuses),
+            (Document.lifecycle_status, filters.lifecycle_statuses),
+            (Document.storage_status, filters.storage_statuses),
+            (Document.source_type, filters.source_types),
+            (Document.risk_level, filters.risk_levels),
+        )
+        for column, values in list_filters:
+            if values:
+                query = query.filter(column.in_(values))
+
+        keyword = filters.keyword.strip() if filters.keyword else None
+        if keyword:
+            query = query.filter(
+                or_(
+                    Document.title.contains(keyword, autoescape=True),
+                    Document.doc_code.contains(keyword, autoescape=True),
+                    Document.original_filename.contains(
+                        keyword,
+                        autoescape=True,
+                    ),
+                )
+            )
+        original_filename = (
+            filters.original_filename.strip()
+            if filters.original_filename
+            else None
+        )
+        if original_filename:
+            query = query.filter(
+                Document.original_filename.contains(
+                    original_filename,
+                    autoescape=True,
+                )
+            )
+        if filters.created_by_actor_code is not None:
+            query = query.filter(
+                Document.created_by_actor_code
+                == filters.created_by_actor_code
+            )
+
+        range_filters = (
+            (Document.created_at, filters.created_from, filters.created_to),
+            (Document.updated_at, filters.updated_from, filters.updated_to),
+            (Document.indexed_at, filters.indexed_from, filters.indexed_to),
+        )
+        for column, start, end in range_filters:
+            if start is not None:
+                query = query.filter(column >= start)
+            if end is not None:
+                query = query.filter(column <= end)
+        if filters.effective_at_before is not None:
+            query = query.filter(
+                Document.effective_at <= filters.effective_at_before
+            )
+        if filters.expired_at_before is not None:
+            query = query.filter(
+                Document.expired_at <= filters.expired_at_before
+            )
+
+        nullable_filters = (
+            (Document.cleaned_uri, filters.has_cleaned_output),
+            (Document.active_content_hash, filters.has_active_content_hash),
+        )
+        for column, expected in nullable_filters:
+            if expected is True:
+                query = query.filter(column.is_not(None))
+            elif expected is False:
+                query = query.filter(column.is_(None))
+        if filters.replaced_by is not None:
+            query = query.filter(Document.replaced_by == filters.replaced_by)
+        return query
 
     def _filtered_query(
         self,

@@ -43,6 +43,7 @@ class _DocumentModel:
 
 def _load_repository_module():
     sqlalchemy_module = types.ModuleType("sqlalchemy")
+    sqlalchemy_module.or_ = lambda *criteria: ("or", criteria)
     sqlalchemy_orm_module = types.ModuleType("sqlalchemy.orm")
     sqlalchemy_orm_module.Session = object
     model_module_name = (

@@ -20,6 +20,9 @@ from app.modules.document.infrastructure.persistence.document_repository import 
 from app.modules.document.infrastructure.persistence.parent_block_repository import (
     ParentBlockRepository,
 )
+from app.modules.document.infrastructure.persistence.knowledge_base_repository import (
+    KnowledgeBaseRepository,
+)
 
 
 SessionFactory = Callable[[], Session]
@@ -40,6 +43,7 @@ class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
         self._rolled_back = False
 
         self.documents = DocumentRepository(self.session)
+        self.knowledge_bases = KnowledgeBaseRepository(self.session)
         self.document_artifacts = DocumentArtifactRepository(self.session)
         self.parent_blocks = ParentBlockRepository(self.session)
         self.child_chunks = ChildChunkRepository(self.session)

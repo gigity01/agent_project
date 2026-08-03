@@ -32,18 +32,22 @@ from app.modules.document.agent_tools.command_tools import (
 from app.modules.document.agent_tools.query_tools import (
     get_document,
     get_document_handler,
+    search_documents_handler,
 )
 from app.modules.document.agent_tools.schemas import (
     BuildDocumentChunksToolInput,
     GetDocumentToolInput,
     IndexDocumentVectorsToolInput,
     ProcessDocumentToolInput,
+    SearchDocumentsToolInput,
 )
 from app.modules.document.application.dto import (
     BuildChunksResult,
     DocumentResult,
+    DocumentListItem,
     IndexVectorsResult,
     ProcessDocumentResult,
+    SearchDocumentsResult,
 )
 from app.modules.document.application.errors import DocumentApplicationError
 
@@ -109,8 +113,14 @@ def _context(
     services = DocumentToolServices(
         get_document=_service(_document_result()),
         list_documents=_service(),
+        search_documents=_service(),
         get_document_pipeline_state=_service(),
         list_document_artifacts=_service(),
+        search_document_artifacts=_service(),
+        list_parent_blocks=_service(),
+        list_child_chunks=_service(),
+        get_document_chunk_statistics=_service(),
+        get_knowledge_base_statistics=_service(),
         process_document=_service(process_result, process_error),
         build_chunks=_service(
             BuildChunksResult(
@@ -164,6 +174,41 @@ class DocumentAgentToolsTest(unittest.TestCase):
         self.assertEqual(output.outcome, "succeeded")
         self.assertEqual(output.document.id, 7)
         services.get_document.execute.assert_called_once_with(7)
+
+    def test_search_documents_maps_advanced_query_and_pagination(self) -> None:
+        writer = _AuditWriter()
+        context, services = _context(
+            permissions=frozenset({"document:read"}),
+            writer=writer,
+        )
+        services.search_documents.execute.return_value = SearchDocumentsResult(
+            items=[
+                DocumentListItem.model_validate(_document_result())
+            ],
+            total=1,
+            limit=20,
+            offset=5,
+        )
+
+        output = search_documents_handler(
+            RunContextWrapper(context),
+            SearchDocumentsToolInput(
+                kb_ids=[3],
+                statuses=["processed"],
+                keyword="测试",
+                sort_by="updated_at",
+                limit=20,
+                offset=5,
+            ),
+        )
+
+        self.assertEqual(output.outcome, "succeeded")
+        self.assertEqual(output.documents[0].id, 7)
+        query = services.search_documents.execute.call_args.args[0]
+        self.assertEqual(query.kb_ids, [3])
+        self.assertEqual(query.statuses, ["processed"])
+        self.assertEqual(query.sort_by, "updated_at")
+        self.assertEqual(output.resource_refs, ["knowledge_base:3"])
 
     def test_command_tools_map_all_existing_use_case_results(self) -> None:
         writer = _AuditWriter()
@@ -301,9 +346,14 @@ class DocumentAgentToolsTest(unittest.TestCase):
             collector_names,
             {
                 "get_document",
-                "list_documents",
+                "search_documents",
                 "get_document_pipeline_state",
                 "list_document_artifacts",
+                "search_document_artifacts",
+                "list_parent_blocks",
+                "list_child_chunks",
+                "get_document_chunk_statistics",
+                "get_knowledge_base_statistics",
             },
         )
         self.assertNotIn("process_document", collector_names)
