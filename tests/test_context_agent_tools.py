@@ -1,0 +1,151 @@
+"""Context 只读 Agent Tool 的权限、审计和 Catalog 测试。"""
+
+from __future__ import annotations
+
+import unittest
+from datetime import datetime
+from unittest import mock
+
+from agents import RunContextWrapper
+
+from app.agent_runtime.audit import AgentToolAuditLogger
+from app.agent_runtime.context import AgentToolContext, ContextToolServices
+from app.modules.context.agent_tools.catalog import CONTEXT_COLLECTOR_TOOLS
+from app.modules.context.agent_tools.query_tools import (
+    get_conversation_turn_handler,
+    list_context_chains_handler,
+)
+from app.modules.context.agent_tools.schemas import (
+    GetConversationTurnToolInput,
+    ListContextChainsToolInput,
+)
+from app.modules.context.application.query_dto import (
+    ContextChainListResult,
+    ContextChainQueryResult,
+    ConversationTurnQueryResult,
+)
+
+
+NOW = datetime(2026, 8, 3, 12, 0, 0)
+
+
+class _Writer:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def write(self, event: dict) -> bool:
+        self.events.append(dict(event))
+        return True
+
+
+def _context(*, permissions: frozenset[str]):
+    writer = _Writer()
+    query_service = mock.Mock()
+    query_service.get_conversation_turn.return_value = (
+        ConversationTurnQueryResult(
+            turn_id="turn-1",
+            conversation_id="conversation-1",
+            user_input="输入",
+            assistant_content="输出",
+            assistant_compact=None,
+            task_ids=[],
+            task_result_summary=None,
+            status="completed",
+            created_at=NOW,
+            completed_at=NOW,
+        )
+    )
+    query_service.list_context_chains.return_value = ContextChainListResult(
+        items=[
+            ContextChainQueryResult(
+                chain_id="chain-1",
+                conversation_id="conversation-1",
+                resource_version=1,
+                last_active_at=NOW,
+                archived=False,
+                created_at=NOW,
+            )
+        ],
+        total=1,
+        limit=20,
+        offset=0,
+    )
+    context = AgentToolContext(
+        trace_id="trace-1",
+        agent_run_id="run-1",
+        agent_name="context-collector",
+        conversation_id="conversation-1",
+        turn_id="turn-current",
+        task_id="task-1",
+        actor_code="actor-1",
+        permissions=permissions,
+        document_services=mock.Mock(),
+        context_services=ContextToolServices(query_service=query_service),
+        audit_logger=AgentToolAuditLogger(writer),
+    )
+    return context, query_service, writer
+
+
+class ContextAgentToolsTest(unittest.TestCase):
+    def test_catalog_contains_only_seven_read_tools(self) -> None:
+        self.assertEqual(
+            {tool.name for tool in CONTEXT_COLLECTOR_TOOLS},
+            {
+                "get_conversation_turn",
+                "list_conversation_turns",
+                "get_context_chain",
+                "list_context_chains",
+                "list_context_chain_nodes",
+                "list_context_chain_resources",
+                "list_context_route_records",
+            },
+        )
+
+    def test_get_turn_delegates_and_writes_paired_audit(self) -> None:
+        context, service, writer = _context(
+            permissions=frozenset({"context:read"})
+        )
+
+        output = get_conversation_turn_handler(
+            RunContextWrapper(context),
+            GetConversationTurnToolInput(turn_id="turn-1"),
+        )
+
+        self.assertEqual(output.outcome, "succeeded")
+        self.assertEqual(output.turn.turn_id, "turn-1")
+        service.get_conversation_turn.assert_called_once_with("turn-1")
+        self.assertEqual(len(writer.events), 2)
+
+    def test_list_chains_passes_bounded_query(self) -> None:
+        context, service, _writer = _context(
+            permissions=frozenset({"context:read"})
+        )
+
+        output = list_context_chains_handler(
+            RunContextWrapper(context),
+            ListContextChainsToolInput(
+                conversation_id="conversation-1",
+                archived=False,
+                limit=20,
+            ),
+        )
+
+        query = service.list_context_chains.call_args.args[0]
+        self.assertEqual(output.chains[0].chain_id, "chain-1")
+        self.assertEqual(query.conversation_id, "conversation-1")
+        self.assertFalse(query.archived)
+
+    def test_permission_denial_does_not_query_database(self) -> None:
+        context, service, _writer = _context(permissions=frozenset())
+
+        output = get_conversation_turn_handler(
+            RunContextWrapper(context),
+            GetConversationTurnToolInput(turn_id="turn-1"),
+        )
+
+        self.assertEqual(output.result_code, "permission_denied")
+        service.get_conversation_turn.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

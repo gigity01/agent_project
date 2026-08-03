@@ -9,6 +9,7 @@ from qdrant_client.models import PointStruct
 from sqlalchemy.exc import IntegrityError
 
 from app.config.settings import (
+    AGENT_TOOL_LOG_DIR,
     CONTEXT_RESOURCE_QUEUE_MAX_SIZE,
     CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS,
     CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS,
@@ -19,6 +20,10 @@ from app.config.settings import (
     DEEPSEEK_API_KEY,
     DOCUMENT_CODE_PREFIX,
     DOCUMENT_CODE_RANDOM_LENGTH,
+    DOCUMENT_CHUNK_LOG_DIR,
+    DOCUMENT_INDEX_LOG_DIR,
+    DOCUMENT_PROCESS_LOG_DIR,
+    DOCUMENT_UPLOAD_LOG_DIR,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_MODEL_NAME,
     EMBEDDING_VECTOR_SIZE,
@@ -55,6 +60,7 @@ from app.modules.context.application.context_service import ContextService
 from app.modules.context.application.resource_service import (
     ContextResourceService,
 )
+from app.modules.context.application.query_service import ContextQueryService
 from app.modules.document.application.ports import (
     DocumentApplicationPorts,
 )
@@ -131,6 +137,11 @@ from app.modules.document.infrastructure.storage.local import (
 from app.modules.document.infrastructure.vector_store.qdrant import (
     QdrantVectorStore,
 )
+from app.modules.operations.application.query_service import OperationsQueryService
+from app.modules.operations.infrastructure.jsonl_repository import (
+    JsonlLogRepository,
+    JsonlLogSource,
+)
 
 
 async def build_container() -> AppContainer:
@@ -182,6 +193,44 @@ async def build_container() -> AppContainer:
             uow_factory=SQLAlchemyUnitOfWork,
             record_factory=record_factory,
             chain_mapper=build_context_chain,
+        )
+        context_query_service = ContextQueryService(
+            uow_factory=SQLAlchemyUnitOfWork
+        )
+        operations_query_service = OperationsQueryService(
+            document_logs=JsonlLogRepository(
+                (
+                    JsonlLogSource(
+                        "upload",
+                        DOCUMENT_UPLOAD_LOG_DIR,
+                        "upload",
+                    ),
+                    JsonlLogSource(
+                        "process",
+                        DOCUMENT_PROCESS_LOG_DIR,
+                        "process",
+                    ),
+                    JsonlLogSource(
+                        "chunk",
+                        DOCUMENT_CHUNK_LOG_DIR,
+                        "chunk",
+                    ),
+                    JsonlLogSource(
+                        "index",
+                        DOCUMENT_INDEX_LOG_DIR,
+                        "index",
+                    ),
+                )
+            ),
+            agent_tool_logs=JsonlLogRepository(
+                (
+                    JsonlLogSource(
+                        "agent_tool",
+                        AGENT_TOOL_LOG_DIR,
+                        "agent-tool",
+                    ),
+                )
+            ),
         )
         document_ports = DocumentApplicationPorts(
             uow_factory=SQLAlchemyUnitOfWork,
@@ -276,6 +325,8 @@ async def build_container() -> AppContainer:
             context_route_lock_manager=route_lock_manager,
             context_resource_service=resource_service,
             context_service=context_service,
+            context_query_service=context_query_service,
+            operations_query_service=operations_query_service,
             upload_document=upload_document,
             get_document=get_document,
             list_documents=list_documents,

@@ -7,9 +7,21 @@ from pydantic import BaseModel, Field
 
 from app.modules.document.application.dto import (
     BuildChunksResult,
+    ChildChunkSearchQuery,
+    DocumentArtifactSearchQuery,
+    DocumentChunkStatisticsResult,
+    DocumentPipelineStateResult,
     DocumentResult,
+    DocumentSearchQuery,
     IndexVectorsResult,
+    KnowledgeBaseStatisticsResult,
+    ListChildChunksResult,
+    ListDocumentArtifactsResult,
+    ListParentBlocksResult,
+    ParentBlockSearchQuery,
     ProcessDocumentResult,
+    SearchDocumentArtifactsResult,
+    SearchDocumentsResult,
 )
 
 
@@ -50,3 +62,51 @@ class VectorIndexingResponse(IndexVectorsResult):
     """一次向量索引任务的处理数量和最终状态。"""
 
     pass
+
+
+class DocumentSearchRequest(DocumentSearchQuery):
+    """文档高级查询 HTTP 请求。"""
+
+
+class DocumentSearchResponse(SearchDocumentsResult):
+    """文档高级查询 HTTP 响应。"""
+
+
+class DocumentPipelineStateResponse(DocumentPipelineStateResult):
+    """文档流水线状态 HTTP 响应。"""
+
+
+class DocumentArtifactsResponse(ListDocumentArtifactsResult):
+    """单文档派生产物 HTTP 响应。"""
+
+
+class DocumentArtifactSearchRequest(DocumentArtifactSearchQuery):
+    """派生产物高级查询 HTTP 请求。"""
+
+
+class DocumentArtifactSearchResponse(SearchDocumentArtifactsResult):
+    """派生产物高级查询 HTTP 响应。"""
+
+
+class ParentBlockSearchRequest(ParentBlockSearchQuery):
+    """父级语义块查询 HTTP 请求。"""
+
+
+class ParentBlockSearchResponse(ListParentBlocksResult):
+    """父级语义块查询 HTTP 响应。"""
+
+
+class ChildChunkSearchRequest(ChildChunkSearchQuery):
+    """子块查询 HTTP 请求。"""
+
+
+class ChildChunkSearchResponse(ListChildChunksResult):
+    """子块查询 HTTP 响应。"""
+
+
+class DocumentChunkStatisticsResponse(DocumentChunkStatisticsResult):
+    """文档切块统计 HTTP 响应。"""
+
+
+class KnowledgeBaseStatisticsResponse(KnowledgeBaseStatisticsResult):
+    """知识库统计 HTTP 响应。"""

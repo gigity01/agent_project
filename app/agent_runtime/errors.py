@@ -69,9 +69,14 @@ def classify_tool_error(
         }
         detail = getattr(error, "detail", None)
         message = detail if isinstance(detail, str) else "业务规则拒绝了该操作"
+        explicit_result_code = getattr(error, "result_code", None)
         return ToolErrorDetails(
             outcome="rejected",
-            result_code=result_codes.get(status_code, "business_rejected"),
+            result_code=(
+                explicit_result_code
+                if isinstance(explicit_result_code, str)
+                else result_codes.get(status_code, "business_rejected")
+            ),
             message=message,
             retryable=False,
             resource_refs=resource_refs,

@@ -10,11 +10,38 @@ from app.bootstrap.dependencies import get_container
 from app.modules.document.application.use_cases.build_chunks import (
     BuildChunksUseCase,
 )
+from app.modules.document.application.use_cases.get_chunk_statistics import (
+    GetDocumentChunkStatisticsUseCase,
+)
+from app.modules.document.application.use_cases.get_document import (
+    GetDocumentUseCase,
+)
+from app.modules.document.application.use_cases.get_knowledge_base_statistics import (
+    GetKnowledgeBaseStatisticsUseCase,
+)
+from app.modules.document.application.use_cases.get_pipeline_state import (
+    GetDocumentPipelineStateUseCase,
+)
 from app.modules.document.application.use_cases.index_vectors import (
     IndexVectorsUseCase,
 )
+from app.modules.document.application.use_cases.list_artifacts import (
+    ListDocumentArtifactsUseCase,
+)
+from app.modules.document.application.use_cases.list_child_chunks import (
+    ListChildChunksUseCase,
+)
+from app.modules.document.application.use_cases.list_parent_blocks import (
+    ListParentBlocksUseCase,
+)
 from app.modules.document.application.use_cases.process_document import (
     ProcessDocumentUseCase,
+)
+from app.modules.document.application.use_cases.search_artifacts import (
+    SearchDocumentArtifactsUseCase,
+)
+from app.modules.document.application.use_cases.search_documents import (
+    SearchDocumentsUseCase,
 )
 from app.modules.document.application.use_cases.upload_document import (
     UploadDocumentUseCase,
@@ -65,3 +92,57 @@ def get_index_vectors_use_case(
     container: AppContainer = Depends(get_container),
 ) -> IndexVectorsUseCase:
     return container.index_vectors
+
+
+def get_document_use_case(
+    container: AppContainer = Depends(get_container),
+) -> GetDocumentUseCase:
+    return container.get_document
+
+
+def get_search_documents_use_case(
+    container: AppContainer = Depends(get_container),
+) -> SearchDocumentsUseCase:
+    return container.search_documents
+
+
+def get_document_pipeline_state_use_case(
+    container: AppContainer = Depends(get_container),
+) -> GetDocumentPipelineStateUseCase:
+    return container.get_document_pipeline_state
+
+
+def get_list_document_artifacts_use_case(
+    container: AppContainer = Depends(get_container),
+) -> ListDocumentArtifactsUseCase:
+    return container.list_document_artifacts
+
+
+def get_search_document_artifacts_use_case(
+    container: AppContainer = Depends(get_container),
+) -> SearchDocumentArtifactsUseCase:
+    return container.search_document_artifacts
+
+
+def get_list_parent_blocks_use_case(
+    container: AppContainer = Depends(get_container),
+) -> ListParentBlocksUseCase:
+    return container.list_parent_blocks
+
+
+def get_list_child_chunks_use_case(
+    container: AppContainer = Depends(get_container),
+) -> ListChildChunksUseCase:
+    return container.list_child_chunks
+
+
+def get_document_chunk_statistics_use_case(
+    container: AppContainer = Depends(get_container),
+) -> GetDocumentChunkStatisticsUseCase:
+    return container.get_document_chunk_statistics
+
+
+def get_knowledge_base_statistics_use_case(
+    container: AppContainer = Depends(get_container),
+) -> GetKnowledgeBaseStatisticsUseCase:
+    return container.get_knowledge_base_statistics

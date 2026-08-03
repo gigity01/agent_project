@@ -18,6 +18,7 @@ from app.modules.context.application.context_service import ContextService
 from app.modules.context.application.resource_service import (
     ContextResourceService,
 )
+from app.modules.context.application.query_service import ContextQueryService
 from app.modules.document.application.use_cases.build_chunks import (
     BuildChunksUseCase,
 )
@@ -60,6 +61,7 @@ from app.modules.document.application.use_cases.search_documents import (
 from app.modules.document.application.use_cases.upload_document import (
     UploadDocumentUseCase,
 )
+from app.modules.operations.application.query_service import OperationsQueryService
 
 
 @dataclass
@@ -72,6 +74,8 @@ class AppContainer:
     context_route_lock_manager: ConversationRouteLockManager
     context_resource_service: ContextResourceService
     context_service: ContextService
+    context_query_service: ContextQueryService
+    operations_query_service: OperationsQueryService
     upload_document: UploadDocumentUseCase
     get_document: GetDocumentUseCase
     list_documents: ListDocumentsUseCase

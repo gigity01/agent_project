@@ -6,6 +6,13 @@ from datetime import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
+from app.modules.context.application.query_dto import (
+    ContextChainNodeSearchQuery,
+    ContextChainResourceSearchQuery,
+    ContextChainSearchQuery,
+    ContextRouteRecordSearchQuery,
+    ConversationTurnSearchQuery,
+)
 from app.modules.context.infrastructure.persistence.models.context_chain import (
     ContextChain,
 )
@@ -44,6 +51,54 @@ class ContextRepository:
             .filter(ConversationTurn.turn_id == turn_id)
             .first()
         )
+
+    def search_turns(
+        self,
+        filters: ConversationTurnSearchQuery,
+    ) -> list[ConversationTurn]:
+        return (
+            self._turn_search_query(filters)
+            .order_by(
+                ConversationTurn.created_at.desc(),
+                ConversationTurn.turn_id.desc(),
+            )
+            .offset(filters.offset)
+            .limit(filters.limit)
+            .all()
+        )
+
+    def count_turns(self, filters: ConversationTurnSearchQuery) -> int:
+        return self._turn_search_query(filters).count()
+
+    def _turn_search_query(self, filters: ConversationTurnSearchQuery):
+        query = self.db.query(ConversationTurn)
+        if filters.conversation_id is not None:
+            query = query.filter(
+                ConversationTurn.conversation_id == filters.conversation_id
+            )
+        if filters.turn_ids:
+            query = query.filter(ConversationTurn.turn_id.in_(filters.turn_ids))
+        if filters.turn_statuses:
+            query = query.filter(
+                ConversationTurn.status.in_(filters.turn_statuses)
+            )
+        if filters.created_from is not None:
+            query = query.filter(
+                ConversationTurn.created_at >= filters.created_from
+            )
+        if filters.created_to is not None:
+            query = query.filter(
+                ConversationTurn.created_at <= filters.created_to
+            )
+        if filters.completed_from is not None:
+            query = query.filter(
+                ConversationTurn.completed_at >= filters.completed_from
+            )
+        if filters.completed_to is not None:
+            query = query.filter(
+                ConversationTurn.completed_at <= filters.completed_to
+            )
+        return query
 
     def get_turn_for_update(self, turn_id: str) -> ConversationTurn | None:
         return (
@@ -105,6 +160,40 @@ class ContextRepository:
             .first()
         )
 
+    def search_chains(
+        self,
+        filters: ContextChainSearchQuery,
+    ) -> list[ContextChain]:
+        return (
+            self._chain_search_query(filters)
+            .order_by(
+                ContextChain.last_active_at.desc(),
+                ContextChain.chain_id.asc(),
+            )
+            .offset(filters.offset)
+            .limit(filters.limit)
+            .all()
+        )
+
+    def count_chains(self, filters: ContextChainSearchQuery) -> int:
+        return self._chain_search_query(filters).count()
+
+    def _chain_search_query(self, filters: ContextChainSearchQuery):
+        query = self.db.query(ContextChain)
+        if filters.conversation_id is not None:
+            query = query.filter(
+                ContextChain.conversation_id == filters.conversation_id
+            )
+        if filters.chain_ids:
+            query = query.filter(ContextChain.chain_id.in_(filters.chain_ids))
+        if filters.archived is not None:
+            query = query.filter(ContextChain.archived.is_(filters.archived))
+        if filters.created_from is not None:
+            query = query.filter(ContextChain.created_at >= filters.created_from)
+        if filters.created_to is not None:
+            query = query.filter(ContextChain.created_at <= filters.created_to)
+        return query
+
     def get_chain_for_update(self, chain_id: str) -> ContextChain | None:
         return (
             self.db.query(ContextChain)
@@ -150,6 +239,48 @@ class ContextRepository:
             )
             .first()
         )
+
+    def search_nodes(
+        self,
+        filters: ContextChainNodeSearchQuery,
+    ) -> list[ContextChainNode]:
+        return (
+            self._node_search_query(filters)
+            .order_by(
+                ContextChainNode.chain_id.asc(),
+                ContextChainNode.sequence.asc(),
+                ContextChainNode.node_id.asc(),
+            )
+            .offset(filters.offset)
+            .limit(filters.limit)
+            .all()
+        )
+
+    def count_nodes(self, filters: ContextChainNodeSearchQuery) -> int:
+        return self._node_search_query(filters).count()
+
+    def _node_search_query(self, filters: ContextChainNodeSearchQuery):
+        query = self.db.query(ContextChainNode)
+        if filters.conversation_id is not None:
+            query = query.join(
+                ContextChain,
+                ContextChain.chain_id == ContextChainNode.chain_id,
+            ).filter(
+                ContextChain.conversation_id == filters.conversation_id
+            )
+        if filters.chain_id is not None:
+            query = query.filter(ContextChainNode.chain_id == filters.chain_id)
+        if filters.turn_id is not None:
+            query = query.filter(ContextChainNode.turn_id == filters.turn_id)
+        if filters.created_from is not None:
+            query = query.filter(
+                ContextChainNode.created_at >= filters.created_from
+            )
+        if filters.created_to is not None:
+            query = query.filter(
+                ContextChainNode.created_at <= filters.created_to
+            )
+        return query
 
     def get_node_for_update(
         self,
@@ -305,6 +436,114 @@ class ContextRepository:
             .limit(limit)
             .all()
         )
+
+    def search_resources(
+        self,
+        filters: ContextChainResourceSearchQuery,
+    ) -> list[ContextChainResource]:
+        return (
+            self._resource_search_query(filters)
+            .order_by(
+                ContextChainResource.last_seen_at.desc(),
+                ContextChainResource.id.desc(),
+            )
+            .offset(filters.offset)
+            .limit(filters.limit)
+            .all()
+        )
+
+    def count_resources(
+        self,
+        filters: ContextChainResourceSearchQuery,
+    ) -> int:
+        return self._resource_search_query(filters).count()
+
+    def _resource_search_query(
+        self,
+        filters: ContextChainResourceSearchQuery,
+    ):
+        query = self.db.query(ContextChainResource)
+        if filters.conversation_id is not None:
+            query = query.join(
+                ContextChain,
+                ContextChain.chain_id == ContextChainResource.chain_id,
+            ).filter(
+                ContextChain.conversation_id == filters.conversation_id
+            )
+        if filters.chain_id is not None:
+            query = query.filter(
+                ContextChainResource.chain_id == filters.chain_id
+            )
+        if filters.resource_type is not None:
+            query = query.filter(
+                ContextChainResource.resource_type == filters.resource_type
+            )
+        if filters.resource_id is not None:
+            query = query.filter(
+                ContextChainResource.resource_id == filters.resource_id
+            )
+        if filters.active is not None:
+            query = query.filter(
+                ContextChainResource.active.is_(filters.active)
+            )
+        if filters.last_seen_from is not None:
+            query = query.filter(
+                ContextChainResource.last_seen_at >= filters.last_seen_from
+            )
+        if filters.last_seen_to is not None:
+            query = query.filter(
+                ContextChainResource.last_seen_at <= filters.last_seen_to
+            )
+        return query
+
+    def search_route_records(
+        self,
+        filters: ContextRouteRecordSearchQuery,
+    ) -> list[ContextRouteRecord]:
+        return (
+            self._route_record_search_query(filters)
+            .order_by(
+                ContextRouteRecord.created_at.desc(),
+                ContextRouteRecord.route_id.desc(),
+            )
+            .offset(filters.offset)
+            .limit(filters.limit)
+            .all()
+        )
+
+    def count_route_records(
+        self,
+        filters: ContextRouteRecordSearchQuery,
+    ) -> int:
+        return self._route_record_search_query(filters).count()
+
+    def _route_record_search_query(
+        self,
+        filters: ContextRouteRecordSearchQuery,
+    ):
+        query = self.db.query(ContextRouteRecord)
+        if filters.conversation_id is not None:
+            query = query.filter(
+                ContextRouteRecord.conversation_id
+                == filters.conversation_id
+            )
+        if filters.turn_id is not None:
+            query = query.filter(
+                ContextRouteRecord.current_turn_id == filters.turn_id
+            )
+        if filters.route_modes:
+            query = query.filter(
+                ContextRouteRecord.route_mode.in_(filters.route_modes)
+            )
+        if filters.created_from is not None:
+            query = query.filter(
+                ContextRouteRecord.created_at >= filters.created_from
+            )
+        if filters.created_to is not None:
+            query = query.filter(
+                ContextRouteRecord.created_at <= filters.created_to
+            )
+        return query
 
     def increment_resource_version(
         self,

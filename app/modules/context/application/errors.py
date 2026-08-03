@@ -23,3 +23,17 @@ class ContextValidationError(ContextApplicationError):
 
 class ConversationLockUnavailable(ContextApplicationError):
     """Conversation 级串行锁在等待窗口内不可用。"""
+
+
+class ContextQueryError(ContextApplicationError):
+    """Context 只读查询的安全外部错误。"""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+        self.result_code = (
+            "context_resource_not_found"
+            if status_code == 404
+            else "context_query_rejected"
+        )

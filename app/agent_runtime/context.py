@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 
 from app.agent_runtime.audit import AgentToolAuditLogger
+from app.modules.context.application.query_service import ContextQueryService
+from app.modules.operations.application.query_service import OperationsQueryService
 from app.modules.document.application.use_cases.build_chunks import (
     BuildChunksUseCase,
 )
@@ -65,7 +67,16 @@ class DocumentToolServices:
 
 @dataclass(frozen=True)
 class ContextToolServices:
-    """预留给后续 Context 只读 Tool 的窄服务集合。"""
+    """Context Tool 可取得的只读 Application 能力。"""
+
+    query_service: ContextQueryService | None = None
+
+
+@dataclass(frozen=True)
+class OperationsToolServices:
+    """Operations Tool 可取得的只读日志查询能力。"""
+
+    query_service: OperationsQueryService | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +93,9 @@ class AgentToolContext:
     permissions: frozenset[str]
     document_services: DocumentToolServices
     context_services: ContextToolServices
+    operations_services: OperationsToolServices = field(
+        default_factory=OperationsToolServices
+    )
     audit_logger: AgentToolAuditLogger = field(
         default_factory=AgentToolAuditLogger
     )
