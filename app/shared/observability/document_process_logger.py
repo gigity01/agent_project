@@ -5,16 +5,23 @@ from typing import Any
 from app.config.settings import DOCUMENT_PROCESS_LOG_DIR
 from app.modules.document.domain.enums import DocumentStatus
 from app.shared.observability.jsonl_writer import JsonlEventWriter
+from app.shared.observability.correlation import DocumentOperationContext
 from app.shared.observability.logger import DocumentStageLogger
 
 
 class DocumentProcessLogger(DocumentStageLogger):
     """提供处理领取、完成和失败事件的稳定业务接口。"""
 
-    def __init__(self, *, document_id: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        document_id: int | None = None,
+        operation_context: DocumentOperationContext | None = None,
+    ) -> None:
         super().__init__(
             stage="process",
             document_id=document_id,
+            operation_context=operation_context,
             writer=JsonlEventWriter(
                 log_dir=DOCUMENT_PROCESS_LOG_DIR,
                 file_prefix="process",

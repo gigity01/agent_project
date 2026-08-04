@@ -61,6 +61,15 @@ from app.modules.context.application.resource_service import (
     ContextResourceService,
 )
 from app.modules.context.application.query_service import ContextQueryService
+from app.modules.context.application.use_cases import (
+    GetContextChainUseCase,
+    GetConversationTurnUseCase,
+    ListContextChainNodesUseCase,
+    ListContextChainResourcesUseCase,
+    ListContextChainsUseCase,
+    ListContextRouteRecordsUseCase,
+    ListConversationTurnsUseCase,
+)
 from app.modules.document.application.ports import (
     DocumentApplicationPorts,
 )
@@ -138,6 +147,11 @@ from app.modules.document.infrastructure.vector_store.qdrant import (
     QdrantVectorStore,
 )
 from app.modules.operations.application.query_service import OperationsQueryService
+from app.modules.operations.application.use_cases import (
+    GetDocumentOperationTimelineUseCase,
+    GetDocumentWorkflowTimelineUseCase,
+    QueryDocumentLogEventsUseCase,
+)
 from app.modules.operations.infrastructure.jsonl_repository import (
     JsonlLogRepository,
     JsonlLogSource,
@@ -231,6 +245,39 @@ async def build_container() -> AppContainer:
                     ),
                 )
             ),
+        )
+        get_conversation_turn = GetConversationTurnUseCase(
+            context_query_service
+        )
+        list_conversation_turns = ListConversationTurnsUseCase(
+            context_query_service
+        )
+        get_context_chain = GetContextChainUseCase(context_query_service)
+        list_context_chains = ListContextChainsUseCase(
+            context_query_service
+        )
+        list_context_chain_nodes = ListContextChainNodesUseCase(
+            context_query_service
+        )
+        list_context_chain_resources = ListContextChainResourcesUseCase(
+            context_query_service
+        )
+        list_context_route_records = ListContextRouteRecordsUseCase(
+            context_query_service
+        )
+        query_document_log_events = QueryDocumentLogEventsUseCase(
+            operations_query_service
+        )
+        get_document_operation_timeline = (
+            GetDocumentOperationTimelineUseCase(operations_query_service)
+        )
+        get_document_workflow_timeline = (
+            GetDocumentWorkflowTimelineUseCase(operations_query_service)
+        )
+        collector_agents = (
+            _build_collector_agents(deepseek_provider)
+            if deepseek_provider is not None
+            else None
         )
         document_ports = DocumentApplicationPorts(
             uow_factory=SQLAlchemyUnitOfWork,
@@ -326,7 +373,22 @@ async def build_container() -> AppContainer:
             context_resource_service=resource_service,
             context_service=context_service,
             context_query_service=context_query_service,
+            get_conversation_turn=get_conversation_turn,
+            list_conversation_turns=list_conversation_turns,
+            get_context_chain=get_context_chain,
+            list_context_chains=list_context_chains,
+            list_context_chain_nodes=list_context_chain_nodes,
+            list_context_chain_resources=list_context_chain_resources,
+            list_context_route_records=list_context_route_records,
             operations_query_service=operations_query_service,
+            query_document_log_events=query_document_log_events,
+            get_document_operation_timeline=(
+                get_document_operation_timeline
+            ),
+            get_document_workflow_timeline=(
+                get_document_workflow_timeline
+            ),
+            collector_agents=collector_agents,
             upload_document=upload_document,
             get_document=get_document,
             list_documents=list_documents,
@@ -349,6 +411,16 @@ async def build_container() -> AppContainer:
         finally:
             await close_redis_client(redis_client)
         raise
+
+
+def _build_collector_agents(provider: DeepSeekModelProvider):
+    """仅在启用 Agent 时加载 Agents SDK Collector 定义。"""
+    from app.agents.collectors import build_collector_agents
+
+    return build_collector_agents(
+        model=provider.model,
+        model_settings=provider.model_settings,
+    )
 
 
 @asynccontextmanager

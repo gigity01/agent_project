@@ -21,6 +21,7 @@ from app.modules.document.domain.enums import (
     DocumentStorageStatus,
 )
 from app.shared.observability.document_index_logger import DocumentIndexLogger
+from app.shared.observability.correlation import DocumentOperationContext
 from app.shared.time import now_ms
 
 
@@ -139,6 +140,7 @@ class IndexVectorsUseCase:
         self,
         document_id: int,
         *,
+        operation_context: DocumentOperationContext | None = None,
         embedding_client: EmbeddingClient | None = None,
         vector_store: VectorStoreClient | None = None,
     ) -> IndexVectorsResult:
@@ -146,6 +148,7 @@ class IndexVectorsUseCase:
             document_id,
             ports=self._ports,
             settings=self._settings,
+            operation_context=operation_context,
             embedding_client=embedding_client,
             vector_store=vector_store,
         )
@@ -156,11 +159,15 @@ def _index_document_vectors(
     *,
     ports: DocumentApplicationPorts,
     settings: DocumentIndexingSettings,
+    operation_context: DocumentOperationContext | None = None,
     embedding_client: EmbeddingClient | None = None,
     vector_store: VectorStoreClient | None = None,
 ) -> IndexVectorsResult:
     """领取索引任务，在事务外写 Qdrant，再以短事务登记结果。"""
-    index_logger = DocumentIndexLogger(document_id=document_id)
+    logger_kwargs = {"document_id": document_id}
+    if operation_context is not None:
+        logger_kwargs["operation_context"] = operation_context
+    index_logger = DocumentIndexLogger(**logger_kwargs)
     context: IndexingContext | None = None
     resolved_vector_store = vector_store
     confirmed_point_ids: tuple[int, ...] = ()

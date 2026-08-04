@@ -46,6 +46,7 @@ from app.modules.document.application.use_cases.upload_document import (
 from app.modules.document.presentation.dependencies import (
     document_upload_form,
     get_build_chunks_use_case,
+    get_document_operation_context,
     get_document_chunk_statistics_use_case,
     get_document_pipeline_state_use_case,
     get_document_use_case,
@@ -78,6 +79,7 @@ from app.modules.document.presentation.schemas import (
     ParentBlockSearchResponse,
     VectorIndexingResponse,
 )
+from app.shared.observability.correlation import DocumentOperationContext
 
 
 router = APIRouter(prefix="/admin/documents", tags=["documents"])
@@ -111,11 +113,15 @@ async def upload_document(
     use_case: UploadDocumentUseCase = Depends(
         get_upload_document_use_case
     ),
+    operation_context: DocumentOperationContext = Depends(
+        get_document_operation_context
+    ),
 ):
     """接收原始文件并创建处于 uploaded 状态的文档记录。"""
     return await use_case.execute(
         file=file,
         meta=meta,
+        operation_context=operation_context,
     )
 
 
@@ -196,9 +202,15 @@ def trigger_document_processing(
     use_case: ProcessDocumentUseCase = Depends(
         get_process_document_use_case
     ),
+    operation_context: DocumentOperationContext = Depends(
+        get_document_operation_context
+    ),
 ):
     """触发指定文档的清洗或外部格式转换流程。"""
-    return use_case.execute(document_id)
+    return use_case.execute(
+        document_id,
+        operation_context=operation_context,
+    )
 
 
 @router.post(
@@ -208,9 +220,15 @@ def trigger_document_processing(
 def trigger_build_chunks(
     document_id: int,
     use_case: BuildChunksUseCase = Depends(get_build_chunks_use_case),
+    operation_context: DocumentOperationContext = Depends(
+        get_document_operation_context
+    ),
 ):
     """基于已清洗的文本重建父块和子块。"""
-    return use_case.execute(document_id)
+    return use_case.execute(
+        document_id,
+        operation_context=operation_context,
+    )
 
 
 @router.post(
@@ -220,9 +238,15 @@ def trigger_build_chunks(
 def trigger_vector_indexing(
     document_id: int,
     use_case: IndexVectorsUseCase = Depends(get_index_vectors_use_case),
+    operation_context: DocumentOperationContext = Depends(
+        get_document_operation_context
+    ),
 ):
     """为尚未索引的子块生成向量并写入向量库。"""
-    return use_case.execute(document_id)
+    return use_case.execute(
+        document_id,
+        operation_context=operation_context,
+    )
 
 
 @artifact_router.post(

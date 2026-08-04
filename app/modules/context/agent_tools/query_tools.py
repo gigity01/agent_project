@@ -44,6 +44,55 @@ def _query_service(context: AgentToolContext) -> ContextQueryService:
     return service
 
 
+def _get_conversation_turn(context: AgentToolContext, turn_id: str):
+    use_case = context.context_services.get_conversation_turn
+    if use_case is not None:
+        return use_case.execute(turn_id)
+    return _query_service(context).get_conversation_turn(turn_id)
+
+
+def _list_conversation_turns(context: AgentToolContext, query):
+    use_case = context.context_services.list_conversation_turns
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).list_conversation_turns(query)
+
+
+def _get_context_chain(context: AgentToolContext, chain_id: str):
+    use_case = context.context_services.get_context_chain
+    if use_case is not None:
+        return use_case.execute(chain_id)
+    return _query_service(context).get_context_chain(chain_id)
+
+
+def _list_context_chains(context: AgentToolContext, query):
+    use_case = context.context_services.list_context_chains
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).list_context_chains(query)
+
+
+def _list_context_chain_nodes(context: AgentToolContext, query):
+    use_case = context.context_services.list_context_chain_nodes
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).list_context_chain_nodes(query)
+
+
+def _list_context_chain_resources(context: AgentToolContext, query):
+    use_case = context.context_services.list_context_chain_resources
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).list_context_chain_resources(query)
+
+
+def _list_context_route_records(context: AgentToolContext, query):
+    use_case = context.context_services.list_context_route_records
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).list_context_route_records(query)
+
+
 def get_conversation_turn_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: GetConversationTurnToolInput,
@@ -55,9 +104,10 @@ def get_conversation_turn_handler(
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="conversation_turn_retrieved",
-        operation=lambda: _query_service(
-            ctx.context
-        ).get_conversation_turn(tool_input.turn_id),
+        operation=lambda: _get_conversation_turn(
+            ctx.context,
+            tool_input.turn_id,
+        ),
     )
     if execution.error is not None:
         return GetConversationTurnToolOutput(**execution.error.__dict__)
@@ -96,9 +146,7 @@ def list_conversation_turns_handler(
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="conversation_turns_listed",
-        operation=lambda: _query_service(
-            ctx.context
-        ).list_conversation_turns(query),
+        operation=lambda: _list_conversation_turns(ctx.context, query),
     )
     if execution.error is not None:
         return ListConversationTurnsToolOutput(
@@ -139,8 +187,9 @@ def get_context_chain_handler(
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="context_chain_retrieved",
-        operation=lambda: _query_service(ctx.context).get_context_chain(
-            tool_input.chain_id
+        operation=lambda: _get_context_chain(
+            ctx.context,
+            tool_input.chain_id,
         ),
     )
     if execution.error is not None:
@@ -178,9 +227,7 @@ def list_context_chains_handler(
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="context_chains_listed",
-        operation=lambda: _query_service(ctx.context).list_context_chains(
-            query
-        ),
+        operation=lambda: _list_context_chains(ctx.context, query),
     )
     if execution.error is not None:
         return ListContextChainsToolOutput(
@@ -228,9 +275,7 @@ def list_context_chain_nodes_handler(
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="context_chain_nodes_listed",
-        operation=lambda: _query_service(
-            ctx.context
-        ).list_context_chain_nodes(query),
+        operation=lambda: _list_context_chain_nodes(ctx.context, query),
     )
     if execution.error is not None:
         return ListContextChainNodesToolOutput(
@@ -278,9 +323,10 @@ def list_context_chain_resources_handler(
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="context_chain_resources_listed",
-        operation=lambda: _query_service(
-            ctx.context
-        ).list_context_chain_resources(query),
+        operation=lambda: _list_context_chain_resources(
+            ctx.context,
+            query,
+        ),
     )
     if execution.error is not None:
         return ListContextChainResourcesToolOutput(
@@ -328,9 +374,7 @@ def list_context_route_records_handler(
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="context_route_records_listed",
-        operation=lambda: _query_service(
-            ctx.context
-        ).list_context_route_records(query),
+        operation=lambda: _list_context_route_records(ctx.context, query),
     )
     if execution.error is not None:
         return ListContextRouteRecordsToolOutput(

@@ -16,16 +16,24 @@ from app.agent_runtime.context import (
 )
 from app.modules.operations.agent_tools.catalog import OPERATIONS_COLLECTOR_TOOLS
 from app.modules.operations.agent_tools.query_tools import (
+    get_document_operation_timeline_handler,
+    get_document_workflow_timeline_handler,
     get_task_tool_timeline_handler,
     query_document_business_logs_handler,
+    query_document_log_events_handler,
 )
 from app.modules.operations.agent_tools.schemas import (
+    GetDocumentOperationTimelineToolInput,
+    GetDocumentWorkflowTimelineToolInput,
     GetTaskToolTimelineToolInput,
     QueryDocumentBusinessLogsToolInput,
+    QueryDocumentLogEventsToolInput,
 )
 from app.modules.operations.application.dto import (
     DocumentBusinessLogEvent,
     DocumentBusinessLogPage,
+    DocumentOperationTimelineResult,
+    DocumentWorkflowTimelineResult,
     ToolInvocationTimelineItem,
     ToolTimelineResult,
 )
@@ -45,7 +53,10 @@ def _context(*, permissions: frozenset[str]):
         items=[
             DocumentBusinessLogEvent(
                 event_id="event-1",
-                run_id="run-1",
+                workflow_id="workflow-1",
+                operation_id="operation-1",
+                parent_operation_id=None,
+                attempt=1,
                 document_id=7,
                 doc_code="DOC_7",
                 kb_id=3,
@@ -59,10 +70,27 @@ def _context(*, permissions: frozenset[str]):
                 status_before="processing",
                 status_after="failed",
                 state_updated=True,
+                duration_ms=12,
                 created_at=NOW,
             )
         ],
         next_cursor=None,
+    )
+    service.get_document_operation_timeline.return_value = (
+        DocumentOperationTimelineResult(
+            operation_id="operation-1",
+            workflow_id="workflow-1",
+            attempt=1,
+            events=service.query_document_business_logs.return_value.items,
+            truncated=False,
+        )
+    )
+    service.get_document_workflow_timeline.return_value = (
+        DocumentWorkflowTimelineResult(
+            workflow_id="workflow-1",
+            events=service.query_document_business_logs.return_value.items,
+            truncated=False,
+        )
     )
     service.get_task_tool_timeline.return_value = ToolTimelineResult(
         identifier="task-1",
@@ -111,6 +139,9 @@ class OperationsAgentToolsTest(unittest.TestCase):
             {tool.name for tool in OPERATIONS_COLLECTOR_TOOLS},
             {
                 "query_document_business_logs",
+                "query_document_log_events",
+                "get_document_operation_timeline",
+                "get_document_workflow_timeline",
                 "get_document_execution_timeline",
                 "get_document_failure_timeline",
                 "query_agent_tool_audits",
@@ -137,6 +168,40 @@ class OperationsAgentToolsTest(unittest.TestCase):
         self.assertEqual(output.events[0].event_id, "event-1")
         self.assertEqual(query.document_ids, [7])
         self.assertTrue(query.failed_only)
+
+    def test_correlation_tools_query_operation_and_workflow(self) -> None:
+        context, service = _context(
+            permissions=frozenset({"operations:read"})
+        )
+        wrapper = RunContextWrapper(context)
+
+        events = query_document_log_events_handler(
+            wrapper,
+            QueryDocumentLogEventsToolInput(
+                workflow_ids=["workflow-1"],
+                attempts=[1],
+            ),
+        )
+        operation = get_document_operation_timeline_handler(
+            wrapper,
+            GetDocumentOperationTimelineToolInput(
+                operation_id="operation-1"
+            ),
+        )
+        workflow = get_document_workflow_timeline_handler(
+            wrapper,
+            GetDocumentWorkflowTimelineToolInput(
+                workflow_id="workflow-1"
+            ),
+        )
+
+        self.assertEqual(events.events[0].operation_id, "operation-1")
+        self.assertEqual(operation.timeline.attempt, 1)
+        self.assertEqual(workflow.timeline.workflow_id, "workflow-1")
+        self.assertEqual(
+            service.query_document_business_logs.call_args.args[0].attempts,
+            [1],
+        )
 
     def test_task_timeline_handler_returns_aggregated_invocations(self) -> None:
         context, service = _context(

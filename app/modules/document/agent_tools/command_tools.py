@@ -13,11 +13,19 @@ from app.modules.document.agent_tools.schemas import (
     ProcessDocumentToolInput,
     ProcessDocumentToolOutput,
 )
+from app.shared.observability.correlation import DocumentOperationContext
 
 
 DOCUMENT_PROCESS_PERMISSION = "document:process"
 DOCUMENT_BUILD_CHUNKS_PERMISSION = "document:chunks:build"
 DOCUMENT_INDEX_VECTORS_PERMISSION = "document:vectors:index"
+
+
+def _operation_context(context: AgentToolContext) -> DocumentOperationContext:
+    return DocumentOperationContext.create(
+        workflow_id=context.workflow_id,
+        attempt=context.attempt,
+    )
 
 
 def process_document_handler(
@@ -34,7 +42,8 @@ def process_document_handler(
         success_result_code="document_processed",
         operation=lambda: (
             ctx.context.document_services.process_document.execute(
-                tool_input.document_id
+                tool_input.document_id,
+                operation_context=_operation_context(ctx.context),
             )
         ),
     )
@@ -78,7 +87,8 @@ def build_document_chunks_handler(
         resource_refs=resource_refs,
         success_result_code="document_chunks_built",
         operation=lambda: ctx.context.document_services.build_chunks.execute(
-            tool_input.document_id
+            tool_input.document_id,
+            operation_context=_operation_context(ctx.context),
         ),
     )
     if execution.error is not None:
@@ -122,7 +132,8 @@ def index_document_vectors_handler(
         resource_refs=resource_refs,
         success_result_code="document_vectors_indexed",
         operation=lambda: ctx.context.document_services.index_vectors.execute(
-            tool_input.document_id
+            tool_input.document_id,
+            operation_context=_operation_context(ctx.context),
         ),
     )
     if execution.error is not None:

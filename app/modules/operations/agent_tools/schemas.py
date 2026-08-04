@@ -15,6 +15,10 @@ from app.modules.operations.application.dto import (
     DocumentExecutionTimelineResult,
     DocumentFailureTimelineResult,
     DocumentTimelineQuery,
+    DocumentOperationTimelineQuery,
+    DocumentOperationTimelineResult,
+    DocumentWorkflowTimelineQuery,
+    DocumentWorkflowTimelineResult,
     DateRangeQuery,
     ToolInvocationTimelineItem,
 )
@@ -22,6 +26,18 @@ from app.modules.operations.application.dto import (
 
 class QueryDocumentBusinessLogsToolInput(DocumentBusinessLogQuery):
     """文档业务日志查询输入。"""
+
+
+class QueryDocumentLogEventsToolInput(DocumentBusinessLogQuery):
+    """统一关联模型下的文档业务事件查询输入。"""
+
+
+class GetDocumentOperationTimelineToolInput(DocumentOperationTimelineQuery):
+    """单次文档操作时间线输入。"""
+
+
+class GetDocumentWorkflowTimelineToolInput(DocumentWorkflowTimelineQuery):
+    """完整文档工作流时间线输入。"""
 
 
 class GetDocumentExecutionTimelineToolInput(DocumentTimelineQuery):
@@ -63,6 +79,18 @@ class OperationsToolResult(BaseModel):
 class QueryDocumentBusinessLogsToolOutput(OperationsToolResult):
     events: list[DocumentBusinessLogEvent] = Field(default_factory=list)
     next_cursor: str | None = None
+
+
+class QueryDocumentLogEventsToolOutput(QueryDocumentBusinessLogsToolOutput):
+    """统一关联模型下的文档业务事件查询输出。"""
+
+
+class GetDocumentOperationTimelineToolOutput(OperationsToolResult):
+    timeline: DocumentOperationTimelineResult | None = None
+
+
+class GetDocumentWorkflowTimelineToolOutput(OperationsToolResult):
+    timeline: DocumentWorkflowTimelineResult | None = None
 
 
 class GetDocumentExecutionTimelineToolOutput(OperationsToolResult):

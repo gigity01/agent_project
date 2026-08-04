@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from app.config.settings import DOCUMENT_UPLOAD_LOG_DIR
 from app.shared.observability.jsonl_writer import JsonlEventWriter
+from app.shared.observability.correlation import DocumentOperationContext
 from app.shared.observability.logger import DocumentStageLogger
 
 if TYPE_CHECKING:
@@ -19,9 +20,14 @@ if TYPE_CHECKING:
 class DocumentUploadLogger(DocumentStageLogger):
     """保留既有上传事件名，并使用统一生命周期字段。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        operation_context: DocumentOperationContext | None = None,
+    ) -> None:
         super().__init__(
             stage="upload",
+            operation_context=operation_context,
             writer=JsonlEventWriter(
                 log_dir=DOCUMENT_UPLOAD_LOG_DIR,
                 file_prefix="upload",

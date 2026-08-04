@@ -5,11 +5,12 @@ from typing import Any
 from uuid import uuid4
 
 from app.shared.observability.jsonl_writer import JsonlEventWriter
+from app.shared.observability.correlation import DocumentOperationContext
 from app.shared.time import now_ms
 
 
 class DocumentStageLogger:
-    """为一次文档阶段调用提供稳定的 run_id 和统一公共字段。"""
+    """为一次文档阶段调用提供稳定的关联 ID 和统一公共字段。"""
 
     def __init__(
         self,
@@ -17,10 +18,13 @@ class DocumentStageLogger:
         stage: str,
         writer: JsonlEventWriter,
         document_id: int | None = None,
+        operation_context: DocumentOperationContext | None = None,
     ) -> None:
         self.stage = stage
         self.document_id = document_id
-        self.run_id = uuid4().hex
+        self.operation_context = (
+            operation_context or DocumentOperationContext.create()
+        )
         self.started_at_ms = now_ms()
         self.writer = writer
         self.context: dict[str, Any] = {}
@@ -56,9 +60,14 @@ class DocumentStageLogger:
         payload = {
             **self.context,
             **fields,
-            "schema_version": 1,
+            "schema_version": 2,
             "event_id": uuid4().hex,
-            "run_id": self.run_id,
+            "workflow_id": self.operation_context.workflow_id,
+            "operation_id": self.operation_context.operation_id,
+            "parent_operation_id": (
+                self.operation_context.parent_operation_id
+            ),
+            "attempt": self.operation_context.attempt,
             "event": event,
             "stage": self.stage,
             "phase": phase,
@@ -66,6 +75,8 @@ class DocumentStageLogger:
             "message": message,
             "duration_ms": self.duration_ms,
             "document_id": self.document_id,
+            "status_before": fields.get("status_before"),
+            "status_after": fields.get("status_after"),
         }
         return self.writer.write(payload)
 

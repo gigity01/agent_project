@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from redis.asyncio import Redis
 
@@ -19,6 +20,15 @@ from app.modules.context.application.resource_service import (
     ContextResourceService,
 )
 from app.modules.context.application.query_service import ContextQueryService
+from app.modules.context.application.use_cases import (
+    GetContextChainUseCase,
+    GetConversationTurnUseCase,
+    ListContextChainNodesUseCase,
+    ListContextChainResourcesUseCase,
+    ListContextChainsUseCase,
+    ListContextRouteRecordsUseCase,
+    ListConversationTurnsUseCase,
+)
 from app.modules.document.application.use_cases.build_chunks import (
     BuildChunksUseCase,
 )
@@ -62,6 +72,15 @@ from app.modules.document.application.use_cases.upload_document import (
     UploadDocumentUseCase,
 )
 from app.modules.operations.application.query_service import OperationsQueryService
+from app.modules.operations.application.use_cases import (
+    GetDocumentOperationTimelineUseCase,
+    GetDocumentWorkflowTimelineUseCase,
+    QueryDocumentLogEventsUseCase,
+)
+
+
+if TYPE_CHECKING:
+    from app.agents.collectors import CollectorAgentSet
 
 
 @dataclass
@@ -75,7 +94,18 @@ class AppContainer:
     context_resource_service: ContextResourceService
     context_service: ContextService
     context_query_service: ContextQueryService
+    get_conversation_turn: GetConversationTurnUseCase
+    list_conversation_turns: ListConversationTurnsUseCase
+    get_context_chain: GetContextChainUseCase
+    list_context_chains: ListContextChainsUseCase
+    list_context_chain_nodes: ListContextChainNodesUseCase
+    list_context_chain_resources: ListContextChainResourcesUseCase
+    list_context_route_records: ListContextRouteRecordsUseCase
     operations_query_service: OperationsQueryService
+    query_document_log_events: QueryDocumentLogEventsUseCase
+    get_document_operation_timeline: GetDocumentOperationTimelineUseCase
+    get_document_workflow_timeline: GetDocumentWorkflowTimelineUseCase
+    collector_agents: CollectorAgentSet | None
     upload_document: UploadDocumentUseCase
     get_document: GetDocumentUseCase
     list_documents: ListDocumentsUseCase

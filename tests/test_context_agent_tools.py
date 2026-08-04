@@ -146,6 +146,27 @@ class ContextAgentToolsTest(unittest.TestCase):
         self.assertEqual(output.result_code, "permission_denied")
         service.get_conversation_turn.assert_not_called()
 
+    def test_tool_prefers_explicit_query_use_case(self) -> None:
+        context, service, _writer = _context(
+            permissions=frozenset({"context:read"})
+        )
+        use_case = mock.Mock()
+        use_case.execute.return_value = service.get_conversation_turn.return_value
+        object.__setattr__(
+            context.context_services,
+            "get_conversation_turn",
+            use_case,
+        )
+
+        output = get_conversation_turn_handler(
+            RunContextWrapper(context),
+            GetConversationTurnToolInput(turn_id="turn-1"),
+        )
+
+        self.assertEqual(output.turn.turn_id, "turn-1")
+        use_case.execute.assert_called_once_with("turn-1")
+        service.get_conversation_turn.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

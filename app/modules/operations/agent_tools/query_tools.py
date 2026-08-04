@@ -14,17 +14,25 @@ from app.modules.operations.agent_tools.schemas import (
     GetDocumentExecutionTimelineToolOutput,
     GetDocumentFailureTimelineToolInput,
     GetDocumentFailureTimelineToolOutput,
+    GetDocumentOperationTimelineToolInput,
+    GetDocumentOperationTimelineToolOutput,
+    GetDocumentWorkflowTimelineToolInput,
+    GetDocumentWorkflowTimelineToolOutput,
     GetTaskToolTimelineToolInput,
     QueryAgentToolAuditsToolInput,
     QueryAgentToolAuditsToolOutput,
     QueryDocumentBusinessLogsToolInput,
     QueryDocumentBusinessLogsToolOutput,
+    QueryDocumentLogEventsToolInput,
+    QueryDocumentLogEventsToolOutput,
     ToolTimelineToolOutput,
 )
 from app.modules.operations.application.dto import (
     AgentToolAuditQuery,
     DocumentBusinessLogQuery,
     DocumentTimelineQuery,
+    DocumentOperationTimelineQuery,
+    DocumentWorkflowTimelineQuery,
     ToolTimelineQuery,
 )
 from app.modules.operations.application.query_service import OperationsQueryService
@@ -38,6 +46,149 @@ def _query_service(context: AgentToolContext) -> OperationsQueryService:
     if service is None:
         raise ToolNotAvailableError("Operations 查询服务未注入")
     return service
+
+
+def _query_document_log_events(context: AgentToolContext, query):
+    use_case = context.operations_services.query_document_log_events
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).query_document_business_logs(query)
+
+
+def _get_document_operation_timeline(context: AgentToolContext, query):
+    use_case = context.operations_services.get_document_operation_timeline
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).get_document_operation_timeline(query)
+
+
+def _get_document_workflow_timeline(context: AgentToolContext, query):
+    use_case = context.operations_services.get_document_workflow_timeline
+    if use_case is not None:
+        return use_case.execute(query)
+    return _query_service(context).get_document_workflow_timeline(query)
+
+
+def query_document_log_events_handler(
+    ctx: RunContextWrapper[AgentToolContext],
+    tool_input: QueryDocumentLogEventsToolInput,
+) -> QueryDocumentLogEventsToolOutput:
+    resource_refs = [
+        *(f"workflow:{item}" for item in tool_input.workflow_ids),
+        *(f"operation:{item}" for item in tool_input.operation_ids),
+        *(f"document:{item}" for item in tool_input.document_ids),
+    ] or ["document_log_event:*"]
+    query = DocumentBusinessLogQuery.model_validate(tool_input.model_dump())
+    execution = execute_audited_tool_call(
+        context=ctx.context,
+        tool_name="query_document_log_events",
+        required_permissions=(OPERATIONS_READ_PERMISSION,),
+        resource_refs=resource_refs,
+        success_result_code="document_log_events_queried",
+        operation=lambda: _query_document_log_events(ctx.context, query),
+    )
+    if execution.error is not None:
+        return QueryDocumentLogEventsToolOutput(**execution.error.__dict__)
+    result = execution.value
+    assert result is not None
+    return QueryDocumentLogEventsToolOutput(
+        outcome="succeeded",
+        result_code="document_log_events_queried",
+        message="文档业务事件查询成功",
+        retryable=False,
+        resource_refs=resource_refs,
+        events=result.items,
+        next_cursor=result.next_cursor,
+    )
+
+
+query_document_log_events = function_tool(
+    name_override="query_document_log_events",
+    description_override=(
+        "按 workflow、operation、attempt、文档、阶段和时间查询业务事件。"
+    ),
+    failure_error_function=safe_tool_error_function,
+)(query_document_log_events_handler)
+
+
+def get_document_operation_timeline_handler(
+    ctx: RunContextWrapper[AgentToolContext],
+    tool_input: GetDocumentOperationTimelineToolInput,
+) -> GetDocumentOperationTimelineToolOutput:
+    resource_refs = [f"operation:{tool_input.operation_id}"]
+    query = DocumentOperationTimelineQuery.model_validate(
+        tool_input.model_dump()
+    )
+    execution = execute_audited_tool_call(
+        context=ctx.context,
+        tool_name="get_document_operation_timeline",
+        required_permissions=(OPERATIONS_READ_PERMISSION,),
+        resource_refs=resource_refs,
+        success_result_code="document_operation_timeline_retrieved",
+        operation=lambda: _get_document_operation_timeline(
+            ctx.context,
+            query,
+        ),
+    )
+    if execution.error is not None:
+        return GetDocumentOperationTimelineToolOutput(
+            **execution.error.__dict__
+        )
+    return GetDocumentOperationTimelineToolOutput(
+        outcome="succeeded",
+        result_code="document_operation_timeline_retrieved",
+        message="文档操作时间线读取成功",
+        retryable=False,
+        resource_refs=resource_refs,
+        timeline=execution.value,
+    )
+
+
+get_document_operation_timeline = function_tool(
+    name_override="get_document_operation_timeline",
+    description_override="按 operation_id 获取一次阶段操作的完整事件时间线。",
+    failure_error_function=safe_tool_error_function,
+)(get_document_operation_timeline_handler)
+
+
+def get_document_workflow_timeline_handler(
+    ctx: RunContextWrapper[AgentToolContext],
+    tool_input: GetDocumentWorkflowTimelineToolInput,
+) -> GetDocumentWorkflowTimelineToolOutput:
+    resource_refs = [f"workflow:{tool_input.workflow_id}"]
+    query = DocumentWorkflowTimelineQuery.model_validate(
+        tool_input.model_dump()
+    )
+    execution = execute_audited_tool_call(
+        context=ctx.context,
+        tool_name="get_document_workflow_timeline",
+        required_permissions=(OPERATIONS_READ_PERMISSION,),
+        resource_refs=resource_refs,
+        success_result_code="document_workflow_timeline_retrieved",
+        operation=lambda: _get_document_workflow_timeline(
+            ctx.context,
+            query,
+        ),
+    )
+    if execution.error is not None:
+        return GetDocumentWorkflowTimelineToolOutput(
+            **execution.error.__dict__
+        )
+    return GetDocumentWorkflowTimelineToolOutput(
+        outcome="succeeded",
+        result_code="document_workflow_timeline_retrieved",
+        message="文档工作流时间线读取成功",
+        retryable=False,
+        resource_refs=resource_refs,
+        timeline=execution.value,
+    )
+
+
+get_document_workflow_timeline = function_tool(
+    name_override="get_document_workflow_timeline",
+    description_override="按 workflow_id 获取跨阶段和重试的完整事件时间线。",
+    failure_error_function=safe_tool_error_function,
+)(get_document_workflow_timeline_handler)
 
 
 def query_document_business_logs_handler(

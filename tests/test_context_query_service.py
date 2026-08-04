@@ -18,6 +18,15 @@ from app.modules.context.application.query_dto import (
     ConversationTurnSearchQuery,
 )
 from app.modules.context.application.query_service import ContextQueryService
+from app.modules.context.application.use_cases import (
+    GetContextChainUseCase,
+    GetConversationTurnUseCase,
+    ListContextChainNodesUseCase,
+    ListContextChainResourcesUseCase,
+    ListContextChainsUseCase,
+    ListContextRouteRecordsUseCase,
+    ListConversationTurnsUseCase,
+)
 from app.modules.context.infrastructure.persistence.models.context_chain import (
     ContextChain,
 )
@@ -206,6 +215,43 @@ class ContextQueryServiceTest(unittest.TestCase):
         self.assertEqual(nodes.items[0].related_task_ids, ["task-1"])
         self.assertEqual(resources.items[0].resource_key, "document:7")
         self.assertEqual(routes.items[0].selected_chain_ids, ["chain-active"])
+
+    def test_seven_named_query_use_cases_delegate_without_writes(self) -> None:
+        turns = ListConversationTurnsUseCase(self.service).execute(
+            ConversationTurnSearchQuery(conversation_id="conversation-1")
+        )
+        chains = ListContextChainsUseCase(self.service).execute(
+            ContextChainSearchQuery(conversation_id="conversation-1")
+        )
+        nodes = ListContextChainNodesUseCase(self.service).execute(
+            ContextChainNodeSearchQuery(chain_id="chain-active")
+        )
+        resources = ListContextChainResourcesUseCase(self.service).execute(
+            ContextChainResourceSearchQuery(chain_id="chain-active")
+        )
+        routes = ListContextRouteRecordsUseCase(self.service).execute(
+            ContextRouteRecordSearchQuery(
+                conversation_id="conversation-1"
+            )
+        )
+
+        self.assertEqual(
+            GetConversationTurnUseCase(self.service).execute(
+                "turn-1"
+            ).turn_id,
+            "turn-1",
+        )
+        self.assertEqual(
+            GetContextChainUseCase(self.service).execute(
+                "chain-active"
+            ).chain_id,
+            "chain-active",
+        )
+        self.assertEqual(turns.total, 2)
+        self.assertEqual(chains.total, 2)
+        self.assertEqual(nodes.total, 1)
+        self.assertEqual(resources.total, 1)
+        self.assertEqual(routes.total, 1)
 
 
 if __name__ == "__main__":

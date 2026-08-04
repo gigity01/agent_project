@@ -153,6 +153,8 @@ def _context(
         permissions=permissions,
         document_services=services,
         context_services=ContextToolServices(),
+        workflow_id="workflow-1",
+        attempt=2,
         audit_logger=AgentToolAuditLogger(writer),
     )
     return context, services
@@ -249,9 +251,22 @@ class DocumentAgentToolsTest(unittest.TestCase):
         self.assertEqual(process_output.document_status, "processed")
         self.assertEqual(chunks_output.child_count, 4)
         self.assertEqual(vectors_output.indexed_chunks, 4)
-        services.process_document.execute.assert_called_once_with(7)
-        services.build_chunks.execute.assert_called_once_with(7)
-        services.index_vectors.execute.assert_called_once_with(7)
+        operation_contexts = []
+        for service in (
+            services.process_document,
+            services.build_chunks,
+            services.index_vectors,
+        ):
+            call = service.execute.call_args
+            self.assertEqual(call.args, (7,))
+            operation_context = call.kwargs["operation_context"]
+            self.assertEqual(operation_context.workflow_id, "workflow-1")
+            self.assertEqual(operation_context.attempt, 2)
+            operation_contexts.append(operation_context)
+        self.assertEqual(
+            len({item.operation_id for item in operation_contexts}),
+            3,
+        )
 
     def test_business_rejection_is_structured(self) -> None:
         writer = _AuditWriter()

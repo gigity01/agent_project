@@ -31,6 +31,7 @@ from app.modules.document.domain.enums import (
 from app.shared.observability.document_process_logger import (
     DocumentProcessLogger,
 )
+from app.shared.observability.correlation import DocumentOperationContext
 
 
 PROCESSABLE_LIFECYCLE_STATUSES = frozenset(
@@ -95,11 +96,17 @@ class ProcessDocumentUseCase:
         self._ports = ports
         self._settings = settings
 
-    def execute(self, document_id: int) -> ProcessDocumentResult:
+    def execute(
+        self,
+        document_id: int,
+        *,
+        operation_context: DocumentOperationContext | None = None,
+    ) -> ProcessDocumentResult:
         return _process_document(
             document_id,
             ports=self._ports,
             settings=self._settings,
+            operation_context=operation_context,
         )
 
 
@@ -108,9 +115,13 @@ def _process_document(
     *,
     ports: DocumentApplicationPorts,
     settings: DocumentProcessingSettings,
+    operation_context: DocumentOperationContext | None = None,
 ) -> ProcessDocumentResult:
     """领取文档后在事务外处理，并以独立短事务登记结果或失败。"""
-    process_logger = DocumentProcessLogger(document_id=document_id)
+    logger_kwargs = {"document_id": document_id}
+    if operation_context is not None:
+        logger_kwargs["operation_context"] = operation_context
+    process_logger = DocumentProcessLogger(**logger_kwargs)
     context: ProcessingContext | None = None
     execution_result: ProcessingExecutionResult | None = None
     phase = "claim"

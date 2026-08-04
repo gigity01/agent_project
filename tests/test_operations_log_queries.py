@@ -10,11 +10,18 @@ from pathlib import Path
 from app.modules.operations.application.dto import (
     AgentToolAuditQuery,
     DocumentBusinessLogQuery,
+    DocumentOperationTimelineQuery,
     DocumentTimelineQuery,
+    DocumentWorkflowTimelineQuery,
     ToolTimelineQuery,
 )
 from app.modules.operations.application.errors import OperationsQueryError
 from app.modules.operations.application.query_service import OperationsQueryService
+from app.modules.operations.application.use_cases import (
+    GetDocumentOperationTimelineUseCase,
+    GetDocumentWorkflowTimelineUseCase,
+    QueryDocumentLogEventsUseCase,
+)
 from app.modules.operations.infrastructure.jsonl_repository import (
     JsonlLogRepository,
     JsonlLogSource,
@@ -69,7 +76,10 @@ class OperationsLogQueriesTest(unittest.TestCase):
                 "upload",
                 {
                     "event_id": "doc-event-1",
-                    "run_id": "upload-run",
+                    "workflow_id": "workflow-7",
+                    "operation_id": "upload-operation",
+                    "parent_operation_id": None,
+                    "attempt": 1,
                     "event": "document_upload_completed",
                     "stage": "upload",
                     "phase": "finalize",
@@ -79,6 +89,7 @@ class OperationsLogQueriesTest(unittest.TestCase):
                     "doc_code": "DOC_7",
                     "kb_id": 3,
                     "status_after": "uploaded",
+                    "duration_ms": 10,
                     "created_at": _time(1),
                 },
             ),
@@ -86,7 +97,10 @@ class OperationsLogQueriesTest(unittest.TestCase):
                 "process",
                 {
                     "event_id": "doc-event-2",
-                    "run_id": "process-run",
+                    "workflow_id": "workflow-7",
+                    "operation_id": "process-operation-1",
+                    "parent_operation_id": None,
+                    "attempt": 1,
                     "event": "document_process_failed",
                     "stage": "process",
                     "phase": "execute",
@@ -100,6 +114,7 @@ class OperationsLogQueriesTest(unittest.TestCase):
                     "status_before": "processing",
                     "status_after": "failed",
                     "state_updated": True,
+                    "duration_ms": 20,
                     "created_at": _time(2),
                 },
             ),
@@ -107,7 +122,10 @@ class OperationsLogQueriesTest(unittest.TestCase):
                 "chunk",
                 {
                     "event_id": "doc-event-3",
-                    "run_id": "chunk-run",
+                    "workflow_id": "workflow-8",
+                    "operation_id": "chunk-operation",
+                    "parent_operation_id": None,
+                    "attempt": 1,
                     "event": "document_chunk_completed",
                     "stage": "chunk",
                     "phase": "finalize",
@@ -116,7 +134,30 @@ class OperationsLogQueriesTest(unittest.TestCase):
                     "document_id": 8,
                     "doc_code": "DOC_8",
                     "kb_id": 3,
+                    "duration_ms": 30,
                     "created_at": _time(3),
+                },
+            ),
+            (
+                "process",
+                {
+                    "event_id": "doc-event-4",
+                    "workflow_id": "workflow-7",
+                    "operation_id": "process-operation-2",
+                    "parent_operation_id": None,
+                    "attempt": 2,
+                    "event": "document_process_completed",
+                    "stage": "process",
+                    "phase": "finalize",
+                    "level": "info",
+                    "message": "处理重试完成",
+                    "document_id": 7,
+                    "doc_code": "DOC_7",
+                    "kb_id": 3,
+                    "status_before": "processing",
+                    "status_after": "processed",
+                    "duration_ms": 40,
+                    "created_at": _time(4),
                 },
             ),
         )
@@ -234,10 +275,45 @@ class OperationsLogQueriesTest(unittest.TestCase):
 
         self.assertEqual(
             [item.stage for item in execution.events],
-            ["upload", "process"],
+            ["upload", "process", "process"],
         )
         self.assertEqual(failures.failures[0].error_type, "RuntimeError")
         self.assertTrue(failures.failures[0].state_updated)
+
+    def test_named_use_cases_query_operation_and_workflow_timelines(self) -> None:
+        query_events = QueryDocumentLogEventsUseCase(self.service)
+        get_operation = GetDocumentOperationTimelineUseCase(self.service)
+        get_workflow = GetDocumentWorkflowTimelineUseCase(self.service)
+
+        filtered = query_events.execute(
+            DocumentBusinessLogQuery(
+                workflow_ids=["workflow-7"],
+                attempts=[2],
+            )
+        )
+        operation = get_operation.execute(
+            DocumentOperationTimelineQuery(
+                operation_id="process-operation-1"
+            )
+        )
+        workflow = get_workflow.execute(
+            DocumentWorkflowTimelineQuery(workflow_id="workflow-7")
+        )
+
+        self.assertEqual(
+            [item.event_id for item in filtered.items],
+            ["doc-event-4"],
+        )
+        self.assertEqual(operation.workflow_id, "workflow-7")
+        self.assertEqual(operation.attempt, 1)
+        self.assertEqual(
+            [item.operation_id for item in workflow.events],
+            [
+                "upload-operation",
+                "process-operation-1",
+                "process-operation-2",
+            ],
+        )
 
     def test_audit_query_and_timelines_show_retry_then_success(self) -> None:
         audits = self.service.query_agent_tool_audits(

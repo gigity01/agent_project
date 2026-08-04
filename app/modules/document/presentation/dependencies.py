@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from fastapi import Depends, Form
+from fastapi import Depends, Form, Header, Response
 
 from app.bootstrap.container import AppContainer
 from app.bootstrap.dependencies import get_container
@@ -47,6 +47,32 @@ from app.modules.document.application.use_cases.upload_document import (
     UploadDocumentUseCase,
 )
 from app.modules.document.presentation.schemas import DocumentUploadFormData
+from app.shared.observability.correlation import DocumentOperationContext
+
+
+def get_document_operation_context(
+    response: Response,
+    workflow_id: str | None = Header(
+        default=None,
+        alias="X-Workflow-ID",
+        min_length=1,
+        max_length=200,
+    ),
+    attempt: int = Header(
+        default=1,
+        alias="X-Operation-Attempt",
+        ge=1,
+    ),
+) -> DocumentOperationContext:
+    """创建阶段操作上下文，并把生成的关联 ID 回传给调用方。"""
+    operation_context = DocumentOperationContext.create(
+        workflow_id=workflow_id,
+        attempt=attempt,
+    )
+    response.headers["X-Workflow-ID"] = operation_context.workflow_id
+    response.headers["X-Operation-ID"] = operation_context.operation_id
+    response.headers["X-Operation-Attempt"] = str(operation_context.attempt)
+    return operation_context
 
 
 def document_upload_form(

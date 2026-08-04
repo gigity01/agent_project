@@ -11,9 +11,12 @@ from app.modules.operations.agent_tools.query_tools import (
     get_agent_run_tool_timeline,
     get_document_execution_timeline,
     get_document_failure_timeline,
+    get_document_operation_timeline,
+    get_document_workflow_timeline,
     get_task_tool_timeline,
     query_agent_tool_audits,
     query_document_business_logs,
+    query_document_log_events,
 )
 
 
@@ -44,6 +47,21 @@ def _registration(
 
 
 OPERATIONS_COLLECTOR_CATALOG = (
+    _registration(
+        query_document_log_events,
+        "按统一关联字段查询文档业务事件",
+        ["workflow", "operation", "document", "business_log"],
+    ),
+    _registration(
+        get_document_operation_timeline,
+        "获取一次文档阶段操作的事件时间线",
+        ["operation", "document", "business_log"],
+    ),
+    _registration(
+        get_document_workflow_timeline,
+        "获取完整文档处理工作流事件时间线",
+        ["workflow", "operation", "document", "business_log"],
+    ),
     _registration(
         query_document_business_logs,
         "查询文档业务日志",

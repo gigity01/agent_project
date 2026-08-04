@@ -4,7 +4,21 @@ from dataclasses import dataclass, field
 
 from app.agent_runtime.audit import AgentToolAuditLogger
 from app.modules.context.application.query_service import ContextQueryService
+from app.modules.context.application.use_cases import (
+    GetContextChainUseCase,
+    GetConversationTurnUseCase,
+    ListContextChainNodesUseCase,
+    ListContextChainResourcesUseCase,
+    ListContextChainsUseCase,
+    ListContextRouteRecordsUseCase,
+    ListConversationTurnsUseCase,
+)
 from app.modules.operations.application.query_service import OperationsQueryService
+from app.modules.operations.application.use_cases import (
+    GetDocumentOperationTimelineUseCase,
+    GetDocumentWorkflowTimelineUseCase,
+    QueryDocumentLogEventsUseCase,
+)
 from app.modules.document.application.use_cases.build_chunks import (
     BuildChunksUseCase,
 )
@@ -70,6 +84,13 @@ class ContextToolServices:
     """Context Tool 可取得的只读 Application 能力。"""
 
     query_service: ContextQueryService | None = None
+    get_conversation_turn: GetConversationTurnUseCase | None = None
+    list_conversation_turns: ListConversationTurnsUseCase | None = None
+    get_context_chain: GetContextChainUseCase | None = None
+    list_context_chains: ListContextChainsUseCase | None = None
+    list_context_chain_nodes: ListContextChainNodesUseCase | None = None
+    list_context_chain_resources: ListContextChainResourcesUseCase | None = None
+    list_context_route_records: ListContextRouteRecordsUseCase | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +98,13 @@ class OperationsToolServices:
     """Operations Tool 可取得的只读日志查询能力。"""
 
     query_service: OperationsQueryService | None = None
+    query_document_log_events: QueryDocumentLogEventsUseCase | None = None
+    get_document_operation_timeline: (
+        GetDocumentOperationTimelineUseCase | None
+    ) = None
+    get_document_workflow_timeline: (
+        GetDocumentWorkflowTimelineUseCase | None
+    ) = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +121,8 @@ class AgentToolContext:
     permissions: frozenset[str]
     document_services: DocumentToolServices
     context_services: ContextToolServices
+    workflow_id: str | None = None
+    attempt: int = 1
     operations_services: OperationsToolServices = field(
         default_factory=OperationsToolServices
     )

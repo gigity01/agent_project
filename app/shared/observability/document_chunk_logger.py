@@ -5,16 +5,23 @@ from typing import Any
 from app.config.settings import DOCUMENT_CHUNK_LOG_DIR
 from app.modules.document.domain.enums import DocumentStatus
 from app.shared.observability.jsonl_writer import JsonlEventWriter
+from app.shared.observability.correlation import DocumentOperationContext
 from app.shared.observability.logger import DocumentStageLogger
 
 
 class DocumentChunkLogger(DocumentStageLogger):
     """提供切块阶段语义明确的结构化日志方法。"""
 
-    def __init__(self, *, document_id: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        document_id: int | None = None,
+        operation_context: DocumentOperationContext | None = None,
+    ) -> None:
         super().__init__(
             stage="chunk",
             document_id=document_id,
+            operation_context=operation_context,
             writer=JsonlEventWriter(
                 log_dir=DOCUMENT_CHUNK_LOG_DIR,
                 file_prefix="chunk",

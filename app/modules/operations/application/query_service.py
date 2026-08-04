@@ -17,6 +17,10 @@ from app.modules.operations.application.dto import (
     DocumentFailureEvent,
     DocumentFailureTimelineResult,
     DocumentTimelineQuery,
+    DocumentOperationTimelineQuery,
+    DocumentOperationTimelineResult,
+    DocumentWorkflowTimelineQuery,
+    DocumentWorkflowTimelineResult,
     ToolInvocationTimelineItem,
     ToolTimelineQuery,
     ToolTimelineResult,
@@ -28,6 +32,10 @@ DOCUMENT_EVENT_COMMON_FIELDS = {
     "schema_version",
     "event_id",
     "run_id",
+    "workflow_id",
+    "operation_id",
+    "parent_operation_id",
+    "attempt",
     "document_id",
     "doc_code",
     "kb_id",
@@ -42,6 +50,7 @@ DOCUMENT_EVENT_COMMON_FIELDS = {
     "status_after",
     "state_updated",
     "document_state_updated",
+    "duration_ms",
     "created_at",
 }
 
@@ -110,6 +119,46 @@ class OperationsQueryService:
         return DocumentFailureTimelineResult(
             document_id=query.document_id,
             failures=[self._failure_event(event) for event in page.events],
+            truncated=page.next_cursor is not None,
+        )
+
+    def get_document_operation_timeline(
+        self,
+        query: DocumentOperationTimelineQuery,
+    ) -> DocumentOperationTimelineResult:
+        page = self._document_logs.scan(
+            predicate=lambda event: self._operation_id(event)
+            == query.operation_id,
+            created_from=query.created_from,
+            created_to=query.created_to,
+            limit=query.limit,
+            ascending=True,
+        )
+        events = [self._document_event(event) for event in page.events]
+        first = events[0] if events else None
+        return DocumentOperationTimelineResult(
+            operation_id=query.operation_id,
+            workflow_id=first.workflow_id if first is not None else None,
+            attempt=first.attempt if first is not None else None,
+            events=events,
+            truncated=page.next_cursor is not None,
+        )
+
+    def get_document_workflow_timeline(
+        self,
+        query: DocumentWorkflowTimelineQuery,
+    ) -> DocumentWorkflowTimelineResult:
+        page = self._document_logs.scan(
+            predicate=lambda event: event.get("workflow_id")
+            == query.workflow_id,
+            created_from=query.created_from,
+            created_to=query.created_to,
+            limit=query.limit,
+            ascending=True,
+        )
+        return DocumentWorkflowTimelineResult(
+            workflow_id=query.workflow_id,
+            events=[self._document_event(event) for event in page.events],
             truncated=page.next_cursor is not None,
         )
 
@@ -190,9 +239,15 @@ class OperationsQueryService:
         events = set(query.events)
         phases = set(query.phases)
         levels = set(query.levels)
+        workflow_ids = set(query.workflow_ids)
+        operation_ids = set(query.operation_ids)
+        attempts = set(query.attempts)
 
         def predicate(event: dict) -> bool:
             checks = (
+                (workflow_ids, event.get("workflow_id")),
+                (operation_ids, OperationsQueryService._operation_id(event)),
+                (attempts, event.get("attempt")),
                 (document_ids, event.get("document_id")),
                 (doc_codes, event.get("doc_code")),
                 (kb_ids, event.get("kb_id")),
@@ -272,7 +327,10 @@ class OperationsQueryService:
         }
         return DocumentBusinessLogEvent(
             event_id=str(event.get("event_id") or ""),
-            run_id=event.get("run_id"),
+            workflow_id=event.get("workflow_id"),
+            operation_id=OperationsQueryService._operation_id(event),
+            parent_operation_id=event.get("parent_operation_id"),
+            attempt=event.get("attempt"),
             document_id=event.get("document_id"),
             doc_code=event.get("doc_code"),
             kb_id=event.get("kb_id"),
@@ -289,9 +347,15 @@ class OperationsQueryService:
                 "state_updated",
                 event.get("document_state_updated"),
             ),
+            duration_ms=int(event.get("duration_ms") or 0),
             created_at=event["created_at"],
             details=details,
         )
+
+    @staticmethod
+    def _operation_id(event: dict[str, Any]) -> str | None:
+        """兼容读取 schema v1 的 run_id，新日志只写 operation_id。"""
+        return event.get("operation_id") or event.get("run_id")
 
     @staticmethod
     def _failure_event(event: dict[str, Any]) -> DocumentFailureEvent:

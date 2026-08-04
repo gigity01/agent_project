@@ -26,6 +26,7 @@ from app.modules.document.domain.policies import (
 from app.shared.observability.document_upload_logger import (
     DocumentUploadLogger,
 )
+from app.shared.observability.correlation import DocumentOperationContext
 
 
 READ_CHUNK_SIZE = 1024 * 1024
@@ -111,12 +112,18 @@ class UploadDocumentUseCase:
         file: UploadFilePort,
         meta: UploadMetadataPort,
         created_by_actor_code: str | None = None,
+        *,
+        operation_context: DocumentOperationContext | None = None,
     ) -> DocumentResult:
         """保存上传文件、校验内容去重，并创建 draft 状态文档。
 
         任一步骤失败时会清理已落盘的原始文件，并写入对应审计日志。
         """
-        upload_logger = DocumentUploadLogger()
+        upload_logger = (
+            DocumentUploadLogger(operation_context=operation_context)
+            if operation_context is not None
+            else DocumentUploadLogger()
+        )
         actor_code = (
             created_by_actor_code
             or self._settings.default_created_by_actor_code

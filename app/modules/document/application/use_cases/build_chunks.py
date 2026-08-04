@@ -29,6 +29,7 @@ from app.modules.document.domain.policies import (
     md5_text,
 )
 from app.shared.observability.document_chunk_logger import DocumentChunkLogger
+from app.shared.observability.correlation import DocumentOperationContext
 
 
 CHUNKABLE_LIFECYCLE_STATUSES = frozenset(
@@ -93,17 +94,30 @@ class BuildChunksUseCase:
     def __init__(self, *, ports: DocumentApplicationPorts) -> None:
         self._ports = ports
 
-    def execute(self, document_id: int) -> BuildChunksResult:
-        return _build_document_chunks(document_id, ports=self._ports)
+    def execute(
+        self,
+        document_id: int,
+        *,
+        operation_context: DocumentOperationContext | None = None,
+    ) -> BuildChunksResult:
+        return _build_document_chunks(
+            document_id,
+            ports=self._ports,
+            operation_context=operation_context,
+        )
 
 
 def _build_document_chunks(
     document_id: int,
     *,
     ports: DocumentApplicationPorts,
+    operation_context: DocumentOperationContext | None = None,
 ) -> BuildChunksResult:
     """领取切块任务后在事务外计算，并以独立短事务登记结果。"""
-    chunk_logger = DocumentChunkLogger(document_id=document_id)
+    logger_kwargs = {"document_id": document_id}
+    if operation_context is not None:
+        logger_kwargs["operation_context"] = operation_context
+    chunk_logger = DocumentChunkLogger(**logger_kwargs)
     context: ChunkingContext | None = None
     phase = "claim"
     try:

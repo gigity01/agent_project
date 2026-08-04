@@ -24,6 +24,9 @@ class DateRangeQuery(BaseModel):
 
 
 class DocumentBusinessLogQuery(DateRangeQuery):
+    workflow_ids: list[str] = Field(default_factory=list)
+    operation_ids: list[str] = Field(default_factory=list)
+    attempts: list[PositiveInt] = Field(default_factory=list)
     document_ids: list[PositiveInt] = Field(default_factory=list)
     doc_codes: list[str] = Field(default_factory=list)
     kb_ids: list[PositiveInt] = Field(default_factory=list)
@@ -40,6 +43,16 @@ class DocumentBusinessLogQuery(DateRangeQuery):
 
 class DocumentTimelineQuery(DateRangeQuery):
     document_id: int = Field(gt=0)
+    limit: int = Field(default=500, ge=1, le=500)
+
+
+class DocumentOperationTimelineQuery(DateRangeQuery):
+    operation_id: str = Field(min_length=1, max_length=200)
+    limit: int = Field(default=500, ge=1, le=500)
+
+
+class DocumentWorkflowTimelineQuery(DateRangeQuery):
+    workflow_id: str = Field(min_length=1, max_length=200)
     limit: int = Field(default=500, ge=1, le=500)
 
 
@@ -73,7 +86,10 @@ class JsonlScanPage(BaseModel):
 
 class DocumentBusinessLogEvent(BaseModel):
     event_id: str
-    run_id: str | None
+    workflow_id: str | None = None
+    operation_id: str | None = None
+    parent_operation_id: str | None = None
+    attempt: int | None = None
     document_id: int | None
     doc_code: str | None
     kb_id: int | None
@@ -87,6 +103,7 @@ class DocumentBusinessLogEvent(BaseModel):
     status_before: str | None
     status_after: str | None
     state_updated: bool | None
+    duration_ms: int = 0
     created_at: datetime
     details: dict[str, Any] = Field(default_factory=dict)
 
@@ -98,6 +115,20 @@ class DocumentBusinessLogPage(BaseModel):
 
 class DocumentExecutionTimelineResult(BaseModel):
     document_id: int
+    events: list[DocumentBusinessLogEvent]
+    truncated: bool
+
+
+class DocumentOperationTimelineResult(BaseModel):
+    operation_id: str
+    workflow_id: str | None
+    attempt: int | None
+    events: list[DocumentBusinessLogEvent]
+    truncated: bool
+
+
+class DocumentWorkflowTimelineResult(BaseModel):
+    workflow_id: str
     events: list[DocumentBusinessLogEvent]
     truncated: bool
 
