@@ -16,6 +16,7 @@
 app/
 ├── main.py
 ├── api/router.py
+├── agent_runtime/               # Agent Tool 公共运行时
 ├── bootstrap/
 │   ├── app_factory.py
 │   ├── container.py
@@ -36,11 +37,12 @@ app/
     │   ├── application/
     │   ├── domain/
     │   └── infrastructure/
-    └── document/
-        ├── presentation/
-        ├── application/
-        ├── domain/
-        └── infrastructure/
+    ├── document/
+    │   ├── presentation/
+    │   ├── application/
+    │   ├── domain/
+    │   └── infrastructure/
+    └── operations/              # 运行日志查询与 Agent Tools
 ```
 
 固定依赖方向：
@@ -92,7 +94,7 @@ Infrastructure，并将统一容器写入 `app.state.container`。关闭时统�
 ## 验证
 
 ```bash
-uv run --frozen python -m compileall -q app core main_config main_utils alembic
+uv run --frozen python -m compileall -q app alembic
 uv run --frozen python -m unittest discover -s tests -v
 git diff --check
 ```

@@ -24,7 +24,7 @@
 - 本地运行：`uv run --frozen uvicorn app.main:app --reload --host 127.0.0.1 --port 8000`
 - 数据库迁移：`uv run --frozen alembic upgrade head`
 - 自动化测试：`uv run --frozen python -m unittest discover -s tests -v`
-- 语法检查：`uv run --frozen python -m compileall -q app core main_config main_utils alembic`
+- 语法检查：`uv run --frozen python -m compileall -q app alembic`
 - 差异检查：`git diff --check`
 
 仓库使用 `pyproject.toml` 和 `uv.lock` 管理依赖，自动化测试基于标准库
@@ -33,7 +33,8 @@
 
 ## HTTP API
 
-`app/main.py` 和 `app/api/context.py` 当前暴露六个接口：
+应用通过 `app/api/router.py` 汇总 Context 与 Document 模块路由。核心写入流程和
+Context 接口包括：
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
@@ -41,43 +42,43 @@
 | POST | `/api/admin/documents/{document_id}/process` | 转换或清洗文档 |
 | POST | `/api/admin/documents/{document_id}/build-chunks` | 重建父块和子块 |
 | POST | `/api/admin/documents/{document_id}/index-vectors` | 生成向量并写入 Qdrant |
+| POST | `/api/conversations/{conversation_id}/messages` | 发送用户消息并执行 Context 路由 |
 | POST | `/api/context/route` | 创建唯一 Turn 并执行上下文链路由 |
 | POST | `/api/context/turns/{turn_id}/complete` | 补全 Turn 并关联已路由的目标链 |
 
 四个文档步骤彼此独立，必须按顺序调用。上传成功不会自动触发处理、切块或索引。
-两个 Context 接口组成独立流程：先路由，待下游处理完成后再回写 Turn。
+Context 路由后，待下游处理完成再回写 Turn。`/api/context/route` 是兼容接口，
+新调用方应优先使用 Conversation Message 接口。Document 模块还提供文档、产物、
+父块、子块、流水线状态和知识库统计等只读查询接口。
 
 ## 目录与分层
 
 ```text
 app/main.py
-  -> app/api/                      # Context 等拆分路由与请求依赖
-  -> app/agents/                   # Context Agent 与 DeepSeek Provider
-  -> app/services/                 # 业务编排和事务边界
-    -> app/repositories/           # SQLAlchemy 查询与持久化，不应自行 commit
-      -> app/models/               # ORM 表模型
-    -> app/processors/             # 本地文本清洗
-    -> app/chunkers/               # 父子切块策略
-    -> app/integrations/           # Docling、Redis 客户端、路由锁和热资源队列
-    -> app/vectorstores/           # Qdrant 封装
-  -> app/schemas/                  # Pydantic 请求/响应模型
-  -> app/db/                       # engine、session、Unit of Work
-  -> app/app_config/settings.py    # 应用配置
+  -> app/api/router.py             # 汇总各模块 HTTP Router
+  -> app/bootstrap/                # 应用工厂、lifespan 与依赖装配
+  -> app/config/                   # 环境变量与应用配置
+  -> app/agent_runtime/            # Agent Tool 公共运行时、审计与错误策略
+  -> app/infrastructure/           # 共享数据库、DeepSeek Provider 与 Redis 客户端
+  -> app/modules/context/          # Context 的 Presentation/Application/Domain/Infrastructure
+  -> app/modules/document/         # Document 的 Presentation/Application/Domain/Infrastructure
+  -> app/modules/operations/       # 运行日志查询与 Agent Tools
+  -> app/shared/observability/     # JSONL 生命周期事件日志
 
-core/observability/                # JSONL 生命周期事件日志
-main_config/                       # 环境变量与日志目录配置
-main_utils/                        # 跨模块的小型辅助函数
 alembic/                           # 数据库迁移
+scripts/                           # 显式执行的辅助检查脚本
 tests/                             # unittest 自动化测试
 ```
 
-依赖方向应保持为 API → Service → Repository/Processor/Chunker/Integration/VectorStore。Repository 不应反向调用 Service，模型不应承载业务编排。
+固定依赖方向为 Presentation → Application → Domain；Infrastructure 实现
+Application Port，并可依赖 Domain；Bootstrap 负责装配具体实现。Repository 不应
+自行提交事务，Domain 模型不应承载外部集成或应用编排。
 
 ## 端到端处理流程
 
 ### 1. 上传
 
-入口：`app/services/document_upload_service.py`
+入口：`app/modules/document/application/use_cases/upload_document.py`
 
 - 校验文件名、扩展名和客户端声明的 Content-Type。
 - 以 1 MiB 分块读取，最大文件大小为 20 MiB。
@@ -92,8 +93,8 @@ Content-Type 只是上传白名单校验，不代表已经验证文件真实内�
 
 入口：
 
-- `app/services/document_processing_service.py`
-- `app/services/document_source_prepare_service.py`
+- `app/modules/document/application/use_cases/process_document.py`
+- `app/modules/document/application/use_cases/prepare_document_source.py`
 
 本地格式直接交给 Processor；复杂办公格式先由 Docling 转成 Markdown：
 
@@ -106,12 +107,13 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 
 ### 3. 切块
 
-入口：`app/services/document_chunking_service.py`
+入口：`app/modules/document/application/use_cases/build_chunks.py`
 
 - `TextChunker`：先按段落生成父块，再按长度生成子块。
 - `MarkdownChunker`：按标题层级维护 `section_path`，以章节生成父块。
 - `CsvChunker`：一条记录对应一个子块，父块按最多 50 条记录和 12,000 字符组批。
-- 文本/Markdown 子块最大 600 字符；CSV 子块最大 8,000 字符，限制统一定义在 `app/chunkers/common.py`。
+- 文本/Markdown 子块最大 600 字符；CSV 子块最大 8,000 字符，限制统一定义在
+  `app/modules/document/infrastructure/chunking/common.py`。
 - `processed` 文档可以领取切块任务；`failed` 文档只有在仍有 cleaned 产物且不存在 active ChildChunk 时才可重试，已有切块结果的失败文档必须走后续索引重试。
 - 领取成功后先提交 `chunking`，事务外生成父子块，最终短事务复核三状态轴并更新为 `chunked`；暂不允许 `chunked` 文档重复切块。
 - 重建时先删除旧 child chunks，再删除旧 parent blocks，并在同一事务写入新结果。
@@ -121,7 +123,7 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 
 ### 4. 向量索引
 
-入口：`app/services/vector_indexing_service.py`
+入口：`app/modules/document/application/use_cases/index_vectors.py`
 
 - 领取事务只查询 `status=active` 且 `vector_status=pending/failed` 的子块，已索引子块不会重复生成向量。
 - 领取时以行锁把 Document 和本次子块推进到 `indexing` 并提交，外部 Embedding/Qdrant 调用不占用数据库事务。
@@ -137,13 +139,13 @@ Docling 结果保存到 `storage/secondary_text/`，同时写入 `document_artif
 
 入口：
 
-- API：`app/api/context.py`
-- Agent：`app/agents/context_agent.py`
-- Service：`app/services/context_service.py`
-- 资源 Service：`app/services/context_resource_service.py`
-- 确定性校验：`app/services/context_route_validation.py`
-- Redis 锁客户端：`app/integrations/conversation_route_lock.py`
-- Redis 资源队列：`app/integrations/context_resource_queue.py`
+- API：`app/modules/context/presentation/router.py`
+- Agent Router：`app/modules/context/infrastructure/llm/deepseek_router.py`
+- Service：`app/modules/context/application/context_service.py`
+- 资源 Service：`app/modules/context/application/resource_service.py`
+- 确定性路由规则：`app/modules/context/domain/route_policy.py`
+- Redis 锁客户端：`app/modules/context/infrastructure/locking/redis_conversation_lock.py`
+- Redis 资源队列：`app/modules/context/infrastructure/cache/redis_resource_queue.py`
 
 Context Agent 是上下文路由器，只判断当前完整用户输入关联哪些已有链，以及是否
 包含与所有已有链无关的新内容。它不拆分或改写输入，也不负责业务计划、Task
@@ -214,7 +216,7 @@ Lua 原子完成，增量刷新必须校验 Redis 当前版本等于数据库新
 
 ## 生命周期状态
 
-文档状态枚举在 `app/constants/document_status.py` 中定义了目标生命周期：
+文档状态枚举在 `app/modules/document/domain/enums.py` 中定义了目标生命周期：
 
 ```text
 uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexed
@@ -235,10 +237,11 @@ uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexe
 
 ## 数据库与事务边界
 
-- SQLAlchemy engine/session/Base：`app/db/session.py`
-- ORM 模型：`app/models/`
-- Repository：`app/repositories/`
-- Unit of Work：`app/db/uow/`
+- SQLAlchemy engine/session/Base：`app/infrastructure/database/`
+- Document ORM 模型：`app/modules/document/infrastructure/persistence/models/`
+- Context ORM 模型：`app/modules/context/infrastructure/persistence/models/`
+- Repository：各模块的 `infrastructure/persistence/`
+- Unit of Work：`app/infrastructure/database/uow.py`
 - Alembic 当前迁移头：`d4f8a1c7e2b9`
 
 Repository 原则：
@@ -257,9 +260,8 @@ Service 可以调用 `uow.commit()` / `uow.rollback()`，但不应绕过 UoW 直
 
 配置入口：
 
-- 应用配置：`app/app_config/settings.py`
-- 环境变量加载：`main_config/environment.py`
-- 日志目录：`main_config/settings.py`
+- 应用配置与日志目录：`app/config/settings.py`
+- 环境变量加载：`app/config/environment.py`
 - 安全示例：`.env.example`
 
 环境变量优先级：
@@ -316,7 +318,7 @@ Redis socket 超时、Context 路由锁超时、热资源队列容量和日志�
 
 ## 观测日志
 
-`core/observability/` 将上传、处理、切块和索引事件按日期追加为 JSONL。日志用于
+`app/shared/observability/` 将上传、处理、切块和索引事件按日期追加为 JSONL。日志用于
 诊断和审计，但不得记录密钥、数据库连接串、完整认证头或其他敏感值。
 
 当前已实现上传、处理、切块和索引日志组件；尚未提供 retrieval 流程，不要因为
@@ -324,7 +326,9 @@ Redis socket 超时、Context 路由锁超时、热资源队列容量和日志�
 
 ## 容易遗漏的约束
 
-- `app/main.py` 导入 `app.models` 是为了确保 ORM 表注册完整。
+- `app/bootstrap/app_factory.py` 调用
+  `app/infrastructure/database/model_registry.py` 的 `load_all_models()`，确保 ORM 表
+  注册完整。
 - `QdrantVectorStore.ensure_collection()` 只创建不存在的 collection，不迁移已有 collection schema；补偿删除按稳定 Point ID 执行。
 - 修改 Embedding 模型或维度前，必须评估 Qdrant collection 重建/迁移。
 - Markdown 标题本身没有正文时不会生成可检索父块。
@@ -345,6 +349,10 @@ Redis socket 超时、Context 路由锁超时、热资源队列容量和日志�
 - 修改前阅读相关 Service、Repository、模型、状态常量和邻近代码。
 - 做最小完整改动，不混入无关重构或格式化。
 - 保留工作区已有修改；不要使用破坏性 Git 命令覆盖用户工作。
+- 本仓库的 GitHub 远程操作使用 WSL 本地 SSH 配置和 SSH remote；不要改用
+  HTTPS，也不要将 `gh` CLI token 状态当作 Git SSH 认证状态。
+- `git commit` 是本地操作；只有用户明确要求后才执行 commit 或 push，push 必须
+  使用当前 SSH remote 和 WSL 本地 SSH 身份。
 - 不读取、输出、记录或提交任何凭据和用户数据。
 - 修改 Repository 事务语义时同步检查所有调用它的 Service。
 - 修改文档状态时同步检查 API 响应、服务准入条件和失败补偿。
@@ -364,7 +372,7 @@ Redis socket 超时、Context 路由锁超时、热资源队列容量和日志�
 至少执行：
 
 ```powershell
-uv run --frozen python -m compileall -q app core main_config main_utils alembic
+uv run --frozen python -m compileall -q app alembic
 git diff --check
 ```
 
