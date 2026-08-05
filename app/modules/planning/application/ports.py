@@ -19,6 +19,10 @@ class PlanningApplicationPorts:
     uow_factory: Callable[[], Any]
     plan_factory: Callable[..., Any]
     task_factory: Callable[..., Any]
+    task_dependency_factory: Callable[..., Any]
+    outbox_event_factory: Callable[..., Any]
+    inbox_event_factory: Callable[..., Any]
+    clarification_request_factory: Callable[..., Any]
     integrity_error_type: type[BaseException]
 
     def is_integrity_error(self, exc: BaseException) -> bool:

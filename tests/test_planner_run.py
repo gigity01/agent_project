@@ -19,7 +19,7 @@ from app.agent_runtime.context import (
     OperationsToolServices,
 )
 from app.agents.collectors import build_collector_agents
-from app.agents.planner import PlanAgentOutput, build_planner_agent
+from app.agents.planner import build_planner_agent
 from app.infrastructure.database.base import Base
 from app.infrastructure.database.model_registry import load_all_models
 from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
@@ -45,6 +45,9 @@ from app.modules.planning.application.use_cases import (
     build_planning_use_cases,
 )
 from app.modules.planning.infrastructure.persistence.models import Plan, Task
+from app.modules.planning.infrastructure.persistence.models import TaskDependency
+from app.modules.messaging.infrastructure.persistence.models import InboxEvent, OutboxEvent
+from app.modules.clarification.infrastructure.persistence.models import ClarificationRequest
 
 
 class _AuditWriter:
@@ -94,6 +97,7 @@ class _ClosedLoopPlannerRunner:
             create_process_document_task_handler(
                 wrapper,
                 CreateProcessDocumentTaskToolInput(
+                    task_ref="process",
                     document_id=7,
                     sequence=1,
                 ),
@@ -101,15 +105,19 @@ class _ClosedLoopPlannerRunner:
             create_build_chunks_task_handler(
                 wrapper,
                 CreateBuildChunksTaskToolInput(
+                    task_ref="chunks",
                     document_id=7,
                     sequence=2,
+                    depends_on_task_refs=["process"],
                 ),
             ),
             create_index_vectors_task_handler(
                 wrapper,
                 CreateIndexVectorsTaskToolInput(
+                    task_ref="vectors",
                     document_id=7,
                     sequence=3,
+                    depends_on_task_refs=["chunks"],
                 ),
             ),
         )
@@ -137,6 +145,9 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             ConversationTurn.__table__,
             Plan.__table__,
             Task.__table__,
+            TaskDependency.__table__,
+            OutboxEvent.__table__,
+            ClarificationRequest.__table__,
         ]
         Base.metadata.create_all(self.engine, tables=self.tables)
         with self.session_factory() as session:
@@ -171,9 +182,7 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in configured_runner.agent.tools},
             {
-                "collect_document_information",
-                "collect_context_information",
-                "collect_operation_information",
+                "collect_planning_evidence",
                 "create_process_document_task",
                 "create_build_chunks_task",
                 "create_index_vectors_task",
@@ -181,19 +190,36 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
                 "mark_plan_unsupported",
             },
         )
-        self.assertTrue(
+        self.assertFalse(
             configured_runner.agent.model_settings.parallel_tool_calls
         )
         self.assertEqual(
             configured_runner.run_config.tool_execution.max_function_tool_concurrency,
-            3,
+            1,
         )
-        self.assertIs(configured_runner.agent.output_type, PlanAgentOutput)
+        self.assertIsNone(configured_runner.agent.output_type)
+        self.assertEqual(
+            [handoff.tool_name for handoff in configured_runner.agent.handoffs],
+            ["clarification_handoff"],
+        )
+        self.assertEqual(
+            configured_runner.agent.tool_use_behavior,
+            {
+                "stop_at_tool_names": [
+                    "finalize_plan",
+                    "mark_plan_unsupported",
+                ]
+            },
+        )
 
         ports = PlanningApplicationPorts(
             uow_factory=lambda: SQLAlchemyUnitOfWork(self.session_factory),
             plan_factory=Plan,
             task_factory=Task,
+            task_dependency_factory=TaskDependency,
+            outbox_event_factory=OutboxEvent,
+            inbox_event_factory=InboxEvent,
+            clarification_request_factory=ClarificationRequest,
             integrity_error_type=IntegrityError,
         )
         planning_use_cases = build_planning_use_cases(ports)

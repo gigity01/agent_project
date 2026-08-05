@@ -1,8 +1,6 @@
 """Context HTTP 路由。"""
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.modules.context.application.context_service import ContextService
 from app.modules.context.application.dto import (
@@ -27,14 +25,10 @@ from app.modules.context.presentation.schemas import (
     CompleteContextTurnRequest,
     CompleteContextTurnResponse,
     ContextRouteRequest,
-    ContextRoutingMetadata,
     RoutedContextPackage,
-    SendMessageRequest,
-    SendMessageResponse,
 )
 
 
-router = APIRouter(prefix="/conversations", tags=["conversations"])
 legacy_router = APIRouter(prefix="/context", tags=["context"])
 
 
@@ -82,44 +76,6 @@ def _to_complete_turn_command(
             )
             for update in request.chain_updates
         ],
-    )
-
-
-@router.post(
-    "/{conversation_id}/messages",
-    response_model=SendMessageResponse,
-)
-async def send_conversation_message(
-    conversation_id: Annotated[
-        str,
-        Path(min_length=1, max_length=100),
-    ],
-    request: SendMessageRequest,
-    service: ContextService = Depends(get_context_routing_service),
-) -> SendMessageResponse:
-    """接收用户消息，并返回不含内部 Chain 内容的路由结果。"""
-    try:
-        result = await service.send_message(
-            SendMessageCommand(
-                conversation_id=conversation_id,
-                message=request.message,
-            )
-        )
-    except ContextApplicationError as exc:
-        raise _to_http_exception(exc) from exc
-
-    return SendMessageResponse(
-        conversation_id=result.conversation_id,
-        turn_id=result.turn_id,
-        status="routed",
-        routing=ContextRoutingMetadata(
-            route_mode=result.decision.route_mode,
-            selected_chain_ids=list(
-                result.decision.selected_chain_ids
-            ),
-            new_chain_id=result.new_chain_id,
-            reason_summary=result.decision.reason_summary,
-        ),
     )
 
 

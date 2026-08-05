@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         CreateProcessDocumentTaskUseCase,
         FinalizePlanUseCase,
         MarkPlanUnsupportedUseCase,
+        MarkPlanNeedsClarificationUseCase,
     )
 from app.modules.document.application.use_cases.build_chunks import (
     BuildChunksUseCase,
@@ -129,6 +130,7 @@ class PlanningToolServices:
     create_index_vectors_task: CreateIndexVectorsTaskUseCase
     finalize_plan: FinalizePlanUseCase
     mark_plan_unsupported: MarkPlanUnsupportedUseCase
+    mark_plan_needs_clarification: MarkPlanNeedsClarificationUseCase
 
 
 @dataclass(frozen=True)

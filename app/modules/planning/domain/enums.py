@@ -8,8 +8,15 @@ class PlanStatus(str, Enum):
 
     PLANNING = "planning"
     READY = "ready"
+    RUNNING = "running"
+    COMPLETED = "completed"
     UNSUPPORTED = "unsupported"
+    NEEDS_CLARIFICATION = "needs_clarification"
     RETRY_PENDING = "retry_pending"
+    REPLAN_PENDING = "replan_pending"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
 
 
 class TaskStatus(str, Enum):
@@ -17,6 +24,13 @@ class TaskStatus(str, Enum):
 
     DRAFT = "draft"
     PENDING = "pending"
+    RUNNING = "running"
+    RETRY_WAIT = "retry_wait"
+    SUCCEEDED = "succeeded"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    SUPERSEDED = "superseded"
 
 
 class PlanningCapabilityCode(str, Enum):

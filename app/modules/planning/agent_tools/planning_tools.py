@@ -88,6 +88,8 @@ def create_process_document_task_handler(
                     turn_id=turn_id,
                     document_id=tool_input.document_id,
                     sequence=tool_input.sequence,
+                    task_ref=tool_input.task_ref,
+                    depends_on_task_refs=tool_input.depends_on_task_refs,
                 )
             )
         ),
@@ -128,6 +130,8 @@ def create_build_chunks_task_handler(
                     turn_id=turn_id,
                     document_id=tool_input.document_id,
                     sequence=tool_input.sequence,
+                    task_ref=tool_input.task_ref,
+                    depends_on_task_refs=tool_input.depends_on_task_refs,
                 )
             )
         ),
@@ -168,6 +172,8 @@ def create_index_vectors_task_handler(
                     turn_id=turn_id,
                     document_id=tool_input.document_id,
                     sequence=tool_input.sequence,
+                    task_ref=tool_input.task_ref,
+                    depends_on_task_refs=tool_input.depends_on_task_refs,
                 )
             )
         ),

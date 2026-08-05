@@ -2,36 +2,11 @@
 
 from pydantic import BaseModel, Field
 
-from app.modules.context.domain.enums import ContextRouteMode
 from app.modules.context.domain.models import (
     ContextChain,
     ContextRouteDecision,
     ConversationTurn,
 )
-
-
-class SendMessageRequest(BaseModel):
-    """用户发送 Conversation Message 的请求。"""
-
-    message: str = Field(min_length=1)
-
-
-class ContextRoutingMetadata(BaseModel):
-    """联调阶段向调用方返回的精简路由元数据。"""
-
-    route_mode: ContextRouteMode
-    selected_chain_ids: list[str]
-    new_chain_id: str | None
-    reason_summary: str
-
-
-class SendMessageResponse(BaseModel):
-    """Conversation Message 完成路由后的外部响应。"""
-
-    conversation_id: str
-    turn_id: str
-    status: str
-    routing: ContextRoutingMetadata
 
 
 class ContextRouteRequest(BaseModel):
@@ -94,6 +69,3 @@ class CompleteContextTurnResponse(BaseModel):
 
     turn: ConversationTurn
     linked_chain_ids: list[str]
-
-
-SendConversationMessageRequest = SendMessageRequest

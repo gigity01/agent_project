@@ -18,6 +18,7 @@ class ContextTurnStatus(str, Enum):
 
     ROUTING = "routing"
     ROUTED = "routed"
+    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
 

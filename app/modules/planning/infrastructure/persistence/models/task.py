@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     JSON,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,6 +29,11 @@ class Task(Base):
             "sequence",
             name="uq_tasks_plan_sequence",
         ),
+        UniqueConstraint(
+            "plan_id",
+            "task_ref",
+            name="uq_tasks_plan_task_ref",
+        ),
     )
 
     task_id: Mapped[str] = mapped_column(String(100), primary_key=True)
@@ -41,6 +47,7 @@ class Task(Base):
         ForeignKey("conversation_turns.turn_id"),
         nullable=False,
     )
+    task_ref: Mapped[str] = mapped_column(String(100), nullable=False)
     capability_code: Mapped[str] = mapped_column(String(100), nullable=False)
     input_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -49,6 +56,27 @@ class Task(Base):
         nullable=False,
         default=TaskStatus.DRAFT.value,
     )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=3,
+    )
+    output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    last_error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
@@ -61,7 +89,11 @@ class Task(Base):
         onupdate=func.now(),
     )
 
-    plan = relationship("Plan", back_populates="tasks")
+    plan = relationship(
+        "Plan",
+        back_populates="tasks",
+        foreign_keys=[plan_id],
+    )
 
 
 Index("idx_tasks_plan_status_sequence", Task.plan_id, Task.status, Task.sequence)

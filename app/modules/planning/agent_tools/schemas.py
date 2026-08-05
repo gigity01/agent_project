@@ -10,18 +10,24 @@ class _ToolInput(BaseModel):
 
 
 class CreateProcessDocumentTaskToolInput(_ToolInput):
+    task_ref: str = Field(min_length=1, max_length=100)
     document_id: int = Field(gt=0)
     sequence: int = Field(ge=1)
+    depends_on_task_refs: list[str] = Field(default_factory=list, max_length=10)
 
 
 class CreateBuildChunksTaskToolInput(_ToolInput):
+    task_ref: str = Field(min_length=1, max_length=100)
     document_id: int = Field(gt=0)
     sequence: int = Field(ge=1)
+    depends_on_task_refs: list[str] = Field(default_factory=list, max_length=10)
 
 
 class CreateIndexVectorsTaskToolInput(_ToolInput):
+    task_ref: str = Field(min_length=1, max_length=100)
     document_id: int = Field(gt=0)
     sequence: int = Field(ge=1)
+    depends_on_task_refs: list[str] = Field(default_factory=list, max_length=10)
 
 
 class FinalizePlanToolInput(_ToolInput):

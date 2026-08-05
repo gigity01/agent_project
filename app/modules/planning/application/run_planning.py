@@ -20,6 +20,7 @@ from app.modules.planning.application.dto import (
     MarkPlanRetryPendingInput,
     RunPlanningInput,
     RunPlanningResult,
+    SetClarificationQuestionInput,
 )
 from app.modules.planning.application.errors import PlanningApplicationError
 from app.modules.planning.application.ports import (
@@ -68,39 +69,90 @@ class RunPlanningUseCase:
 
     async def execute(self, command: RunPlanningInput) -> RunPlanningResult:
         user_input = await asyncio.to_thread(
-            self._load_routed_turn_input,
+            self._load_plannable_turn_input,
             command,
+            {ContextTurnStatus.ROUTED.value},
         )
         plan = await asyncio.to_thread(
             self._planning_use_cases.create_plan.execute,
             CreatePlanInput(
                 turn_id=command.turn_id,
                 revision=command.revision,
+                workflow_id=command.workflow_id,
+                parent_plan_id=command.parent_plan_id,
             ),
         )
-        context = self._build_agent_context(command, plan.plan_id)
+        return await self._run_existing_plan(
+            command,
+            plan.plan_id,
+            user_input,
+        )
+
+    async def execute_existing(
+        self,
+        command: RunPlanningInput,
+        plan_id: str,
+    ) -> RunPlanningResult:
+        """运行已由外层事务创建的新 revision Plan。"""
+        user_input = await asyncio.to_thread(
+            self._load_plannable_turn_input,
+            command,
+            {
+                ContextTurnStatus.ROUTED.value,
+                ContextTurnStatus.PROCESSING.value,
+                ContextTurnStatus.COMPLETED.value,
+            },
+        )
+        await asyncio.to_thread(self._validate_existing_plan, command, plan_id)
+        return await self._run_existing_plan(command, plan_id, user_input)
+
+    async def _run_existing_plan(
+        self,
+        command: RunPlanningInput,
+        plan_id: str,
+        user_input: str,
+    ) -> RunPlanningResult:
+        context = self._build_agent_context(command, plan_id)
 
         try:
-            await self._planner_runner.run(
+            runner_result = await self._planner_runner.run(
                 user_input=user_input,
                 context=context,
             )
         except Exception:
             return await asyncio.to_thread(
                 self._finish_from_database,
-                plan.plan_id,
+                plan_id,
                 command.turn_id,
                 "Planner Runner 或 Tool 执行发生系统异常",
             )
 
+        question = getattr(
+            getattr(runner_result, "final_output", None),
+            "question",
+            None,
+        )
+        if isinstance(question, str) and question.strip():
+            await asyncio.to_thread(
+                self._planning_use_cases.set_clarification_question.execute,
+                SetClarificationQuestionInput(
+                    plan_id=plan_id,
+                    question=question,
+                ),
+            )
+
         return await asyncio.to_thread(
             self._finish_from_database,
-            plan.plan_id,
+            plan_id,
             command.turn_id,
             "Planner 未调用 finalize_plan 或 mark_plan_unsupported",
         )
 
-    def _load_routed_turn_input(self, command: RunPlanningInput) -> str:
+    def _load_plannable_turn_input(
+        self,
+        command: RunPlanningInput,
+        allowed_statuses: set[str],
+    ) -> str:
         with self._ports.uow_factory() as uow:
             turn = uow.conversation_turns.get_by_id(command.turn_id)
             if turn is None:
@@ -115,13 +167,35 @@ class RunPlanningUseCase:
                     "Conversation Turn 会话归属不一致",
                     result_code="turn_conversation_conflict",
                 )
-            if turn.status != ContextTurnStatus.ROUTED.value:
+            if turn.status not in allowed_statuses:
                 raise PlanningApplicationError(
                     409,
                     "Conversation Turn 尚未完成 Context 路由",
                     result_code="turn_state_conflict",
                 )
             return turn.user_input
+
+    def _validate_existing_plan(
+        self,
+        command: RunPlanningInput,
+        plan_id: str,
+    ) -> None:
+        with self._ports.uow_factory() as uow:
+            plan = uow.plans.get_by_id(plan_id)
+            if plan is None:
+                raise PlanningApplicationError(
+                    404, "Plan 不存在", result_code="plan_not_found"
+                )
+            if (
+                plan.turn_id != command.turn_id
+                or plan.revision != command.revision
+                or plan.status != PlanStatus.PLANNING.value
+            ):
+                raise PlanningApplicationError(
+                    409,
+                    "Plan revision 当前不可运行",
+                    result_code="plan_state_conflict",
+                )
 
     def _build_agent_context(
         self,
@@ -154,6 +228,9 @@ class RunPlanningUseCase:
                 mark_plan_unsupported=(
                     self._planning_use_cases.mark_plan_unsupported
                 ),
+                mark_plan_needs_clarification=(
+                    self._planning_use_cases.mark_plan_needs_clarification
+                ),
             ),
             plan_id=plan_id,
             audit_logger=self._audit_logger_factory(),
@@ -166,7 +243,11 @@ class RunPlanningUseCase:
         retry_reason: str,
     ) -> RunPlanningResult:
         result = self._read_result(plan_id, turn_id)
-        if result.status != PlanStatus.PLANNING:
+        needs_retry = result.status == PlanStatus.PLANNING or (
+            result.status == PlanStatus.NEEDS_CLARIFICATION
+            and result.clarification_question is None
+        )
+        if not needs_retry:
             return result
 
         self._planning_use_cases.mark_plan_retry_pending.execute(
@@ -204,6 +285,7 @@ class RunPlanningUseCase:
                     result_code="turn_not_found",
                 )
             tasks = uow.tasks.list_by_plan_id(plan_id)
+            clarification = uow.clarifications.get_by_plan_id(plan_id)
             status = PlanStatus(plan.status)
             task_ids: list[str] = []
             if status == PlanStatus.READY:
@@ -225,4 +307,9 @@ class RunPlanningUseCase:
                 status=status,
                 task_ids=task_ids,
                 failure_reason=plan.failure_reason,
+                clarification_question=(
+                    clarification.question
+                    if clarification is not None
+                    else None
+                ),
             )

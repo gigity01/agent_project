@@ -79,6 +79,22 @@ from app.modules.operations.application.use_cases import (
 )
 from app.modules.planning.application.use_cases import PlanningUseCases
 from app.modules.planning.application.run_planning import RunPlanningUseCase
+from app.modules.aggregation.application.aggregate_plan import (
+    AggregatePlanUseCase,
+)
+from app.modules.clarification.application.answer import (
+    AnswerClarificationUseCase,
+)
+from app.modules.conversation.application.get_turn_status import (
+    GetTurnStatusUseCase,
+)
+from app.modules.conversation.application.send_message import (
+    SendConversationMessageUseCase,
+)
+from app.modules.messaging.application.outbox import OutboxPublisher
+from app.modules.messaging.worker.dispatcher import RuntimeEventDispatcher
+from app.modules.planning.application.replan import ReplanUseCase
+from app.modules.task_runtime.application.runtime import TaskRuntimeService
 
 
 if TYPE_CHECKING:
@@ -112,6 +128,14 @@ class AppContainer:
     planner_agent_runner: PlannerAgentRunner | None
     planning_use_cases: PlanningUseCases
     run_planning: RunPlanningUseCase | None
+    replan: ReplanUseCase | None
+    task_runtime: TaskRuntimeService
+    aggregate_plan: AggregatePlanUseCase
+    outbox_publisher: OutboxPublisher
+    runtime_event_dispatcher: RuntimeEventDispatcher
+    answer_clarification: AnswerClarificationUseCase
+    send_conversation_message: SendConversationMessageUseCase | None
+    get_turn_status: GetTurnStatusUseCase
     upload_document: UploadDocumentUseCase
     get_document: GetDocumentUseCase
     list_documents: ListDocumentsUseCase

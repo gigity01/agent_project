@@ -29,6 +29,9 @@ from app.modules.planning.application.use_cases import (
     build_planning_use_cases,
 )
 from app.modules.planning.infrastructure.persistence.models import Plan, Task
+from app.modules.planning.infrastructure.persistence.models import TaskDependency
+from app.modules.messaging.infrastructure.persistence.models import InboxEvent, OutboxEvent
+from app.modules.clarification.infrastructure.persistence.models import ClarificationRequest
 
 
 class _TrackingUnitOfWork(SQLAlchemyUnitOfWork):
@@ -68,6 +71,9 @@ class PlanningUseCasesTest(unittest.TestCase):
             ConversationTurn.__table__,
             Plan.__table__,
             Task.__table__,
+            TaskDependency.__table__,
+            OutboxEvent.__table__,
+            ClarificationRequest.__table__,
         ]
         Base.metadata.create_all(self.engine, tables=self.tables)
         self.uow_factory = _UnitOfWorkFactory(self.session_factory)
@@ -76,6 +82,10 @@ class PlanningUseCasesTest(unittest.TestCase):
                 uow_factory=self.uow_factory,
                 plan_factory=Plan,
                 task_factory=Task,
+                task_dependency_factory=TaskDependency,
+                outbox_event_factory=OutboxEvent,
+                inbox_event_factory=InboxEvent,
+                clarification_request_factory=ClarificationRequest,
                 integrity_error_type=IntegrityError,
             )
         )
@@ -109,6 +119,7 @@ class PlanningUseCasesTest(unittest.TestCase):
                     turn_id="turn-1",
                     document_id=7,
                     sequence=1,
+                    task_ref="process",
                 )
             ),
             self.use_cases.create_build_chunks_task.execute(
@@ -117,6 +128,8 @@ class PlanningUseCasesTest(unittest.TestCase):
                     turn_id="turn-1",
                     document_id=7,
                     sequence=2,
+                    task_ref="chunks",
+                    depends_on_task_refs=["process"],
                 )
             ),
             self.use_cases.create_index_vectors_task.execute(
@@ -125,6 +138,8 @@ class PlanningUseCasesTest(unittest.TestCase):
                     turn_id="turn-1",
                     document_id=7,
                     sequence=3,
+                    task_ref="vectors",
+                    depends_on_task_refs=["chunks"],
                 )
             ),
         ]
@@ -147,12 +162,18 @@ class PlanningUseCasesTest(unittest.TestCase):
                 .all()
             )
             stored_turn = session.get(ConversationTurn, "turn-1")
+            dependencies = session.query(TaskDependency).all()
+            outbox = session.query(OutboxEvent).one()
             self.assertEqual(stored_plan.status, "ready")
             self.assertEqual(
                 [task.status for task in stored_tasks],
                 ["pending", "pending", "pending"],
             )
             self.assertEqual(stored_turn.task_ids, expected_task_ids)
+            self.assertEqual(stored_turn.status, "processing")
+            self.assertEqual(len(dependencies), 2)
+            self.assertEqual(outbox.event_type, "runtime.plan_wakeup")
+            self.assertEqual(outbox.aggregate_id, plan.plan_id)
 
     def test_non_planning_plan_rejects_new_task(self) -> None:
         plan = self.use_cases.create_plan.execute(
@@ -172,6 +193,7 @@ class PlanningUseCasesTest(unittest.TestCase):
                     turn_id="turn-1",
                     document_id=7,
                     sequence=1,
+                    task_ref="process",
                 )
             )
 
@@ -202,6 +224,7 @@ class PlanningUseCasesTest(unittest.TestCase):
                     turn_id="turn-1",
                     document_id=7,
                     sequence=sequence,
+                    task_ref=f"task_{sequence}",
                 )
             )
 
@@ -227,6 +250,66 @@ class PlanningUseCasesTest(unittest.TestCase):
         )
         with self.session_factory() as session:
             self.assertEqual(session.query(Task).count(), 10)
+
+    def test_finalize_rejects_cycles_and_dag_depth_over_three(self) -> None:
+        deep_plan = self.use_cases.create_plan.execute(
+            CreatePlanInput(turn_id="turn-1", revision=1)
+        )
+        previous: str | None = None
+        for sequence, task_ref in enumerate(("a", "b", "c", "d"), start=1):
+            self.use_cases.create_process_document_task.execute(
+                CreateProcessDocumentTaskInput(
+                    plan_id=deep_plan.plan_id,
+                    turn_id="turn-1",
+                    document_id=sequence,
+                    sequence=sequence,
+                    task_ref=task_ref,
+                    depends_on_task_refs=(
+                        [] if previous is None else [previous]
+                    ),
+                )
+            )
+            previous = task_ref
+        with self.assertRaises(PlanningApplicationError) as depth:
+            self.use_cases.finalize_plan.execute(
+                FinalizePlanInput(
+                    plan_id=deep_plan.plan_id,
+                    turn_id="turn-1",
+                )
+            )
+        self.assertEqual(
+            depth.exception.result_code,
+            "plan_task_dependency_depth_exceeded",
+        )
+
+        cycle_plan = self.use_cases.create_plan.execute(
+            CreatePlanInput(turn_id="turn-1", revision=2)
+        )
+        for sequence, task_ref, dependencies in (
+            (1, "left", ["right"]),
+            (2, "right", ["left"]),
+        ):
+            self.use_cases.create_process_document_task.execute(
+                CreateProcessDocumentTaskInput(
+                    plan_id=cycle_plan.plan_id,
+                    turn_id="turn-1",
+                    document_id=sequence,
+                    sequence=sequence,
+                    task_ref=task_ref,
+                    depends_on_task_refs=dependencies,
+                )
+            )
+        with self.assertRaises(PlanningApplicationError) as cycle:
+            self.use_cases.finalize_plan.execute(
+                FinalizePlanInput(
+                    plan_id=cycle_plan.plan_id,
+                    turn_id="turn-1",
+                )
+            )
+        self.assertEqual(
+            cycle.exception.result_code,
+            "plan_task_dependency_cycle",
+        )
 
 
 if __name__ == "__main__":

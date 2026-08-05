@@ -16,6 +16,15 @@ def load_all_models() -> None:
     from app.modules.planning.infrastructure.persistence import (
         models as planning_models,
     )
+    from app.modules.clarification.infrastructure.persistence import (
+        models as clarification_models,
+    )
+    from app.modules.messaging.infrastructure.persistence import (
+        models as messaging_models,
+    )
+    from app.modules.task_runtime.infrastructure.persistence import (
+        models as task_runtime_models,
+    )
 
     # 保留显式引用，使本函数的目的对静态检查器同样清晰。
     _ = (
@@ -26,4 +35,7 @@ def load_all_models() -> None:
         knowledge_base,
         parent_block,
         planning_models,
+        clarification_models,
+        messaging_models,
+        task_runtime_models,
     )

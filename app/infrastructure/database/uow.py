@@ -32,6 +32,19 @@ from app.modules.planning.infrastructure.persistence.plan_repository import (
 from app.modules.planning.infrastructure.persistence.task_repository import (
     TaskRepository,
 )
+from app.modules.planning.infrastructure.persistence.task_dependency_repository import (
+    TaskDependencyRepository,
+)
+from app.modules.task_runtime.infrastructure.persistence.repository import (
+    TaskExecutionRepository,
+)
+from app.modules.messaging.infrastructure.persistence.repository import (
+    InboxRepository,
+    OutboxRepository,
+)
+from app.modules.clarification.infrastructure.persistence.repository import (
+    ClarificationRepository,
+)
 
 
 SessionFactory = Callable[[], Session]
@@ -59,6 +72,11 @@ class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
         self.context = ContextRepository(self.session)
         self.plans = PlanRepository(self.session)
         self.tasks = TaskRepository(self.session)
+        self.task_dependencies = TaskDependencyRepository(self.session)
+        self.task_executions = TaskExecutionRepository(self.session)
+        self.outbox = OutboxRepository(self.session)
+        self.inbox = InboxRepository(self.session)
+        self.clarifications = ClarificationRepository(self.session)
         self.conversation_turns = ConversationTurnRepository(self.session)
 
         return self

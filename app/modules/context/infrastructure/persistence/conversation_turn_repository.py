@@ -39,3 +39,8 @@ class ConversationTurnRepository:
         turn.task_ids = list(task_ids)
         self.db.flush()
         return turn
+
+    def set_status(self, turn: ConversationTurn, status: str) -> ConversationTurn:
+        turn.status = status
+        self.db.flush()
+        return turn

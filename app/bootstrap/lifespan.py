@@ -167,6 +167,48 @@ from app.modules.planning.application.use_cases import (
     build_planning_use_cases,
 )
 from app.modules.planning.infrastructure.persistence.models import Plan, Task
+from app.modules.planning.infrastructure.persistence.models import TaskDependency
+from app.modules.messaging.infrastructure.persistence.models import (
+    InboxEvent,
+    OutboxEvent,
+)
+from app.modules.clarification.infrastructure.persistence.models import (
+    ClarificationRequest,
+)
+from app.modules.task_runtime.infrastructure.persistence.models import (
+    TaskExecution,
+)
+from app.modules.task_runtime.application.ports import (
+    ExecutorRegistry,
+    TaskRuntimePorts,
+)
+from app.modules.task_runtime.application.registry import (
+    build_capability_registry,
+)
+from app.modules.task_runtime.application.runtime import TaskRuntimeService
+from app.modules.task_runtime.infrastructure.executors import (
+    BuildDocumentChunksExecutor,
+    IndexDocumentVectorsExecutor,
+    ProcessDocumentExecutor,
+)
+from app.modules.messaging.application.outbox import OutboxPublisher
+from app.modules.messaging.infrastructure.redis_streams import (
+    RedisStreamPublisher,
+)
+from app.modules.messaging.worker.dispatcher import RuntimeEventDispatcher
+from app.modules.aggregation.application.aggregate_plan import (
+    AggregatePlanUseCase,
+)
+from app.modules.clarification.application.answer import (
+    AnswerClarificationUseCase,
+)
+from app.modules.conversation.application.get_turn_status import (
+    GetTurnStatusUseCase,
+)
+from app.modules.conversation.application.send_message import (
+    SendConversationMessageUseCase,
+)
+from app.modules.planning.application.replan import ReplanUseCase
 
 
 async def build_container() -> AppContainer:
@@ -294,6 +336,10 @@ async def build_container() -> AppContainer:
             uow_factory=SQLAlchemyUnitOfWork,
             plan_factory=Plan,
             task_factory=Task,
+            task_dependency_factory=TaskDependency,
+            outbox_event_factory=OutboxEvent,
+            inbox_event_factory=InboxEvent,
+            clarification_request_factory=ClarificationRequest,
             integrity_error_type=IntegrityError,
         )
         planning_use_cases = build_planning_use_cases(planning_ports)
@@ -440,6 +486,65 @@ async def build_container() -> AppContainer:
             if planner_agent_runner is not None
             else None
         )
+        task_runtime = TaskRuntimeService(
+            ports=TaskRuntimePorts(
+                uow_factory=SQLAlchemyUnitOfWork,
+                task_execution_factory=TaskExecution,
+                outbox_event_factory=OutboxEvent,
+                inbox_event_factory=InboxEvent,
+            ),
+            capabilities=build_capability_registry(),
+            executors=ExecutorRegistry(
+                {
+                    "document.process": ProcessDocumentExecutor(
+                        process_document
+                    ),
+                    "document.build_chunks": BuildDocumentChunksExecutor(
+                        build_chunks
+                    ),
+                    "document.index_vectors": IndexDocumentVectorsExecutor(
+                        index_vectors
+                    ),
+                }
+            ),
+        )
+        aggregate_plan = AggregatePlanUseCase(
+            uow_factory=SQLAlchemyUnitOfWork,
+            context_service=context_service,
+        )
+        outbox_publisher = OutboxPublisher(
+            uow_factory=SQLAlchemyUnitOfWork,
+            publisher=RedisStreamPublisher(redis_client),
+        )
+        answer_clarification = AnswerClarificationUseCase(
+            uow_factory=SQLAlchemyUnitOfWork,
+            outbox_event_factory=OutboxEvent,
+        )
+        get_turn_status = GetTurnStatusUseCase(SQLAlchemyUnitOfWork)
+        replan = (
+            ReplanUseCase(
+                ports=planning_ports,
+                run_planning=run_planning,
+            )
+            if run_planning is not None
+            else None
+        )
+        send_conversation_message = (
+            SendConversationMessageUseCase(
+                context_service=context_service,
+                run_planning=run_planning,
+                answer_clarification=answer_clarification,
+            )
+            if run_planning is not None
+            else None
+        )
+        runtime_event_dispatcher = RuntimeEventDispatcher(
+            uow_factory=SQLAlchemyUnitOfWork,
+            inbox_event_factory=InboxEvent,
+            runtime=task_runtime,
+            replan=replan,
+            aggregate_plan=aggregate_plan,
+        )
         return AppContainer(
             redis_client=redis_client,
             deepseek_provider=deepseek_provider,
@@ -467,6 +572,14 @@ async def build_container() -> AppContainer:
             planner_agent_runner=planner_agent_runner,
             planning_use_cases=planning_use_cases,
             run_planning=run_planning,
+            replan=replan,
+            task_runtime=task_runtime,
+            aggregate_plan=aggregate_plan,
+            outbox_publisher=outbox_publisher,
+            runtime_event_dispatcher=runtime_event_dispatcher,
+            answer_clarification=answer_clarification,
+            send_conversation_message=send_conversation_message,
+            get_turn_status=get_turn_status,
             upload_document=upload_document,
             get_document=get_document,
             list_documents=list_documents,

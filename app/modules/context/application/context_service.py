@@ -376,9 +376,12 @@ class ContextService:
                     ),
                     resource_refreshes=[],
                 )
-            if turn.status != ContextTurnStatus.ROUTED.value:
+            if turn.status not in {
+                ContextTurnStatus.ROUTED.value,
+                ContextTurnStatus.PROCESSING.value,
+            }:
                 raise ContextConflictError(
-                    "Context Turn 尚未完成路由"
+                    "Context Turn 当前状态不允许完成"
                 )
 
             route_record = uow.context.get_route_record_for_update(turn_id)

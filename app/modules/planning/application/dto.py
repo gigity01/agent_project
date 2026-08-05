@@ -16,6 +16,8 @@ class _PlanningInput(BaseModel):
 class CreatePlanInput(_PlanningInput):
     turn_id: str = Field(min_length=1, max_length=100)
     revision: int = Field(default=1, ge=1)
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=100)
+    parent_plan_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class _CreateDocumentTaskInput(_PlanningInput):
@@ -23,6 +25,8 @@ class _CreateDocumentTaskInput(_PlanningInput):
     turn_id: str = Field(min_length=1, max_length=100)
     document_id: int = Field(gt=0)
     sequence: int = Field(ge=1)
+    task_ref: str = Field(min_length=1, max_length=100)
+    depends_on_task_refs: list[str] = Field(default_factory=list, max_length=10)
 
 
 class CreateProcessDocumentTaskInput(_CreateDocumentTaskInput):
@@ -52,13 +56,31 @@ class MarkPlanRetryPendingInput(_PlanningInput):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class MarkPlanNeedsClarificationInput(_PlanningInput):
+    plan_id: str = Field(min_length=1, max_length=100)
+    conversation_id: str = Field(min_length=1, max_length=100)
+    kind: str = Field(pattern=r"^(resource|intent|missing_parameter)$")
+    reason: str = Field(min_length=1, max_length=4000)
+    required_information: list[str] = Field(min_length=1, max_length=10)
+    known_resource_refs: list[str] = Field(default_factory=list, max_length=50)
+
+
+class SetClarificationQuestionInput(_PlanningInput):
+    plan_id: str = Field(min_length=1, max_length=100)
+    question: str = Field(min_length=1, max_length=4000)
+
+
 class PlanResult(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     plan_id: str
+    workflow_id: str
     turn_id: str
+    parent_plan_id: str | None
+    current_task_id: str | None
     status: str
     revision: int
+    failure_code: str | None
     failure_reason: str | None
     created_at: datetime
     updated_at: datetime
@@ -70,10 +92,13 @@ class TaskResult(BaseModel):
     task_id: str
     plan_id: str
     turn_id: str
+    task_ref: str
     capability_code: str
     input_json: dict
     sequence: int
     status: str
+    attempt_count: int
+    max_attempts: int
     created_at: datetime
     updated_at: datetime
 
@@ -89,6 +114,8 @@ class RunPlanningInput(_PlanningInput):
     conversation_id: str = Field(min_length=1, max_length=100)
     turn_id: str = Field(min_length=1, max_length=100)
     revision: int = Field(default=1, ge=1)
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=100)
+    parent_plan_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class RunPlanningResult(BaseModel):
@@ -97,3 +124,4 @@ class RunPlanningResult(BaseModel):
     status: PlanStatus
     task_ids: list[str]
     failure_reason: str | None
+    clarification_question: str | None = None
