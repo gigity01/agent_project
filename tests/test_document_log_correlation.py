@@ -35,6 +35,7 @@ class DocumentLogCorrelationTest(unittest.TestCase):
                 operation_context=DocumentOperationContext.create(
                     workflow_id=workflow_id,
                     operation_id="operation-process",
+                    parent_operation_id="operation-upload",
                 ),
             ),
             DocumentChunkLogger(
@@ -76,6 +77,7 @@ class DocumentLogCorrelationTest(unittest.TestCase):
             {event["stage"] for event in events},
             {"upload", "process", "chunk", "index"},
         )
+        self.assertEqual(events[1]["parent_operation_id"], "operation-upload")
         self.assertTrue(all(event["attempt"] == 1 for event in events))
 
 

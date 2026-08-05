@@ -58,17 +58,9 @@ def get_document_operation_context(
         min_length=1,
         max_length=200,
     ),
-    attempt: int = Header(
-        default=1,
-        alias="X-Operation-Attempt",
-        ge=1,
-    ),
 ) -> DocumentOperationContext:
-    """创建阶段操作上下文，并把生成的关联 ID 回传给调用方。"""
-    operation_context = DocumentOperationContext.create(
-        workflow_id=workflow_id,
-        attempt=attempt,
-    )
+    """在管理 HTTP 边界创建上下文；重试次数与操作 ID 由后端持有。"""
+    operation_context = DocumentOperationContext.create(workflow_id=workflow_id)
     response.headers["X-Workflow-ID"] = operation_context.workflow_id
     response.headers["X-Operation-ID"] = operation_context.operation_id
     response.headers["X-Operation-Attempt"] = str(operation_context.attempt)

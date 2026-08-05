@@ -109,7 +109,7 @@ class OperationsToolServices:
 
 @dataclass(frozen=True)
 class AgentToolContext:
-    """一次 Agent Run 中所有 Tool 共用的身份、权限与窄依赖。"""
+    """一次 Agent Run 中所有 Tool 共用的身份、内部关联信息与窄依赖。"""
 
     trace_id: str
     agent_run_id: str

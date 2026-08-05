@@ -13,7 +13,7 @@ class DocumentOperationContext:
     workflow_id: str
     operation_id: str
     attempt: int
-    parent_operation_id: None = None
+    parent_operation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.workflow_id.strip():
@@ -30,10 +30,12 @@ class DocumentOperationContext:
         workflow_id: str | None = None,
         operation_id: str | None = None,
         attempt: int = 1,
+        parent_operation_id: str | None = None,
     ) -> "DocumentOperationContext":
-        """补齐缺省 ID；每次调用默认生成新的 operation_id。"""
+        """供内部调用链补齐缺省 ID，并保留显式重试与父操作关联。"""
         return cls(
             workflow_id=workflow_id or uuid4().hex,
             operation_id=operation_id or uuid4().hex,
             attempt=attempt,
+            parent_operation_id=parent_operation_id,
         )
