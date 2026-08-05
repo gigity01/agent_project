@@ -1,6 +1,9 @@
 """Agent Tool 的窄依赖调用上下文。"""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.agent_runtime.audit import AgentToolAuditLogger
 from app.modules.context.application.query_service import ContextQueryService
@@ -19,6 +22,16 @@ from app.modules.operations.application.use_cases import (
     GetDocumentWorkflowTimelineUseCase,
     QueryDocumentLogEventsUseCase,
 )
+
+
+if TYPE_CHECKING:
+    from app.modules.planning.application.use_cases import (
+        CreateBuildChunksTaskUseCase,
+        CreateIndexVectorsTaskUseCase,
+        CreateProcessDocumentTaskUseCase,
+        FinalizePlanUseCase,
+        MarkPlanUnsupportedUseCase,
+    )
 from app.modules.document.application.use_cases.build_chunks import (
     BuildChunksUseCase,
 )
@@ -108,6 +121,17 @@ class OperationsToolServices:
 
 
 @dataclass(frozen=True)
+class PlanningToolServices:
+    """Planner Tool 可调用的明确 Application 能力。"""
+
+    create_process_document_task: CreateProcessDocumentTaskUseCase
+    create_build_chunks_task: CreateBuildChunksTaskUseCase
+    create_index_vectors_task: CreateIndexVectorsTaskUseCase
+    finalize_plan: FinalizePlanUseCase
+    mark_plan_unsupported: MarkPlanUnsupportedUseCase
+
+
+@dataclass(frozen=True)
 class AgentToolContext:
     """一次 Agent Run 中所有 Tool 共用的身份、内部关联信息与窄依赖。"""
 
@@ -121,6 +145,8 @@ class AgentToolContext:
     permissions: frozenset[str]
     document_services: DocumentToolServices
     context_services: ContextToolServices
+    planning_services: PlanningToolServices | None = None
+    plan_id: str | None = None
     workflow_id: str | None = None
     attempt: int = 1
     operations_services: OperationsToolServices = field(

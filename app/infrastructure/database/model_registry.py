@@ -13,6 +13,9 @@ def load_all_models() -> None:
         knowledge_base,
         parent_block,
     )
+    from app.modules.planning.infrastructure.persistence import (
+        models as planning_models,
+    )
 
     # 保留显式引用，使本函数的目的对静态检查器同样清晰。
     _ = (
@@ -22,4 +25,5 @@ def load_all_models() -> None:
         document_artifact,
         knowledge_base,
         parent_block,
+        planning_models,
     )

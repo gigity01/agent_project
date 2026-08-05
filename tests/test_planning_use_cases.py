@@ -1,0 +1,182 @@
+"""Planning 持久化状态流转的两个关键行为测试。"""
+
+from __future__ import annotations
+
+import unittest
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.infrastructure.database.base import Base
+from app.infrastructure.database.model_registry import load_all_models
+from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
+from app.modules.context.infrastructure.persistence.models.conversation_turn import (
+    ConversationTurn,
+)
+from app.modules.planning.application.dto import (
+    CreateBuildChunksTaskInput,
+    CreateIndexVectorsTaskInput,
+    CreatePlanInput,
+    CreateProcessDocumentTaskInput,
+    FinalizePlanInput,
+    MarkPlanUnsupportedInput,
+)
+from app.modules.planning.application.errors import PlanningApplicationError
+from app.modules.planning.application.ports import PlanningApplicationPorts
+from app.modules.planning.application.use_cases import (
+    build_planning_use_cases,
+)
+from app.modules.planning.infrastructure.persistence.models import Plan, Task
+
+
+class _TrackingUnitOfWork(SQLAlchemyUnitOfWork):
+    def __init__(self, session_factory) -> None:
+        super().__init__(session_factory)
+        self.commit_calls = 0
+
+    def commit(self) -> None:
+        self.commit_calls += 1
+        super().commit()
+
+
+class _UnitOfWorkFactory:
+    def __init__(self, session_factory) -> None:
+        self._session_factory = session_factory
+        self.instances: list[_TrackingUnitOfWork] = []
+
+    def __call__(self) -> _TrackingUnitOfWork:
+        uow = _TrackingUnitOfWork(self._session_factory)
+        self.instances.append(uow)
+        return uow
+
+
+class PlanningUseCasesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        load_all_models()
+        self.engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        self.session_factory = sessionmaker(
+            bind=self.engine,
+            expire_on_commit=False,
+        )
+        self.tables = [
+            ConversationTurn.__table__,
+            Plan.__table__,
+            Task.__table__,
+        ]
+        Base.metadata.create_all(self.engine, tables=self.tables)
+        self.uow_factory = _UnitOfWorkFactory(self.session_factory)
+        self.use_cases = build_planning_use_cases(
+            PlanningApplicationPorts(
+                uow_factory=self.uow_factory,
+                plan_factory=Plan,
+                task_factory=Task,
+            )
+        )
+        with self.session_factory() as session:
+            session.add(
+                ConversationTurn(
+                    turn_id="turn-1",
+                    conversation_id="conversation-1",
+                    user_input="处理并索引文档 7",
+                    task_ids=[],
+                    status="routed",
+                )
+            )
+            session.commit()
+
+    def tearDown(self) -> None:
+        Base.metadata.drop_all(
+            self.engine,
+            tables=list(reversed(self.tables)),
+        )
+        self.engine.dispose()
+
+    def test_finalize_plan_atomically_publishes_tasks_and_updates_turn(self) -> None:
+        plan = self.use_cases.create_plan.execute(
+            CreatePlanInput(turn_id="turn-1")
+        )
+        created_tasks = [
+            self.use_cases.create_process_document_task.execute(
+                CreateProcessDocumentTaskInput(
+                    plan_id=plan.plan_id,
+                    turn_id="turn-1",
+                    document_id=7,
+                    sequence=1,
+                )
+            ),
+            self.use_cases.create_build_chunks_task.execute(
+                CreateBuildChunksTaskInput(
+                    plan_id=plan.plan_id,
+                    turn_id="turn-1",
+                    document_id=7,
+                    sequence=2,
+                )
+            ),
+            self.use_cases.create_index_vectors_task.execute(
+                CreateIndexVectorsTaskInput(
+                    plan_id=plan.plan_id,
+                    turn_id="turn-1",
+                    document_id=7,
+                    sequence=3,
+                )
+            ),
+        ]
+
+        result = self.use_cases.finalize_plan.execute(
+            FinalizePlanInput(plan_id=plan.plan_id, turn_id="turn-1")
+        )
+        finalize_uow = self.uow_factory.instances[-1]
+
+        expected_task_ids = [task.task_id for task in created_tasks]
+        self.assertEqual(result.plan_status, "ready")
+        self.assertEqual(result.task_ids, expected_task_ids)
+        self.assertEqual(finalize_uow.commit_calls, 1)
+        with self.session_factory() as session:
+            stored_plan = session.get(Plan, plan.plan_id)
+            stored_tasks = (
+                session.query(Task)
+                .filter(Task.plan_id == plan.plan_id)
+                .order_by(Task.sequence.asc())
+                .all()
+            )
+            stored_turn = session.get(ConversationTurn, "turn-1")
+            self.assertEqual(stored_plan.status, "ready")
+            self.assertEqual(
+                [task.status for task in stored_tasks],
+                ["pending", "pending", "pending"],
+            )
+            self.assertEqual(stored_turn.task_ids, expected_task_ids)
+
+    def test_non_planning_plan_rejects_new_task(self) -> None:
+        plan = self.use_cases.create_plan.execute(
+            CreatePlanInput(turn_id="turn-1")
+        )
+        self.use_cases.mark_plan_unsupported.execute(
+            MarkPlanUnsupportedInput(
+                plan_id=plan.plan_id,
+                reason="当前能力不支持",
+            )
+        )
+
+        with self.assertRaises(PlanningApplicationError) as raised:
+            self.use_cases.create_process_document_task.execute(
+                CreateProcessDocumentTaskInput(
+                    plan_id=plan.plan_id,
+                    turn_id="turn-1",
+                    document_id=7,
+                    sequence=1,
+                )
+            )
+
+        self.assertEqual(raised.exception.result_code, "plan_state_conflict")
+        with self.session_factory() as session:
+            self.assertEqual(session.query(Task).count(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

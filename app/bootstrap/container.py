@@ -77,6 +77,7 @@ from app.modules.operations.application.use_cases import (
     GetDocumentWorkflowTimelineUseCase,
     QueryDocumentLogEventsUseCase,
 )
+from app.modules.planning.application.use_cases import PlanningUseCases
 
 
 if TYPE_CHECKING:
@@ -106,6 +107,7 @@ class AppContainer:
     get_document_operation_timeline: GetDocumentOperationTimelineUseCase
     get_document_workflow_timeline: GetDocumentWorkflowTimelineUseCase
     collector_agents: CollectorAgentSet | None
+    planning_use_cases: PlanningUseCases
     upload_document: UploadDocumentUseCase
     get_document: GetDocumentUseCase
     list_documents: ListDocumentsUseCase

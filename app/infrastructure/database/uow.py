@@ -8,6 +8,9 @@ from app.infrastructure.database.uow_base import AbstractUnitOfWork
 from app.modules.context.infrastructure.persistence.repository import (
     ContextRepository,
 )
+from app.modules.context.infrastructure.persistence.conversation_turn_repository import (
+    ConversationTurnRepository,
+)
 from app.modules.document.infrastructure.persistence.child_chunk_repository import (
     ChildChunkRepository,
 )
@@ -22,6 +25,12 @@ from app.modules.document.infrastructure.persistence.parent_block_repository imp
 )
 from app.modules.document.infrastructure.persistence.knowledge_base_repository import (
     KnowledgeBaseRepository,
+)
+from app.modules.planning.infrastructure.persistence.plan_repository import (
+    PlanRepository,
+)
+from app.modules.planning.infrastructure.persistence.task_repository import (
+    TaskRepository,
 )
 
 
@@ -48,6 +57,9 @@ class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
         self.parent_blocks = ParentBlockRepository(self.session)
         self.child_chunks = ChildChunkRepository(self.session)
         self.context = ContextRepository(self.session)
+        self.plans = PlanRepository(self.session)
+        self.tasks = TaskRepository(self.session)
+        self.conversation_turns = ConversationTurnRepository(self.session)
 
         return self
 

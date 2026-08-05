@@ -156,6 +156,11 @@ from app.modules.operations.infrastructure.jsonl_repository import (
     JsonlLogRepository,
     JsonlLogSource,
 )
+from app.modules.planning.application.ports import PlanningApplicationPorts
+from app.modules.planning.application.use_cases import (
+    build_planning_use_cases,
+)
+from app.modules.planning.infrastructure.persistence.models import Plan, Task
 
 
 async def build_container() -> AppContainer:
@@ -279,6 +284,13 @@ async def build_container() -> AppContainer:
             if deepseek_provider is not None
             else None
         )
+        planning_use_cases = build_planning_use_cases(
+            PlanningApplicationPorts(
+                uow_factory=SQLAlchemyUnitOfWork,
+                plan_factory=Plan,
+                task_factory=Task,
+            )
+        )
         document_ports = DocumentApplicationPorts(
             uow_factory=SQLAlchemyUnitOfWork,
             document_factory=Document,
@@ -389,6 +401,7 @@ async def build_container() -> AppContainer:
                 get_document_workflow_timeline
             ),
             collector_agents=collector_agents,
+            planning_use_cases=planning_use_cases,
             upload_document=upload_document,
             get_document=get_document,
             list_documents=list_documents,
