@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.modules.planning.domain.enums import PlanStatus
+
 
 class _PlanningInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -81,3 +83,17 @@ class FinalizePlanResult(BaseModel):
     turn_id: str
     plan_status: str
     task_ids: list[str]
+
+
+class RunPlanningInput(_PlanningInput):
+    conversation_id: str = Field(min_length=1, max_length=100)
+    turn_id: str = Field(min_length=1, max_length=100)
+    revision: int = Field(default=1, ge=1)
+
+
+class RunPlanningResult(BaseModel):
+    plan_id: str
+    turn_id: str
+    status: PlanStatus
+    task_ids: list[str]
+    failure_reason: str | None

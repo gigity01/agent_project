@@ -118,17 +118,47 @@ class _CreateDocumentTaskUseCase:
                 raise _plan_not_found()
             _require_planning(plan)
             _require_turn_ownership(plan, command.turn_id)
-            task = uow.tasks.create(
-                self._ports.task_factory(
-                    task_id=_new_id("task"),
-                    plan_id=plan.plan_id,
-                    turn_id=plan.turn_id,
-                    capability_code=self._capability_code.value,
-                    input_json={"document_id": command.document_id},
-                    sequence=command.sequence,
-                    status=TaskStatus.DRAFT.value,
+            draft_tasks = (
+                uow.tasks.list_by_plan_id_and_status_for_update(
+                    plan.plan_id,
+                    TaskStatus.DRAFT.value,
                 )
             )
+            if len(draft_tasks) >= MAX_TASKS_PER_PLAN:
+                raise PlanningApplicationError(
+                    409,
+                    f"Plan 的 draft Task 数量不能超过 {MAX_TASKS_PER_PLAN}",
+                    result_code="plan_task_limit_exceeded",
+                )
+            if any(
+                task.sequence == command.sequence
+                for task in draft_tasks
+            ):
+                raise PlanningApplicationError(
+                    409,
+                    "同一 Plan 的 Task sequence 不得重复",
+                    result_code="plan_task_sequence_conflict",
+                )
+            try:
+                task = uow.tasks.create(
+                    self._ports.task_factory(
+                        task_id=_new_id("task"),
+                        plan_id=plan.plan_id,
+                        turn_id=plan.turn_id,
+                        capability_code=self._capability_code.value,
+                        input_json={"document_id": command.document_id},
+                        sequence=command.sequence,
+                        status=TaskStatus.DRAFT.value,
+                    )
+                )
+            except Exception as exc:
+                if self._ports.is_integrity_error(exc):
+                    raise PlanningApplicationError(
+                        409,
+                        "同一 Plan 的 Task sequence 不得重复",
+                        result_code="plan_task_sequence_conflict",
+                    ) from exc
+                raise
             uow.commit()
             return TaskResult.model_validate(task)
 
@@ -184,6 +214,12 @@ class FinalizePlanUseCase:
                 plan.plan_id,
                 TaskStatus.DRAFT.value,
             )
+            if not tasks:
+                raise PlanningApplicationError(
+                    409,
+                    "Plan 至少需要一个 draft Task 才能发布",
+                    result_code="plan_task_count_invalid",
+                )
             if len(tasks) > MAX_TASKS_PER_PLAN:
                 raise PlanningApplicationError(
                     409,

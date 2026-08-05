@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -75,6 +76,7 @@ class PlanningUseCasesTest(unittest.TestCase):
                 uow_factory=self.uow_factory,
                 plan_factory=Plan,
                 task_factory=Task,
+                integrity_error_type=IntegrityError,
             )
         )
         with self.session_factory() as session:
@@ -176,6 +178,55 @@ class PlanningUseCasesTest(unittest.TestCase):
         self.assertEqual(raised.exception.result_code, "plan_state_conflict")
         with self.session_factory() as session:
             self.assertEqual(session.query(Task).count(), 0)
+
+    def test_task_count_and_sequence_invariants_are_enforced(self) -> None:
+        plan = self.use_cases.create_plan.execute(
+            CreatePlanInput(turn_id="turn-1")
+        )
+        with self.assertRaises(PlanningApplicationError) as empty_plan:
+            self.use_cases.finalize_plan.execute(
+                FinalizePlanInput(
+                    plan_id=plan.plan_id,
+                    turn_id="turn-1",
+                )
+            )
+        self.assertEqual(
+            empty_plan.exception.result_code,
+            "plan_task_count_invalid",
+        )
+
+        def create_task(sequence: int):
+            return self.use_cases.create_process_document_task.execute(
+                CreateProcessDocumentTaskInput(
+                    plan_id=plan.plan_id,
+                    turn_id="turn-1",
+                    document_id=7,
+                    sequence=sequence,
+                )
+            )
+
+        create_task(1)
+        with self.assertRaises(PlanningApplicationError) as duplicate:
+            create_task(1)
+        self.assertEqual(
+            duplicate.exception.result_code,
+            "plan_task_sequence_conflict",
+        )
+
+        for sequence in range(2, 11):
+            create_task(sequence)
+        with self.assertRaises(PlanningApplicationError) as overflow:
+            create_task(11)
+        self.assertEqual(
+            overflow.exception.result_code,
+            "plan_task_limit_exceeded",
+        )
+        self.assertIn(
+            "uq_tasks_plan_sequence",
+            {constraint.name for constraint in Task.__table__.constraints},
+        )
+        with self.session_factory() as session:
+            self.assertEqual(session.query(Task).count(), 10)
 
 
 if __name__ == "__main__":

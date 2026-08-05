@@ -2,7 +2,15 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -14,6 +22,13 @@ class Task(Base):
     """保存 Planner 生成的一项可执行能力调用。"""
 
     __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_id",
+            "sequence",
+            name="uq_tasks_plan_sequence",
+        ),
+    )
 
     task_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     plan_id: Mapped[str] = mapped_column(

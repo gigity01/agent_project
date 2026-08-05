@@ -78,10 +78,12 @@ from app.modules.operations.application.use_cases import (
     QueryDocumentLogEventsUseCase,
 )
 from app.modules.planning.application.use_cases import PlanningUseCases
+from app.modules.planning.application.run_planning import RunPlanningUseCase
 
 
 if TYPE_CHECKING:
     from app.agents.collectors import CollectorAgentSet
+    from app.agents.planner import PlannerAgentRunner
 
 
 @dataclass
@@ -107,7 +109,9 @@ class AppContainer:
     get_document_operation_timeline: GetDocumentOperationTimelineUseCase
     get_document_workflow_timeline: GetDocumentWorkflowTimelineUseCase
     collector_agents: CollectorAgentSet | None
+    planner_agent_runner: PlannerAgentRunner | None
     planning_use_cases: PlanningUseCases
+    run_planning: RunPlanningUseCase | None
     upload_document: UploadDocumentUseCase
     get_document: GetDocumentUseCase
     list_documents: ListDocumentsUseCase

@@ -36,6 +36,11 @@ from app.config.settings import (
     SECONDARY_TEXT_STORAGE_DIR,
 )
 from app.bootstrap.container import AppContainer
+from app.agent_runtime.context import (
+    ContextToolServices,
+    DocumentToolServices,
+    OperationsToolServices,
+)
 from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
 from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
 from app.infrastructure.redis.client import (
@@ -157,6 +162,7 @@ from app.modules.operations.infrastructure.jsonl_repository import (
     JsonlLogSource,
 )
 from app.modules.planning.application.ports import PlanningApplicationPorts
+from app.modules.planning.application.run_planning import RunPlanningUseCase
 from app.modules.planning.application.use_cases import (
     build_planning_use_cases,
 )
@@ -284,13 +290,13 @@ async def build_container() -> AppContainer:
             if deepseek_provider is not None
             else None
         )
-        planning_use_cases = build_planning_use_cases(
-            PlanningApplicationPorts(
-                uow_factory=SQLAlchemyUnitOfWork,
-                plan_factory=Plan,
-                task_factory=Task,
-            )
+        planning_ports = PlanningApplicationPorts(
+            uow_factory=SQLAlchemyUnitOfWork,
+            plan_factory=Plan,
+            task_factory=Task,
+            integrity_error_type=IntegrityError,
         )
+        planning_use_cases = build_planning_use_cases(planning_ports)
         document_ports = DocumentApplicationPorts(
             uow_factory=SQLAlchemyUnitOfWork,
             document_factory=Document,
@@ -377,6 +383,63 @@ async def build_container() -> AppContainer:
                 embedding_vector_size=EMBEDDING_VECTOR_SIZE,
             ),
         )
+        planner_agent_runner = (
+            _build_planner_agent(deepseek_provider, collector_agents)
+            if deepseek_provider is not None and collector_agents is not None
+            else None
+        )
+        run_planning = (
+            RunPlanningUseCase(
+                ports=planning_ports,
+                planning_use_cases=planning_use_cases,
+                planner_runner=planner_agent_runner,
+                document_services=DocumentToolServices(
+                    get_document=get_document,
+                    list_documents=list_documents,
+                    search_documents=search_documents,
+                    get_document_pipeline_state=(
+                        get_document_pipeline_state
+                    ),
+                    list_document_artifacts=list_document_artifacts,
+                    search_document_artifacts=search_document_artifacts,
+                    list_parent_blocks=list_parent_blocks,
+                    list_child_chunks=list_child_chunks,
+                    get_document_chunk_statistics=(
+                        get_document_chunk_statistics
+                    ),
+                    get_knowledge_base_statistics=(
+                        get_knowledge_base_statistics
+                    ),
+                    process_document=process_document,
+                    build_chunks=build_chunks,
+                    index_vectors=index_vectors,
+                ),
+                context_services=ContextToolServices(
+                    query_service=context_query_service,
+                    get_conversation_turn=get_conversation_turn,
+                    list_conversation_turns=list_conversation_turns,
+                    get_context_chain=get_context_chain,
+                    list_context_chains=list_context_chains,
+                    list_context_chain_nodes=list_context_chain_nodes,
+                    list_context_chain_resources=(
+                        list_context_chain_resources
+                    ),
+                    list_context_route_records=list_context_route_records,
+                ),
+                operations_services=OperationsToolServices(
+                    query_service=operations_query_service,
+                    query_document_log_events=query_document_log_events,
+                    get_document_operation_timeline=(
+                        get_document_operation_timeline
+                    ),
+                    get_document_workflow_timeline=(
+                        get_document_workflow_timeline
+                    ),
+                ),
+            )
+            if planner_agent_runner is not None
+            else None
+        )
         return AppContainer(
             redis_client=redis_client,
             deepseek_provider=deepseek_provider,
@@ -401,7 +464,9 @@ async def build_container() -> AppContainer:
                 get_document_workflow_timeline
             ),
             collector_agents=collector_agents,
+            planner_agent_runner=planner_agent_runner,
             planning_use_cases=planning_use_cases,
+            run_planning=run_planning,
             upload_document=upload_document,
             get_document=get_document,
             list_documents=list_documents,
@@ -433,6 +498,17 @@ def _build_collector_agents(provider: DeepSeekModelProvider):
     return build_collector_agents(
         model=provider.model,
         model_settings=provider.model_settings,
+    )
+
+
+def _build_planner_agent(provider, collectors):
+    """使用同一 DeepSeek Provider 装配 Planner 与并发 Tool 配置。"""
+    from app.agents.planner import build_planner_agent
+
+    return build_planner_agent(
+        model=provider.model,
+        model_settings=provider.model_settings,
+        collectors=collectors,
     )
 
 
