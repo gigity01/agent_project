@@ -1,0 +1,42 @@
+{
+  "workbench.tree.indent": 24,
+  "workbench.tree.renderIndentGuides": "always",
+  "workbench.tree.enableStickyScroll": true,
+  "workbench.tree.stickyScrollMaxItemCount": 6,
+  "workbench.colorCustomizations": {
+    "tree.indentGuidesStroke": "#5AA7E899",
+    "tree.inactiveIndentGuidesStroke": "#7F8C9A66"
+  },
+  "explorer.compactFolders": false,
+  "explorer.sortOrder": "foldersNestsFiles",
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.expand": false,
+  "explorer.fileNesting.patterns": {
+    "pyproject.toml": "uv.lock",
+    ".env.example": ".env"
+  },
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    ".agents": true,
+    ".codex": true,
+    "storage": true,
+    "logs": true
+  },
+  "search.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    ".venv": true,
+    "storage": true,
+    "logs": true
+  },
+  "workbench.editor.labelFormat": "short",
+  "breadcrumbs.enabled": true,
+  "breadcrumbs.filePath": "on",
+  "breadcrumbs.symbolPath": "on"
+}

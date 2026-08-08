@@ -57,7 +57,8 @@ logs/
 
 # 编辑器、操作系统和本机工具状态。
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .qwen/
 .agents/
 work/task-state/
@@ -66,3 +67,6 @@ __pycache__/
 desktop.ini
 Thumbs.db
 .DS_Store
+
+# 其他
+AGENTS.md

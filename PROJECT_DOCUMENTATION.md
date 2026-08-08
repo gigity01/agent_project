@@ -2,13 +2,46 @@
 
 ## 项目定位
 
-本项目是知识库文档入库、向量索引与 Conversation Context 路由服务。当前提供：
+本项目是知识库文档入库、向量索引和 Conversation Agent 任务编排服务。当前提供：
 
-- 文档上传、处理、父子切块、Embedding 和 Qdrant 入库。
-- Context Chain 路由、Turn 完成回写与 Redis 热资源队列。
-- 面向用户的 Conversation Message 接口；用户只提交消息，Chain、Turn 和资源队列由后端加载。
+- 文档上传、格式转换、清洗、父子切块、Embedding 和 Qdrant 入库。
+- Context Chain 路由、Turn 完成回写及 Redis 热资源队列。
+- 基于可验证事实的 Planner、Plan/Task DAG 持久化和澄清流程。
+- 独立 Task Runtime Worker、可靠事件投递、失败重试和 Replan。
+- Task 全部成功后的确定性结果聚合及 Context Turn 回写。
 
-当前不提供检索、召回、重排或最终问答 API。
+当前 Planner 只支持已有文档的 `process_document`、
+`build_document_chunks` 和 `index_document_vectors` 三种能力。项目仍不提供检索、
+召回、重排或通用问答 API；任务聚合结果是执行事实摘要，不是 RAG 问答结果。
+
+## 运行架构
+
+服务由两个进程共同完成异步任务闭环：
+
+```text
+Client
+  │ POST /api/conversations/{conversation_id}/messages
+  ▼
+FastAPI
+  ├─ Context Agent：路由完整用户输入并创建唯一 Turn
+  ├─ Planner：并行收集 Document / Context / Operations 事实
+  ├─ MySQL：原子发布 Plan、Task DAG 和 Outbox Event
+  └─ 返回 processing / needs_clarification / unsupported / ...
+                         │
+                         ▼
+Runtime Worker
+  ├─ Outbox Publisher → Redis Stream
+  ├─ Event Consumer → Task Runtime / Replan / Aggregation
+  ├─ Document Executor → Process / Chunk / Index Use Case
+  └─ 聚合结果并完成 Context Turn
+                         │
+                         ▼
+Client 轮询 GET /api/conversations/{conversation_id}/turns/{turn_id}
+```
+
+FastAPI lifespan 和独立 Worker 分别创建自己的应用容器与外部客户端。FastAPI 不在
+Web 进程内启动后台消费循环；只启动 API 而不启动 Worker 时，已发布的异步 Plan 会
+停留在待执行状态。
 
 ## 模块化单体结构
 
@@ -16,33 +49,23 @@
 app/
 ├── main.py
 ├── api/router.py
-├── agent_runtime/               # Agent Tool 公共运行时
-├── bootstrap/
-│   ├── app_factory.py
-│   ├── container.py
-│   └── lifespan.py
-├── config/
-│   ├── environment.py
-│   └── settings.py
-├── shared/
-│   ├── time.py
-│   └── observability/
-├── infrastructure/
-│   ├── database/
-│   ├── llm/deepseek/
-│   └── redis/
+├── workers/runtime_main.py       # 独立 Runtime Worker 入口
+├── agents/                       # Planner、Collector 与 Clarification Agent
+├── agent_runtime/                # Agent Tool 公共上下文、策略与审计
+├── bootstrap/                    # 应用工厂、容器和 lifespan 装配
+├── config/                       # 环境变量与应用配置
+├── infrastructure/              # 数据库、DeepSeek Provider、Redis 客户端
+├── shared/observability/         # 文档生命周期与 Agent Tool JSONL 日志
 └── modules/
-    ├── context/
-    │   ├── presentation/
-    │   ├── application/
-    │   ├── domain/
-    │   └── infrastructure/
-    ├── document/
-    │   ├── presentation/
-    │   ├── application/
-    │   ├── domain/
-    │   └── infrastructure/
-    └── operations/              # 运行日志查询与 Agent Tools
+    ├── context/                  # Context 路由、Chain、Turn 与资源队列
+    ├── conversation/             # 面向用户的消息编排与状态查询
+    ├── document/                 # 文档入库、处理、切块和索引
+    ├── planning/                 # Plan/Task/DAG 与 Planner Tools
+    ├── task_runtime/             # Task 领取、执行、完成、失败和 Executor
+    ├── messaging/                # Outbox/Inbox、Redis Streams 与事件分派
+    ├── clarification/            # 澄清请求及回答关联
+    ├── aggregation/              # Plan 结果聚合与 Turn 完成
+    └── operations/               # 运行日志查询与 Agent Tools
 ```
 
 固定依赖方向：
@@ -58,38 +81,139 @@ Application、Presentation 和跨模块 Infrastructure 的导入边界。
 
 ## HTTP API
 
+### 核心写入与状态接口
+
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | POST | `/api/admin/documents/upload` | 上传原件并创建文档 |
 | POST | `/api/admin/documents/{document_id}/process` | 转换或清洗文档 |
 | POST | `/api/admin/documents/{document_id}/build-chunks` | 构建父块和子块 |
 | POST | `/api/admin/documents/{document_id}/index-vectors` | 生成并写入向量 |
-| POST | `/api/conversations/{conversation_id}/messages` | 发送用户消息并执行 Context 路由 |
-| POST | `/api/context/route` | 兼容路由接口，已标记 deprecated |
-| POST | `/api/context/turns/{turn_id}/complete` | 完成 Turn 并关联目标 Chain |
+| POST | `/api/conversations/{conversation_id}/messages` | Context 路由并运行 Planner |
+| GET | `/api/conversations/{conversation_id}/turns/{turn_id}` | 查询 Turn、最新 Plan 和任务状态 |
+| POST | `/api/context/route` | 兼容 Context 路由接口，已标记 deprecated |
+| POST | `/api/context/turns/{turn_id}/complete` | 兼容下游手工完成 Turn 接口 |
 
-Conversation Message 请求只包含：
+Document 模块还提供文档、产物、父块、子块、流水线状态与知识库统计等只读接口。
+OpenAPI 文档由运行中的 FastAPI 提供。
+
+### Conversation Message
+
+请求只包含完整用户输入：
 
 ```json
 {
-  "message": "继续完善之前的文档处理日志方案"
+  "message": "处理文档 42，然后切块并建立向量索引"
 }
 ```
 
-`ContextAgentInput` 是后端内部契约，不能由前端构造。
+`ContextAgentInput`、Chain、Plan、Task 和资源队列均为后端内部契约，不由前端构造。
+响应中的主要状态如下：
 
-## 配置与运行
+| 状态 | HTTP | 含义 |
+|---|---:|---|
+| `processing` | 202 | Plan 已发布，等待 Worker 执行 |
+| `retry_pending` | 202 | Planner 或澄清后的 Replan 等待异步重试 |
+| `needs_clarification` | 200 | 需要用户补充信息，问题位于 `assistant_message` |
+| `unsupported` | 200 | 当前 Capability 无法支持请求 |
+| `failed` | 200 | 本轮规划失败，未形成可执行 Plan |
 
-配置入口是 `app/config/settings.py`。真实数据库密码、API Key、Redis 凭据等只应由
-进程环境或被 Git 忽略的项目根目录 `.env` 提供。
+异步执行完成后，通过 Turn 状态接口读取 `turn_status`、最新 `plan_status`、
+`revision`、`task_ids` 和最终 `assistant_message`。
+
+## Conversation 任务闭环
+
+### 1. Context 路由
+
+一次完整输入只创建一个 `ConversationTurn`。Context Agent 只判断输入与哪些历史
+Context Chain 相关，不拆分任务、不选择 Executor，也不生成业务回答。同一
+Conversation 的路由使用 Redis 短锁串行化；MySQL 保存完整事实，Redis 保存有版本的
+热资源队列。
+
+### 2. Planner 与澄清
+
+Planner 先且只进行一次组合取证，并行调用 Document、Context、Operations 三个只读
+Collector。随后它只能通过 Planning Tools 创建 Task、发布 Plan、标记不支持，或移交
+Clarification Agent 生成问题。
+
+- 每个 Plan 必须包含 1～10 个 Task。
+- `sequence` 必须从 1 开始连续且唯一。
+- 依赖通过 `task_ref` 表达，发布时校验 DAG；最大深度为 3。
+- 当前 Capability 只有文档处理、文档切块和向量索引。
+- Plan、Task、依赖边、Turn 状态和首个 Outbox Event 在同一数据库事务中发布。
+
+若存在未回答的澄清请求，下一条用户消息会被关联为回答，并通过 Outbox 请求新的
+Plan revision。澄清请求在新 Plan 成功聚合后变为 `resolved`。
+
+### 3. 可靠消息与 Task Runtime
+
+独立 Worker 同时运行 Outbox 发布循环和 Redis Stream 消费循环：
+
+- Outbox Event 最多发布 10 次，耗尽后标记为 `dead_letter`。
+- Redis Consumer Group 使用唯一 consumer name，并接管超时未 ACK 的消息。
+- Inbox 记录抑制已完成事件的重复消费；处理失败的 Stream 消息不 ACK。
+- 同一 Plan 同时只执行一个 Task；只有依赖均成功的 Task 才能领取。
+- Claim、事务外 Executor 调用、Completion/Failure 使用三个独立阶段。
+- 每次执行保存稳定的 `execution_id`、`operation_id`、attempt 和输入快照。
+
+三种内置 Capability 的最大尝试次数均为 3；处理与切块超时为 300 秒，向量索引超时
+为 900 秒。可重试错误默认延迟 30 秒后再次唤醒。不可重试、阻塞或尝试耗尽时请求
+Replan；同一 workflow 最多保留 3 个 revision，旧 Plan 和未完成 Task 会被标记为
+`superseded`。
+
+### 4. 聚合与完成
+
+Plan 的全部 Task 成功后，Runtime 写入聚合事件。Aggregation 从数据库读取成功的
+Task 与 TaskExecution，生成确定性执行摘要，收集去重后的资源引用，随后完成原始
+Context Turn、建立 Chain Node 并刷新热资源队列。它不会调用检索或生成通用问答。
+
+## 文档处理流水线
+
+文档四个步骤仍可通过管理 API 独立调用，且必须按顺序执行：
+
+```text
+uploaded → processing → processed → chunking → chunked → indexing → indexed
+                                  任一失败阶段 → failed
+```
+
+- `txt`、`md`、`csv` 使用本地 Processor；`pdf`、`doc`、`docx`、`ppt`、`pptx`
+  先经 Docling 转为 Markdown。
+- 文本与 Markdown 按语义父块和长度子块切分；CSV 一条记录对应一个子块。
+- Embedding 使用 DashScope OpenAI-compatible API，向量以 ChildChunk ID 幂等
+  upsert 到 Qdrant。
+- MySQL、文件系统、外部转换服务和 Qdrant 不共享事务，失败路径包含尽力补偿，仍需
+  关注跨存储不一致。
+
+## 配置与本地运行
+
+配置入口是 `app/config/settings.py`，安全示例见 `.env.example`。必填配置：
+
+- `SQLALCHEMY_DATABASE_URL`
+- `DASHSCOPE_API_KEY`
+- `DEEPSEEK_API_KEY`（使用 Context/Planner Agent 时）
+
+运行时还需要可访问的 MySQL、Redis、Qdrant、DashScope；复杂办公格式需要 Docling，
+Agent 链路需要 DeepSeek。Redis 在应用和 Worker 启动时都会执行 `PING`，不可用则启动
+失败。
+
+先执行数据库迁移：
 
 ```bash
 uv run --frozen alembic upgrade head
-uv run --frozen uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-应用启动时会创建并验证共享 Redis 客户端，装配 Context 与 Document 的具体
-Infrastructure，并将统一容器写入 `app.state.container`。关闭时统一释放外部客户端。
+分别启动 API 与 Worker：
+
+```bash
+# terminal 1
+uv run --frozen uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+# terminal 2
+uv run --frozen python -m app.workers.runtime_main
+```
+
+存储路径是相对路径，应从项目根目录启动。当前 Alembic 迁移头为
+`a8d2e4f6b1c3`。
 
 ## 验证
 
@@ -99,5 +223,32 @@ uv run --frozen python -m unittest discover -s tests -v
 git diff --check
 ```
 
-MySQL migration 集成测试只有在显式提供名称以 `_test` 结尾的空测试库
-`TEST_MYSQL_DATABASE_URL` 时才运行。
+`tests/test_document_lifecycle_migration_mysql.py` 只有在显式提供名称以 `_test` 结尾的
+空测试库 `TEST_MYSQL_DATABASE_URL` 时才运行。离线测试使用替身，不应为了验证连接
+真实 MySQL、Redis、Qdrant、DashScope、Docling 或 DeepSeek。
+
+## 文档维护约定
+
+每个完整功能或重要更新都必须在同一交付中同步更新项目文档，无需额外提醒。
+
+“完整功能”指已经形成可使用闭环的新能力或既有能力扩展，至少具备明确入口、主流程、
+状态或结果、失败语义以及与风险相称的验证，不以代码量判断。
+
+一次变更满足以下任一项，即为“重要更新”：
+
+- 改变 HTTP API、命令、公开 Tool、事件 Schema 或其他外部契约。
+- 改变模块、Agent、Worker、进程、消息流、同步/异步或事务边界。
+- 改变状态机、数据库迁移、Redis/Qdrant/文件存储协议或一致性语义。
+- 改变配置、依赖、外部服务、启动部署方式、安全或权限边界。
+- 改变支持能力、关键限制、超时、重试、容量或文件类型。
+- 改变规范开发、迁移、测试、构建、发布或恢复流程。
+- 修复影响安全、数据完整性、生产可用性或下游决策的缺陷。
+
+兜底标准是：只要改动会使本文件或 `AGENTS.md` 中的现有事实变得错误、不完整或容易
+误解，就必须更新文档；无法确定时按重要更新处理。纯内部等价重构、排版、注释、非
+公开命名或不改变已记录契约的局部修复，默认不属于重要更新，但命中上述任一条件时
+仍必须更新。
+
+触发后应同时检查本文件与 `AGENTS.md`，更新受影响章节并移除过时内容。文档维护的是
+当前真实状态，不要求为每次改动追加流水账式 Changelog，也不能把计划能力写成已实现
+能力。
