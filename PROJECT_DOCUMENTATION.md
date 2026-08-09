@@ -132,9 +132,14 @@ Conversation 的路由使用 Redis 短锁串行化；MySQL 保存完整事实，
 
 ### 2. Planner 与澄清
 
-Planner 先且只进行一次组合取证，并行调用 Document、Context、Operations 三个只读
-Collector。随后它只能通过 Planning Tools 创建 Task、发布 Plan、标记不支持，或移交
-Clarification Agent 生成问题。
+Planner 直接持有 Document、Context、Operations 三个独立的只读
+Collector Agent-as-Tool，根据当前请求自主选择需要的 Collector。Planner
+开启 `parallel_tool_calls`，指令约束同一轮最多发出 3 个 Tool Call；
+`max_function_tool_concurrency` 为 3，因此已发出的多个独立 Collector
+可以最多三路并行取证。所需取证返回后，Planner 才能通过 Planning Tools
+创建 Task、发布 Plan、标记不支持，或移交 Clarification Agent 生成问题。三个
+Collector 统一返回 `collector_code`、`summary`、`facts`、`resource_refs` 和
+`gaps` 组成的 `CollectorResult`。
 
 - 每个 Plan 必须包含 1～10 个 Task。
 - `sequence` 必须从 1 开始连续且唯一。

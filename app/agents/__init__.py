@@ -9,7 +9,6 @@ from app.agents.collectors import (
 from app.agents.planner import (
     ClarificationAgentOutput,
     ClarificationHandoffInput,
-    PlanningEvidence,
     PlannerAgentRunner,
     build_planner_agent,
 )
@@ -21,7 +20,6 @@ __all__ = [
     "ClarificationAgentOutput",
     "ClarificationHandoffInput",
     "build_collector_agents",
-    "PlanningEvidence",
     "PlannerAgentRunner",
     "build_planner_agent",
 ]

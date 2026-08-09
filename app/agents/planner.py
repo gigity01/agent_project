@@ -1,4 +1,4 @@
-"""Planner Agent、组合取证 Tool 与一次 SDK Runner 适配器。"""
+"""Planner Agent、独立 Collector Tools 与一次 SDK Runner 适配器。"""
 
 from __future__ import annotations
 
@@ -14,17 +14,12 @@ from agents import (
     Runner,
     StopAtTools,
     ToolExecutionConfig,
-    function_tool,
     handoff,
 )
 from pydantic import BaseModel, Field
 
 from app.agent_runtime.context import AgentToolContext
-from app.agents.collectors import (
-    CollectorAgentSet,
-    CollectorRequest,
-    CollectorResult,
-)
+from app.agents.collectors import CollectorAgentSet
 from app.modules.planning.agent_tools.catalog import PLANNER_TOOLS
 from app.modules.planning.application.dto import (
     MarkPlanNeedsClarificationInput,
@@ -32,14 +27,7 @@ from app.modules.planning.application.dto import (
 
 
 DEFAULT_PLANNER_MAX_TURNS = 12
-
-
-class PlanningEvidence(BaseModel):
-    """一次组合取证调用返回的三个结构化只读结果。"""
-
-    document: CollectorResult
-    context: CollectorResult
-    operations: CollectorResult
+PLANNER_MAX_FUNCTION_TOOL_CONCURRENCY = 3
 
 
 class ClarificationHandoffInput(BaseModel):
@@ -85,61 +73,25 @@ _PLANNER_INSTRUCTIONS = """
 事实创建一个可执行 Plan，不执行 Task，也不把最终文本当作业务事实。
 
 必须遵守以下顺序和约束：
-1. 先且只调用一次 collect_planning_evidence 收集事实；它会在内部并行运行三个
-   只读 Collector。
-2. 只使用 Planning Function Tools 创建 Task。每项 Task 的 sequence 从 1 开始、
+1. 先根据请求判断需要哪些可验证事实，自主选择 Document、Context 或 Operations
+   Collector Tool；不得调用与当前规划无关的 Collector。多个彼此独立的
+   Collector 可以在同一轮发出，每轮最多发出 3 个 Tool Call。
+2. 只有在所需 Collector 返回后才能创建 Task。不得在同一轮中混合调用
+   Collector Tool 与 Planning Function Tool，也不得重复相同的取证调用。
+3. 只使用 Planning Function Tools 创建 Task。每项 Task 的 sequence 从 1 开始、
    唯一且连续，总数必须为 1～10。不要重试已经返回 succeeded 的创建调用。
-3. 支持当前请求时，确认所有 Task 创建成功后调用 finalize_plan。无法由当前三个
+4. 支持当前请求时，确认所有 Task 创建成功后调用 finalize_plan。无法由当前三个
    Capability 完成时调用 mark_plan_unsupported，并提供简短明确的原因。
-4. 不得在 finalize_plan 或 mark_plan_unsupported 成功前结束运行。Tool 返回 rejected
+5. 不得在 finalize_plan 或 mark_plan_unsupported 成功前结束运行。Tool 返回 rejected
    或 failed 时不得伪装成成功；无法安全恢复时结束运行，由 Application 标记重试。
-5. 资源不唯一、意图有多种合理解释或缺少必要参数时，使用 clarification_handoff；
+6. 资源不唯一、意图有多种合理解释或缺少必要参数时，使用 clarification_handoff；
    不得把可由 Collector 验证的信息转成澄清问题。
-6. 只通过 task_ref 和 depends_on_task_refs 表达 DAG；不得直接创建依赖边、Outbox 或
+7. 只通过 task_ref 和 depends_on_task_refs 表达 DAG；不得直接创建依赖边、Outbox 或
    Task Runtime 行为。DAG 最大深度为 3，同一 Plan Task 总数不超过 10。
 
 最终 Plan 状态、Task 状态和 task_ids 全部以数据库为准。不要生成业务总结；
 finalize_plan 或 mark_plan_unsupported 成功后当前 Run 会立即结束。
 """.strip()
-
-
-def _build_collect_planning_evidence_tool(
-    collectors: CollectorAgentSet,
-):
-    async def collect_planning_evidence_handler(
-        ctx: RunContextWrapper[AgentToolContext],
-        request: CollectorRequest,
-    ) -> PlanningEvidence:
-        collector_input = request.model_dump_json()
-
-        async def run_collector(agent) -> CollectorResult:
-            result = await Runner.run(
-                agent,
-                collector_input,
-                context=ctx.context,
-                max_turns=8,
-                run_config=RunConfig(tracing_disabled=True),
-            )
-            return CollectorResult.model_validate(result.final_output)
-
-        document, context, operations = await asyncio.gather(
-            run_collector(collectors.document),
-            run_collector(collectors.context),
-            run_collector(collectors.operations),
-        )
-        return PlanningEvidence(
-            document=document,
-            context=context,
-            operations=operations,
-        )
-
-    return function_tool(
-        name_override="collect_planning_evidence",
-        description_override=(
-            "并行调用 Document、Context、Operations 三个只读 Collector，"
-            "返回统一结构化规划证据。"
-        ),
-    )(collect_planning_evidence_handler)
 
 
 def build_planner_agent(
@@ -148,9 +100,9 @@ def build_planner_agent(
     model_settings: ModelSettings,
     collectors: CollectorAgentSet,
 ) -> PlannerAgentRunner:
-    """装配组合取证 Tool 与串行 Planning Tools。"""
+    """装配三个独立 Collector Tools 与 Planning Tools。"""
     planner_settings = model_settings.resolve(
-        ModelSettings(parallel_tool_calls=False)
+        ModelSettings(parallel_tool_calls=True)
     )
     clarification_agent = Agent[AgentToolContext](
         name="Clarification Agent",
@@ -200,7 +152,7 @@ def build_planner_agent(
     agent = Agent[AgentToolContext](
         name="Planner Agent",
         instructions=_PLANNER_INSTRUCTIONS,
-        tools=[_build_collect_planning_evidence_tool(collectors), *PLANNER_TOOLS],
+        tools=[*collectors.planner_tools, *PLANNER_TOOLS],
         handoffs=[clarification_handoff],
         model=model,
         model_settings=planner_settings,
@@ -216,7 +168,7 @@ def build_planner_agent(
         tracing_disabled=True,
         workflow_name="Planner Run",
         tool_execution=ToolExecutionConfig(
-            max_function_tool_concurrency=1
+            max_function_tool_concurrency=PLANNER_MAX_FUNCTION_TOOL_CONCURRENCY
         ),
     )
     return PlannerAgentRunner(agent=agent, run_config=run_config)

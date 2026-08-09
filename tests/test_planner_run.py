@@ -169,7 +169,7 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         )
         self.engine.dispose()
 
-    async def test_routed_turn_runs_planner_and_publishes_database_plan(self) -> None:
+    async def test_planner_exposes_independent_collectors_with_concurrency(self) -> None:
         collectors = build_collector_agents(
             model="test-model",
             model_settings=ModelSettings(parallel_tool_calls=False),
@@ -182,7 +182,9 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {tool.name for tool in configured_runner.agent.tools},
             {
-                "collect_planning_evidence",
+                "collect_document_information",
+                "collect_context_information",
+                "collect_operation_information",
                 "create_process_document_task",
                 "create_build_chunks_task",
                 "create_index_vectors_task",
@@ -190,12 +192,26 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
                 "mark_plan_unsupported",
             },
         )
-        self.assertFalse(
+        collector_tool_names = {
+            "collect_document_information",
+            "collect_context_information",
+            "collect_operation_information",
+        }
+        exposed_collector_tools = [
+            tool
+            for tool in configured_runner.agent.tools
+            if tool.name in collector_tool_names
+        ]
+        self.assertEqual(len(exposed_collector_tools), 3)
+        self.assertTrue(
+            all(tool._is_agent_tool for tool in exposed_collector_tools)
+        )
+        self.assertTrue(
             configured_runner.agent.model_settings.parallel_tool_calls
         )
         self.assertEqual(
             configured_runner.run_config.tool_execution.max_function_tool_concurrency,
-            1,
+            3,
         )
         self.assertIsNone(configured_runner.agent.output_type)
         self.assertEqual(
@@ -212,6 +228,7 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_routed_turn_runs_planner_and_publishes_database_plan(self) -> None:
         ports = PlanningApplicationPorts(
             uow_factory=lambda: SQLAlchemyUnitOfWork(self.session_factory),
             plan_factory=Plan,
