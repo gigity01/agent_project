@@ -28,6 +28,7 @@ from app.config.settings import (
     EMBEDDING_MODEL_NAME,
     EMBEDDING_VECTOR_SIZE,
     MAX_UPLOAD_FILE_SIZE,
+    PROCESSING_STAGING_STORAGE_DIR,
     RAW_EXTERNAL_STORAGE_DIR,
     RAW_LOCAL_STORAGE_DIR,
     REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
@@ -97,9 +98,11 @@ from app.modules.document.application.settings import (
     DocumentUploadSettings,
 )
 from app.modules.document.application.use_cases.build_chunks import (
+    BuildChunksCompensator,
     BuildChunksUseCase,
 )
 from app.modules.document.application.use_cases.index_vectors import (
+    IndexVectorsCompensator,
     IndexVectorsUseCase,
 )
 from app.modules.document.application.use_cases.get_document import (
@@ -127,6 +130,7 @@ from app.modules.document.application.use_cases.list_parent_blocks import (
     ListParentBlocksUseCase,
 )
 from app.modules.document.application.use_cases.process_document import (
+    ProcessDocumentCompensator,
     ProcessDocumentUseCase,
 )
 from app.modules.document.application.use_cases.search_artifacts import (
@@ -192,6 +196,7 @@ from app.modules.task_runtime.infrastructure.persistence.models import (
     TaskExecution,
 )
 from app.modules.task_runtime.application.ports import (
+    CompensatorRegistry,
     ExecutorRegistry,
     TaskRuntimePorts,
 )
@@ -207,6 +212,11 @@ from app.modules.task_runtime.infrastructure.executors import (
     adapt_build_document_chunks_output,
     adapt_index_document_vectors_output,
     adapt_process_document_output,
+)
+from app.modules.task_runtime.infrastructure.compensators import (
+    BuildDocumentChunksOperationCompensator,
+    IndexDocumentVectorsOperationCompensator,
+    ProcessDocumentOperationCompensator,
 )
 from app.modules.messaging.application.outbox import OutboxPublisher
 from app.modules.messaging.infrastructure.redis_streams import (
@@ -394,14 +404,14 @@ async def build_container() -> AppContainer:
                 ),
             ),
         )
+        processing_settings = DocumentProcessingSettings(
+            cleaned_storage_dir=CLEANED_STORAGE_DIR,
+            secondary_text_storage_dir=SECONDARY_TEXT_STORAGE_DIR,
+            staging_storage_dir=PROCESSING_STAGING_STORAGE_DIR,
+        )
         process_document = ProcessDocumentUseCase(
             ports=document_ports,
-            settings=DocumentProcessingSettings(
-                cleaned_storage_dir=CLEANED_STORAGE_DIR,
-                secondary_text_storage_dir=(
-                    SECONDARY_TEXT_STORAGE_DIR
-                ),
-            ),
+            settings=processing_settings,
         )
         build_chunks = BuildChunksUseCase(ports=document_ports)
         get_document = GetDocumentUseCase(
@@ -563,6 +573,24 @@ async def build_container() -> AppContainer:
                     DeterministicIndexDocumentVectorsExecutor(index_vectors)
                 ),
             }
+        task_compensators = {
+            "document.process": ProcessDocumentOperationCompensator(
+                ProcessDocumentCompensator(
+                    ports=document_ports,
+                    settings=processing_settings,
+                )
+            ),
+            "document.build_chunks": (
+                BuildDocumentChunksOperationCompensator(
+                    BuildChunksCompensator(ports=document_ports)
+                )
+            ),
+            "document.index_vectors": (
+                IndexDocumentVectorsOperationCompensator(
+                    IndexVectorsCompensator(ports=document_ports)
+                )
+            ),
+        }
         task_runtime = TaskRuntimeService(
             ports=TaskRuntimePorts(
                 uow_factory=SQLAlchemyUnitOfWork,
@@ -572,6 +600,7 @@ async def build_container() -> AppContainer:
             ),
             capabilities=build_capability_registry(),
             executors=ExecutorRegistry(task_executors),
+            compensators=CompensatorRegistry(task_compensators),
         )
         aggregate_plan = AggregatePlanUseCase(
             uow_factory=SQLAlchemyUnitOfWork,

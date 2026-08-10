@@ -1,6 +1,7 @@
 """处理文档应用用例：以短事务编排领取、执行与结果登记。"""
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -60,6 +61,7 @@ class ProcessingContext:
     source_path: Path
     created_by_actor_code: str | None
     status_before: str
+    operation_id: str
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class ProcessingExecutionResult:
     """事务外处理完成、等待在完成事务中登记的结果。"""
 
     document_id: int
+    operation_id: str
     cleaned_path: Path
     prepared_source: PreparedProcessSource
     cleaned_artifact: PendingArtifact
@@ -122,11 +125,17 @@ def _process_document(
     if operation_context is not None:
         logger_kwargs["operation_context"] = operation_context
     process_logger = DocumentProcessLogger(**logger_kwargs)
+    operation_id = process_logger.operation_context.operation_id
     context: ProcessingContext | None = None
     execution_result: ProcessingExecutionResult | None = None
+    finalized = False
     phase = "claim"
     try:
-        context = _claim_processing(document_id, ports=ports)
+        context = _claim_processing(
+            document_id,
+            operation_id=operation_id,
+            ports=ports,
+        )
         process_logger.claimed(context)
 
         phase = "execute"
@@ -138,6 +147,7 @@ def _process_document(
 
         phase = "finalize"
         response = _complete_processing(execution_result, ports=ports)
+        finalized = True
         process_logger.completed(
             processed_source_type=(
                 execution_result.cleaned_artifact.artifact_format
@@ -150,9 +160,11 @@ def _process_document(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            operation_id=operation_id,
             ports=ports,
+            settings=settings,
         )
-        if execution_result is not None:
+        if execution_result is not None and not finalized:
             execution_result.cleanup_generated_files()
         process_logger.failed(
             error=exc,
@@ -171,9 +183,11 @@ def _process_document(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            operation_id=operation_id,
             ports=ports,
+            settings=settings,
         )
-        if execution_result is not None:
+        if execution_result is not None and not finalized:
             execution_result.cleanup_generated_files()
         process_logger.failed(
             error=exc,
@@ -189,9 +203,11 @@ def _process_document(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            operation_id=operation_id,
             ports=ports,
+            settings=settings,
         )
-        if execution_result is not None:
+        if execution_result is not None and not finalized:
             execution_result.cleanup_generated_files()
         process_logger.failed(
             error=exc,
@@ -210,6 +226,7 @@ def _process_document(
 def _claim_processing(
     document_id: int,
     *,
+    operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> ProcessingContext:
     """以行锁领取处理权，并立即提交 processing 状态。"""
@@ -218,6 +235,11 @@ def _claim_processing(
 
         if document is None:
             raise DocumentApplicationError(status_code=404, detail="文档不存在")
+        if document.active_operation_id is not None:
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="文档已有未释放的处理 Operation",
+            )
         if document.status not in {
             DocumentStatus.UPLOADED.value,
             DocumentStatus.FAILED.value,
@@ -248,8 +270,10 @@ def _claim_processing(
             source_path=Path(document.source_uri),
             created_by_actor_code=document.created_by_actor_code,
             status_before=status_before,
+            operation_id=operation_id,
         )
         document.status = DocumentStatus.PROCESSING.value
+        document.active_operation_id = operation_id
         uow.flush()
         uow.commit()
 
@@ -276,17 +300,22 @@ def _execute_processing(
 
     prepared_source: PreparedProcessSource | None = None
     cleaned_path: Path | None = None
+    operation_dir = _processing_operation_dir(
+        settings,
+        context.operation_id,
+    )
     try:
         prepared_source = prepare_process_source(
             context,
             ports=ports,
             settings=settings,
+            output_dir=operation_dir,
         )
-        settings.cleaned_storage_dir.mkdir(parents=True, exist_ok=True)
+        operation_dir.mkdir(parents=True, exist_ok=True)
         cleaned_filename = (
             f"{context.doc_code}.cleaned.{prepared_source.source_type}"
         )
-        cleaned_path = settings.cleaned_storage_dir / cleaned_filename
+        cleaned_path = operation_dir / cleaned_filename
         processor = ports.processor_factory(prepared_source.source_type)
         process_result = processor.process(
             source_path=prepared_source.source_path,
@@ -308,6 +337,7 @@ def _execute_processing(
         )
         return ProcessingExecutionResult(
             document_id=context.document_id,
+            operation_id=context.operation_id,
             cleaned_path=cleaned_path,
             prepared_source=prepared_source,
             cleaned_artifact=cleaned_artifact,
@@ -335,10 +365,11 @@ def _complete_processing(
         if document is None:
             raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status != DocumentStatus.PROCESSING.value:
-            raise DocumentApplicationError(
-                status_code=409,
-                detail=f"文档处理状态已经变化: {document.status}",
+            raise ProcessingAbortedError(
+                f"文档处理状态已经变化: {document.status}"
             )
+        if document.active_operation_id != result.operation_id:
+            raise ProcessingAbortedError("当前处理 Operation 已被其他执行接管")
         if document.lifecycle_status not in PROCESSABLE_LIFECYCLE_STATUSES:
             raise ProcessingAbortedError("文档处理期间已经失效")
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
@@ -358,6 +389,7 @@ def _complete_processing(
 
         document.cleaned_uri = str(result.cleaned_path)
         document.status = DocumentStatus.PROCESSED.value
+        document.active_operation_id = None
         uow.flush()
         response = ProcessDocumentResult(
             document_id=document.id,
@@ -377,13 +409,21 @@ def _register_processing_failure(
     document_id: int,
     error: Exception,
     claimed: bool,
+    operation_id: str,
     ports: DocumentApplicationPorts,
+    settings: DocumentProcessingSettings,
 ) -> FailureStateResult:
     """尽力登记失败状态；登记异常时保留原始业务异常。"""
     if not claimed:
         return NO_FAILURE_STATE_CHANGE
     try:
-        return _fail_processing(document_id, error, ports=ports)
+        return ProcessDocumentCompensator(
+            ports=ports,
+            settings=settings,
+        ).compensate(
+            document_id=document_id,
+            operation_id=operation_id,
+        )
     except Exception:
         logger.exception(
             "文档处理失败状态登记失败",
@@ -396,15 +436,22 @@ def _fail_processing(
     document_id: int,
     error: Exception,
     *,
+    operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
-    """仅在任务仍为 processing 时，以独立短事务标记处理失败。"""
+    """围栏仍由指定 Operation 持有的 processing 文档。"""
     del error
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
         if document is None:
             return NO_FAILURE_STATE_CHANGE
         status_before = document.status
+        if document.active_operation_id != operation_id:
+            return FailureStateResult(
+                state_updated=False,
+                status_before=status_before,
+                status_after=document.status,
+            )
         if document.status == DocumentStatus.PROCESSING.value:
             document.status = DocumentStatus.FAILED.value
             uow.flush()
@@ -419,6 +466,74 @@ def _fail_processing(
             status_before=status_before,
             status_after=document.status,
         )
+
+
+class ProcessDocumentCompensator:
+    """按 operation-scoped 目录补偿文档处理副作用。"""
+
+    def __init__(
+        self,
+        *,
+        ports: DocumentApplicationPorts,
+        settings: DocumentProcessingSettings,
+    ) -> None:
+        self._ports = ports
+        self._settings = settings
+
+    def compensate(
+        self,
+        *,
+        document_id: int,
+        operation_id: str,
+    ) -> FailureStateResult:
+        failure_result = _fail_processing(
+            document_id,
+            RuntimeError("文档处理 Operation 需要补偿"),
+            operation_id=operation_id,
+            ports=self._ports,
+        )
+        with self._ports.uow_factory() as uow:
+            document = uow.documents.get_by_id_for_update(document_id)
+            owns_operation = (
+                document is not None
+                and document.active_operation_id == operation_id
+                and document.status == DocumentStatus.FAILED.value
+            )
+        if not owns_operation:
+            return failure_result
+
+        operation_dir = _processing_operation_dir(
+            self._settings,
+            operation_id,
+        )
+        if operation_dir.exists():
+            shutil.rmtree(operation_dir)
+
+        with self._ports.uow_factory() as uow:
+            document = uow.documents.get_by_id_for_update(document_id)
+            if (
+                document is None
+                or document.active_operation_id != operation_id
+            ):
+                return failure_result
+            document.active_operation_id = None
+            uow.flush()
+            uow.commit()
+        return failure_result
+
+
+def _processing_operation_dir(
+    settings: DocumentProcessingSettings,
+    operation_id: str,
+) -> Path:
+    """返回不能逃逸 staging 根目录的 Operation 产物目录。"""
+    if (
+        not operation_id
+        or Path(operation_id).name != operation_id
+        or operation_id in {".", ".."}
+    ):
+        raise ValueError("operation_id 不能用于文件路径")
+    return settings.staging_storage_dir / operation_id
 
 
 def _persist_secondary_artifact(*, uow, document, artifact: PendingArtifact) -> None:

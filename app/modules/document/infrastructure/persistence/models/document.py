@@ -70,6 +70,13 @@ class Document(Base):
         nullable=False,
         default=DocumentStatus.UPLOADED.value,
     )
+    # 执行中状态的所有权 token；只有持有同一 operation_id 的完成或补偿流程
+    # 才能推进或释放当前阶段。
+    active_operation_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        index=True,
+    )
     replaced_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     risk_level: Mapped[str | None] = mapped_column(String(30), nullable=True)

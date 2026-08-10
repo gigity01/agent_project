@@ -23,6 +23,17 @@ class TaskExecutorPort(Protocol):
         ...
 
 
+class OperationCompensatorPort(Protocol):
+    async def compensate(
+        self,
+        *,
+        operation_id: str,
+        payload: BaseModel,
+        context: TaskRuntimeContext,
+    ) -> None:
+        ...
+
+
 class CapabilityDefinition(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -30,6 +41,7 @@ class CapabilityDefinition(BaseModel):
     input_model: type[BaseModel]
     output_model: type[BaseModel]
     executor_code: str
+    compensator_code: str | None
     max_attempts: int
     timeout_seconds: int
     side_effect: bool
@@ -60,6 +72,22 @@ class ExecutorRegistry:
             return self._executors[executor_code]
         except KeyError as exc:
             raise ValueError(f"未知 Executor: {executor_code}") from exc
+
+
+class CompensatorRegistry:
+    def __init__(
+        self,
+        compensators: dict[str, OperationCompensatorPort],
+    ) -> None:
+        self._compensators = dict(compensators)
+
+    def require(self, compensator_code: str) -> OperationCompensatorPort:
+        try:
+            return self._compensators[compensator_code]
+        except KeyError as exc:
+            raise ValueError(
+                f"未知 Compensator: {compensator_code}"
+            ) from exc
 
 
 @dataclass(frozen=True)

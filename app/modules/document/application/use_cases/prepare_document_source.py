@@ -63,6 +63,7 @@ def prepare_process_source(
     *,
     ports: DocumentApplicationPorts,
     settings: DocumentProcessingSettings,
+    output_dir: Path,
 ) -> PreparedProcessSource:
     """在事务外转换复杂格式并返回内存产物，不访问数据库。"""
     source_type = normalize_source_type(document.source_type)
@@ -79,12 +80,11 @@ def prepare_process_source(
         source_path=document.source_path,
         source_type=source_type,
     )
-    settings.secondary_text_storage_dir.mkdir(parents=True, exist_ok=True)
+    del settings
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     artifact_code = _generate_artifact_code(document.doc_code)
-    secondary_path = (
-        settings.secondary_text_storage_dir / f"{artifact_code}.md"
-    )
+    secondary_path = output_dir / f"{artifact_code}.md"
 
     try:
         secondary_path.write_text(markdown_result.markdown, encoding="utf-8")

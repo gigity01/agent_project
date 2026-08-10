@@ -61,6 +61,7 @@ class ChunkingContext:
     version: int
     process_metadata: dict[str, Any]
     status_before: str
+    operation_id: str
 
 
 @dataclass(frozen=True)
@@ -118,10 +119,15 @@ def _build_document_chunks(
     if operation_context is not None:
         logger_kwargs["operation_context"] = operation_context
     chunk_logger = DocumentChunkLogger(**logger_kwargs)
+    operation_id = chunk_logger.operation_context.operation_id
     context: ChunkingContext | None = None
     phase = "claim"
     try:
-        context = _claim_chunking(document_id, ports=ports)
+        context = _claim_chunking(
+            document_id,
+            operation_id=operation_id,
+            ports=ports,
+        )
         chunk_logger.claimed(context)
 
         phase = "execute"
@@ -140,6 +146,7 @@ def _build_document_chunks(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            operation_id=operation_id,
             ports=ports,
         )
         chunk_logger.failed(
@@ -159,6 +166,7 @@ def _build_document_chunks(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            operation_id=operation_id,
             ports=ports,
         )
         chunk_logger.failed(
@@ -175,6 +183,7 @@ def _build_document_chunks(
             document_id=document_id,
             error=exc,
             claimed=context is not None,
+            operation_id=operation_id,
             ports=ports,
         )
         chunk_logger.failed(
@@ -194,6 +203,7 @@ def _build_document_chunks(
 def _claim_chunking(
     document_id: int,
     *,
+    operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> ChunkingContext:
     """以行锁领取切块权，并立即提交 chunking 状态。"""
@@ -202,6 +212,11 @@ def _claim_chunking(
 
         if document is None:
             raise DocumentApplicationError(status_code=404, detail="文档不存在")
+        if document.active_operation_id is not None:
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="文档已有未释放的切块 Operation",
+            )
         if document.status not in {
             DocumentStatus.PROCESSED.value,
             DocumentStatus.FAILED.value,
@@ -265,8 +280,10 @@ def _claim_chunking(
             version=document.version,
             process_metadata=process_metadata,
             status_before=status_before,
+            operation_id=operation_id,
         )
         document.status = DocumentStatus.CHUNKING.value
+        document.active_operation_id = operation_id
         uow.flush()
         uow.commit()
 
@@ -372,10 +389,11 @@ def _complete_chunking(
         if document is None:
             raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status != DocumentStatus.CHUNKING.value:
-            raise DocumentApplicationError(
-                status_code=409,
-                detail=f"文档切块状态已经变化: {document.status}",
+            raise ChunkingAbortedError(
+                f"文档切块状态已经变化: {document.status}"
             )
+        if document.active_operation_id != context.operation_id:
+            raise ChunkingAbortedError("当前切块 Operation 已被其他执行接管")
         if document.lifecycle_status not in CHUNKABLE_LIFECYCLE_STATUSES:
             raise ChunkingAbortedError("文档切块期间已经失效")
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
@@ -413,6 +431,7 @@ def _complete_chunking(
         uow.child_chunks.create_many(child_chunks)
 
         document.status = DocumentStatus.CHUNKED.value
+        document.active_operation_id = None
         uow.flush()
         response = BuildChunksResult(
             document_id=document.id,
@@ -432,13 +451,17 @@ def _register_chunking_failure(
     document_id: int,
     error: Exception,
     claimed: bool,
+    operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
     """尽力登记失败状态；登记异常时保留原始业务异常。"""
     if not claimed:
         return NO_FAILURE_STATE_CHANGE
     try:
-        return _fail_chunking(document_id, error, ports=ports)
+        return BuildChunksCompensator(ports=ports).compensate(
+            document_id=document_id,
+            operation_id=operation_id,
+        )
     except Exception:
         logger.exception(
             "文档切块失败状态登记失败",
@@ -451,6 +474,7 @@ def _fail_chunking(
     document_id: int,
     error: Exception,
     *,
+    operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
     """仅在任务仍为 chunking 时，以独立短事务标记切块失败。"""
@@ -460,8 +484,12 @@ def _fail_chunking(
         if document is None:
             return NO_FAILURE_STATE_CHANGE
         status_before = document.status
-        if document.status == DocumentStatus.CHUNKING.value:
+        if (
+            document.status == DocumentStatus.CHUNKING.value
+            and document.active_operation_id == operation_id
+        ):
             document.status = DocumentStatus.FAILED.value
+            document.active_operation_id = None
             uow.flush()
             uow.commit()
             return FailureStateResult(
@@ -473,6 +501,26 @@ def _fail_chunking(
             state_updated=False,
             status_before=status_before,
             status_after=document.status,
+        )
+
+
+class BuildChunksCompensator:
+    """回收指定切块 Operation 的 Document ownership。"""
+
+    def __init__(self, *, ports: DocumentApplicationPorts) -> None:
+        self._ports = ports
+
+    def compensate(
+        self,
+        *,
+        document_id: int,
+        operation_id: str,
+    ) -> FailureStateResult:
+        return _fail_chunking(
+            document_id,
+            RuntimeError("文档切块 Operation 需要补偿"),
+            operation_id=operation_id,
+            ports=self._ports,
         )
 
 

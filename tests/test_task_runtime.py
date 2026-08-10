@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -31,6 +32,7 @@ from app.modules.task_runtime.application.dto import (
     TaskExecutorResult,
 )
 from app.modules.task_runtime.application.ports import (
+    CompensatorRegistry,
     ExecutorRegistry,
     TaskRuntimePorts,
 )
@@ -53,6 +55,17 @@ class _ProcessExecutor:
             },
             resource_refs=[f"document:{payload.document_id}"],
         )
+
+
+class _NoopCompensator:
+    def __init__(self) -> None:
+        self.calls = []
+        self.error: Exception | None = None
+
+    async def compensate(self, *, operation_id, payload, context) -> None:
+        self.calls.append((operation_id, payload.document_id, context))
+        if self.error is not None:
+            raise self.error
 
 
 class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -142,6 +155,7 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
             session.commit()
 
+        self.compensator = _NoopCompensator()
         self.runtime = TaskRuntimeService(
             ports=TaskRuntimePorts(
                 uow_factory=lambda: SQLAlchemyUnitOfWork(
@@ -154,6 +168,9 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             capabilities=build_capability_registry(),
             executors=ExecutorRegistry(
                 {"document.process": _ProcessExecutor()}
+            ),
+            compensators=CompensatorRegistry(
+                {"document.process": self.compensator}
             ),
             retry_delay_seconds=0,
         )
@@ -225,6 +242,61 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("runtime.plan_wakeup", outbox_types)
             self.assertEqual(outbox_types[-1], "aggregation.requested")
+
+    async def test_stale_execution_is_compensated_before_retry(self) -> None:
+        claimed = self.runtime.claim_next_task(
+            ClaimNextTaskInput(plan_id="plan-runtime")
+        )
+        with self.session_factory() as session:
+            task = session.get(Task, "task-1")
+            task.started_at = datetime.now() - timedelta(seconds=301)
+            session.commit()
+
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "retry_scheduled")
+        self.assertEqual(
+            self.compensator.calls[0][0],
+            claimed.task.operation_id,
+        )
+        with self.session_factory() as session:
+            plan = session.get(Plan, "plan-runtime")
+            task = session.get(Task, "task-1")
+            execution = session.get(
+                TaskExecution,
+                claimed.task.execution_id,
+            )
+            self.assertIsNone(plan.current_task_id)
+            self.assertEqual(task.status, "pending")
+            self.assertEqual(execution.status, "compensated")
+            self.assertEqual(
+                execution.error_code,
+                "execution_lease_expired",
+            )
+
+    async def test_compensation_failure_keeps_stale_task_owned(self) -> None:
+        claimed = self.runtime.claim_next_task(
+            ClaimNextTaskInput(plan_id="plan-runtime")
+        )
+        with self.session_factory() as session:
+            task = session.get(Task, "task-1")
+            task.started_at = datetime.now() - timedelta(seconds=301)
+            session.commit()
+        self.compensator.error = RuntimeError("compensation failed")
+
+        with self.assertRaisesRegex(RuntimeError, "compensation failed"):
+            await self.runtime.execute_next("plan-runtime")
+
+        with self.session_factory() as session:
+            plan = session.get(Plan, "plan-runtime")
+            task = session.get(Task, "task-1")
+            execution = session.get(
+                TaskExecution,
+                claimed.task.execution_id,
+            )
+            self.assertEqual(plan.current_task_id, task.task_id)
+            self.assertEqual(task.status, "running")
+            self.assertEqual(execution.status, "compensation_required")
 
 
 if __name__ == "__main__":

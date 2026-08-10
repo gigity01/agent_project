@@ -15,12 +15,14 @@ from app.modules.task_runtime.application.dto import (
     ClaimNextTaskInput,
     ClaimNextTaskResult,
     ExecutePlanResult,
+    RecoverySnapshot,
     TaskRuntimeContext,
     TaskSnapshot,
 )
 from app.modules.task_runtime.application.errors import TaskExecutionError
 from app.modules.task_runtime.application.ports import (
     CapabilityRegistry,
+    CompensatorRegistry,
     ExecutorRegistry,
     TaskRuntimePorts,
 )
@@ -40,11 +42,13 @@ class TaskRuntimeService:
         ports: TaskRuntimePorts,
         capabilities: CapabilityRegistry,
         executors: ExecutorRegistry,
+        compensators: CompensatorRegistry,
         retry_delay_seconds: int = 30,
     ) -> None:
         self._ports = ports
         self._capabilities = capabilities
         self._executors = executors
+        self._compensators = compensators
         self._retry_delay_seconds = retry_delay_seconds
 
     async def execute_next(
@@ -58,6 +62,14 @@ class TaskRuntimeService:
             ClaimNextTaskInput(plan_id=plan_id),
             event_id,
         )
+        if claimed.recovery is not None:
+            recovery = claimed.recovery
+            await self._compensate_recovery(recovery)
+            return await asyncio.to_thread(
+                self._complete_stale_recovery,
+                recovery,
+                event_id,
+            )
         if claimed.task is None:
             return ExecutePlanResult(plan_id=plan_id, outcome=claimed.outcome)
 
@@ -92,9 +104,11 @@ class TaskRuntimeService:
                 "Task Executor 执行超时",
                 retryable=True,
             )
+            await self._compensate_task(task, definition)
             await asyncio.to_thread(self._fail, task, error)
             return self._failure_result(task, error)
         except TaskExecutionError as error:
+            await self._compensate_task(task, definition)
             await asyncio.to_thread(self._fail, task, error)
             return self._failure_result(task, error)
         except Exception as exc:
@@ -103,6 +117,7 @@ class TaskRuntimeService:
                 f"Task Executor 系统异常: {type(exc).__name__}",
                 retryable=False,
             )
+            await self._compensate_task(task, definition)
             await asyncio.to_thread(self._fail, task, error)
             return self._failure_result(task, error)
 
@@ -165,15 +180,17 @@ class TaskRuntimeService:
                     uow.commit()
                 return ClaimNextTaskResult(outcome="terminal")
             if plan.current_task_id is not None:
-                if not self._recover_stale_execution(uow, plan):
-                    if plan.current_task_id is None:
-                        self._record_inbox(uow, event_id)
-                        uow.commit()
-                        return ClaimNextTaskResult(outcome="terminal")
-                    self._record_inbox(uow, event_id)
-                    if event_id is not None:
-                        uow.commit()
-                    return ClaimNextTaskResult(outcome="already_running")
+                recovery = self._recover_stale_execution(uow, plan)
+                if recovery is not None:
+                    uow.commit()
+                    return ClaimNextTaskResult(
+                        outcome="compensation_required",
+                        recovery=recovery,
+                    )
+                self._record_inbox(uow, event_id)
+                if event_id is not None:
+                    uow.commit()
+                return ClaimNextTaskResult(outcome="already_running")
             if plan.status not in {
                 PlanStatus.READY.value,
                 PlanStatus.RUNNING.value,
@@ -279,59 +296,159 @@ class TaskRuntimeService:
             )
         )
 
-    def _recover_stale_execution(self, uow, plan) -> bool:
+    def _recover_stale_execution(
+        self,
+        uow,
+        plan,
+    ) -> RecoverySnapshot | None:
         task = uow.tasks.get_by_id_for_update(plan.current_task_id)
         if task is None:
             raise RuntimeError("Plan current_task_id 指向不存在的 Task")
         definition = self._capabilities.require(task.capability_code)
+        execution = uow.task_executions.get_latest_by_task_for_update(
+            task.task_id
+        )
+        if execution is None:
+            raise RuntimeError("Running Task 缺少 TaskExecution")
+        if execution.status == TaskExecutionStatus.COMPENSATION_REQUIRED.value:
+            return self._recovery_snapshot(uow, plan, task, execution)
+        if execution.status != TaskExecutionStatus.RUNNING.value:
+            raise RuntimeError("Running Task 的 TaskExecution 状态不一致")
         started_at = task.started_at
         if (
             started_at is None
             or datetime.now()
             < started_at + timedelta(seconds=definition.timeout_seconds)
         ):
-            return False
-        execution = uow.task_executions.get_latest_running_by_task_for_update(
-            task.task_id
-        )
-        if execution is None:
-            raise RuntimeError("Running Task 缺少 TaskExecution")
-        now = datetime.now()
-        execution.status = TaskExecutionStatus.FAILED.value
+            return None
+        execution.status = TaskExecutionStatus.COMPENSATION_REQUIRED.value
         execution.error_code = "execution_lease_expired"
         execution.error_message = "Task Execution 超时未完成"
         execution.retryable = True
-        execution.completed_at = now
-        task.last_error_code = execution.error_code
-        task.last_error_message = execution.error_message
-        uow.plans.set_current_task(plan, None)
-        if task.attempt_count < task.max_attempts:
-            task.status = TaskStatus.PENDING.value
-            return True
-        task.status = TaskStatus.FAILED.value
-        plan.status = PlanStatus.REPLAN_PENDING.value
-        plan.failure_code = execution.error_code
-        plan.failure_reason = execution.error_message
-        uow.outbox.add(
-            self._event(
-                plan,
-                RuntimeEventType.REPLAN_REQUESTED,
-                payload={
-                    "workflow_id": plan.workflow_id,
-                    "conversation_id": self._turn_conversation_id(
-                        uow, plan.turn_id
-                    ),
-                    "root_turn_id": plan.turn_id,
-                    "previous_plan_id": plan.plan_id,
-                    "next_revision": plan.revision + 1,
-                    "trigger_type": "task_terminal_failure",
-                    "source_task_id": task.task_id,
-                    "error_code": execution.error_code,
-                    "error_message": execution.error_message,
-                },
-            )
+        execution.completed_at = None
+        return self._recovery_snapshot(uow, plan, task, execution)
+
+    def _recovery_snapshot(self, uow, plan, task, execution) -> RecoverySnapshot:
+        if execution.agent_run_id is None:
+            raise RuntimeError("TaskExecution 缺少 agent_run_id")
+        return RecoverySnapshot(
+            task_id=task.task_id,
+            plan_id=plan.plan_id,
+            workflow_id=plan.workflow_id,
+            conversation_id=self._turn_conversation_id(uow, plan.turn_id),
+            turn_id=plan.turn_id,
+            capability_code=task.capability_code,
+            input_json=dict(execution.input_snapshot_json),
+            attempt=execution.attempt,
+            max_attempts=task.max_attempts,
+            execution_id=execution.execution_id,
+            operation_id=execution.operation_id,
+            agent_run_id=execution.agent_run_id,
         )
-        return False
+
+    async def _compensate_task(self, task: TaskSnapshot, definition) -> None:
+        await self._run_compensator(task, definition)
+
+    async def _compensate_recovery(self, recovery: RecoverySnapshot) -> None:
+        definition = self._capabilities.require(recovery.capability_code)
+        await self._run_compensator(recovery, definition)
+
+    async def _run_compensator(self, snapshot, definition) -> None:
+        if definition.compensator_code is None:
+            if definition.side_effect:
+                raise RuntimeError("有副作用的 Capability 缺少 Compensator")
+            return
+        payload = definition.input_model.model_validate(snapshot.input_json)
+        compensator = self._compensators.require(
+            definition.compensator_code
+        )
+        await compensator.compensate(
+            operation_id=snapshot.operation_id,
+            payload=payload,
+            context=self._runtime_context(snapshot),
+        )
+
+    @staticmethod
+    def _runtime_context(snapshot) -> TaskRuntimeContext:
+        return TaskRuntimeContext(
+            workflow_id=snapshot.workflow_id,
+            plan_id=snapshot.plan_id,
+            task_id=snapshot.task_id,
+            conversation_id=snapshot.conversation_id,
+            turn_id=snapshot.turn_id,
+            execution_id=snapshot.execution_id,
+            operation_id=snapshot.operation_id,
+            agent_run_id=snapshot.agent_run_id,
+            attempt=snapshot.attempt,
+        )
+
+    def _complete_stale_recovery(
+        self,
+        snapshot: RecoverySnapshot,
+        event_id: str | None,
+    ) -> ExecutePlanResult:
+        with self._ports.uow_factory() as uow:
+            plan = uow.plans.get_by_id_for_update(snapshot.plan_id)
+            task = uow.tasks.get_by_id_for_update(snapshot.task_id)
+            execution = uow.task_executions.get_by_id_for_update(
+                snapshot.execution_id
+            )
+            if plan is None or task is None or execution is None:
+                raise RuntimeError("Task Runtime 恢复状态记录不存在")
+            if (
+                plan.current_task_id != task.task_id
+                or task.status != TaskStatus.RUNNING.value
+                or execution.status
+                != TaskExecutionStatus.COMPENSATION_REQUIRED.value
+                or execution.attempt != snapshot.attempt
+                or execution.operation_id != snapshot.operation_id
+            ):
+                raise RuntimeError("Task Execution 补偿 token 已失效")
+
+            now = datetime.now()
+            execution.status = TaskExecutionStatus.COMPENSATED.value
+            execution.completed_at = now
+            task.last_error_code = execution.error_code
+            task.last_error_message = execution.error_message
+            task.completed_at = now
+            uow.plans.set_current_task(plan, None)
+            if task.attempt_count < task.max_attempts:
+                task.status = TaskStatus.PENDING.value
+                uow.outbox.add(
+                    self._event(plan, RuntimeEventType.PLAN_WAKEUP)
+                )
+                outcome = "retry_scheduled"
+            else:
+                task.status = TaskStatus.FAILED.value
+                plan.status = PlanStatus.REPLAN_PENDING.value
+                plan.failure_code = execution.error_code
+                plan.failure_reason = execution.error_message
+                uow.outbox.add(
+                    self._event(
+                        plan,
+                        RuntimeEventType.REPLAN_REQUESTED,
+                        payload={
+                            "workflow_id": plan.workflow_id,
+                            "conversation_id": snapshot.conversation_id,
+                            "root_turn_id": plan.turn_id,
+                            "previous_plan_id": plan.plan_id,
+                            "next_revision": plan.revision + 1,
+                            "trigger_type": "task_terminal_failure",
+                            "source_task_id": task.task_id,
+                            "error_code": execution.error_code,
+                            "error_message": execution.error_message,
+                        },
+                    )
+                )
+                outcome = "replan_requested"
+            self._record_inbox(uow, event_id)
+            uow.commit()
+            return ExecutePlanResult(
+                plan_id=plan.plan_id,
+                outcome=outcome,
+                task_id=task.task_id,
+                execution_id=execution.execution_id,
+            )
 
     def _complete(
         self,

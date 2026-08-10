@@ -166,6 +166,9 @@ Plan revision。澄清请求在新 Plan 成功聚合后变为 `resolved`。
 - Claim、事务外 Executor 调用、Completion/Failure 使用三个独立阶段。
 - 每次执行保存稳定的 `execution_id`、`operation_id`、`agent_run_id`、attempt 和
   输入快照；这些字段贯穿 Agent Tool 审计与文档阶段日志。
+- `operation_id` 同时是 Document 执行 ownership token：处理、切块和索引 claim 会
+  写入 `documents.active_operation_id`，finalize 和补偿只有在 token 相同时才能推进或
+  释放状态。
 
 每个 Task 仍对应一个固定 Capability。启用 DeepSeek Provider 时，Runtime 通过通用
 `AgentTaskExecutor` 调用三个 capability-scoped Document Executor Agent：每个 Agent
@@ -187,6 +190,13 @@ Capability Registry、claim/complete/fail、重试和 Replan 状态机均不变�
 Replan；同一 workflow 最多保留 3 个 revision，旧 Plan 和未完成 Task 会被标记为
 `superseded`。
 
+三个 Document Capability 均在 Capability Registry 中声明对应的 Compensator。
+普通 Executor 失败会先运行补偿再进入 Failure/Retry；过期执行恢复则拆为三个阶段：
+数据库先把 `TaskExecution` 标记为 `compensation_required`，事务外执行文件系统或
+Qdrant 补偿，最后以新事务标记 `compensated` 并将 Task 退回 `pending` 或请求 Replan。
+补偿失败时保留原 Task 和 Document ownership，Stream 消息不完成，新的 attempt 不能
+接管该资源。
+
 ### 4. 聚合与完成
 
 Plan 的全部 Task 成功后，Runtime 写入聚合事件。Aggregation 从数据库读取成功的
@@ -204,11 +214,16 @@ uploaded → processing → processed → chunking → chunked → indexing → 
 
 - `txt`、`md`、`csv` 使用本地 Processor；`pdf`、`doc`、`docx`、`ppt`、`pptx`
   先经 Docling 转为 Markdown。
+- Process 生成的 secondary/cleaned 文件位于
+  `storage/staging/{operation_id}/`，成功后该 operation-scoped URI 作为 Artifact 和
+  `cleaned_uri` 的持久化事实；失败补偿只删除当前 owner 对应目录。
 - 文本与 Markdown 按语义父块和长度子块切分；CSV 一条记录对应一个子块。
 - Embedding 使用 DashScope OpenAI-compatible API，向量以 ChildChunk ID 幂等
   upsert 到 Qdrant。
-- MySQL、文件系统、外部转换服务和 Qdrant 不共享事务，失败路径包含尽力补偿，仍需
-  关注跨存储不一致。
+- Chunk finalize 的父子块替换保持单一数据库事务，补偿只释放 `chunking` ownership。
+- Index 补偿先围栏旧 finalize，再按当前 `indexing` Chunk 的稳定 ID 删除 Qdrant
+  Point；删除成功后才把 Chunk 标记为 `failed` 并释放 ownership。MySQL、文件系统和
+  Qdrant 仍不共享事务，因此补偿失败会显式阻止 retry，而不是假定跨存储已经一致。
 
 ## 配置与本地运行
 
@@ -239,7 +254,7 @@ uv run --frozen python -m app.workers.runtime_main
 ```
 
 存储路径是相对路径，应从项目根目录启动。当前 Alembic 迁移头为
-`a8d2e4f6b1c3`。
+`b1c3d5e7f9a2`。
 
 ## 验证
 

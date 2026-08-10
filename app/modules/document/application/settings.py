@@ -20,6 +20,7 @@ class DocumentUploadSettings:
 class DocumentProcessingSettings:
     cleaned_storage_dir: Path
     secondary_text_storage_dir: Path
+    staging_storage_dir: Path
 
 
 @dataclass(frozen=True)

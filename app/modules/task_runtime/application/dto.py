@@ -26,9 +26,31 @@ class TaskSnapshot(BaseModel):
     executor_code: str
 
 
+class RecoverySnapshot(BaseModel):
+    task_id: str
+    plan_id: str
+    workflow_id: str
+    conversation_id: str
+    turn_id: str
+    capability_code: str
+    input_json: dict[str, Any]
+    attempt: int
+    max_attempts: int
+    execution_id: str
+    operation_id: str
+    agent_run_id: str
+
+
 class ClaimNextTaskResult(BaseModel):
-    outcome: Literal["claimed", "already_running", "no_task", "terminal"]
+    outcome: Literal[
+        "claimed",
+        "compensation_required",
+        "already_running",
+        "no_task",
+        "terminal",
+    ]
     task: TaskSnapshot | None = None
+    recovery: RecoverySnapshot | None = None
 
 
 class TaskRuntimeContext(BaseModel):

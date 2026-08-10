@@ -46,3 +46,15 @@ class TaskExecutionRepository:
             .with_for_update()
             .first()
         )
+
+    def get_latest_by_task_for_update(
+        self,
+        task_id: str,
+    ) -> TaskExecution | None:
+        return (
+            self.db.query(TaskExecution)
+            .filter(TaskExecution.task_id == task_id)
+            .order_by(TaskExecution.attempt.desc())
+            .with_for_update()
+            .first()
+        )

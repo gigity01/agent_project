@@ -73,8 +73,17 @@ class _PreparedProcessSource:
 class _DocumentProcessLogger:
     instances = []
 
-    def __init__(self, *, document_id=None) -> None:
+    def __init__(
+        self,
+        *,
+        document_id=None,
+        operation_context=None,
+    ) -> None:
         self.document_id = document_id
+        self.operation_context = (
+            operation_context
+            or SimpleNamespace(operation_id="operation-test")
+        )
         self.claimed_fields = None
         self.completed_fields = None
         self.failed_fields = None
@@ -162,21 +171,28 @@ def _load_service_module():
         module.test_settings = SimpleNamespace(
             cleaned_storage_dir=Path("cleaned"),
             secondary_text_storage_dir=Path("secondary"),
+            staging_storage_dir=Path("staging"),
         )
         original_claim = module._claim_processing
         original_complete = module._complete_processing
         original_fail = module._fail_processing
-        module._claim_processing = lambda document_id, *, ports=None: original_claim(
+        module._claim_processing = lambda document_id, *, operation_id=(
+            "operation-test"
+        ), ports=None: original_claim(
             document_id,
+            operation_id=operation_id,
             ports=ports or module.test_ports,
         )
         module._complete_processing = lambda result, *, ports=None: original_complete(
             result,
             ports=ports or module.test_ports,
         )
-        module._fail_processing = lambda document_id, error, *, ports=None: original_fail(
+        module._fail_processing = lambda document_id, error, *, operation_id=(
+            "operation-test"
+        ), ports=None: original_fail(
             document_id,
             error,
+            operation_id=operation_id,
             ports=ports or module.test_ports,
         )
         module.process_document = module.ProcessDocumentUseCase(
@@ -261,7 +277,13 @@ def _document(
     storage_status: str = DocumentStorageStatus.ACTIVE.value,
     source_uri: str = "source.txt",
     active_content_hash: str | None = "active-hash",
+    active_operation_id: str | None = None,
 ) -> SimpleNamespace:
+    if (
+        active_operation_id is None
+        and status == DocumentStatus.PROCESSING.value
+    ):
+        active_operation_id = "operation-test"
     return SimpleNamespace(
         id=1,
         doc_code="DOC_001",
@@ -276,6 +298,7 @@ def _document(
         lifecycle_status=lifecycle_status,
         storage_status=storage_status,
         active_content_hash=active_content_hash,
+        active_operation_id=active_operation_id,
     )
 
 
@@ -325,6 +348,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
 
         self.assertEqual(context.document_id, document.id)
         self.assertEqual(document.status, DocumentStatus.PROCESSING.value)
+        self.assertEqual(document.active_operation_id, "operation-test")
         self.assertEqual(factory.instances[0].documents.locked_ids, [document.id])
         self.assertEqual(factory.instances[0].flush_count, 1)
         self.assertEqual(factory.instances[0].commit_count, 1)
@@ -444,9 +468,74 @@ class DocumentProcessingServiceTest(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 500)
         self.assertEqual(document.status, DocumentStatus.FAILED.value)
         self.assertEqual(document.active_content_hash, "keep-me")
-        self.assertEqual(len(factory.instances), 2)
+        self.assertEqual(len(factory.instances), 4)
         self.assertEqual(factory.instances[0].commit_count, 1)
         self.assertEqual(factory.instances[1].commit_count, 1)
+        self.assertEqual(factory.instances[3].commit_count, 1)
+        self.assertIsNone(document.active_operation_id)
+
+    def test_compensator_removes_only_owned_operation_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            staging_root = Path(temp_dir) / "staging"
+            operation_dir = staging_root / "operation-test"
+            operation_dir.mkdir(parents=True)
+            (operation_dir / "cleaned.md").write_text(
+                "cleaned",
+                encoding="utf-8",
+            )
+            document = _document(
+                status=DocumentStatus.PROCESSING.value,
+            )
+            self._use_document(document)
+            compensator = self.service.ProcessDocumentCompensator(
+                ports=self.service.test_ports,
+                settings=SimpleNamespace(
+                    cleaned_storage_dir=Path("cleaned"),
+                    secondary_text_storage_dir=Path("secondary"),
+                    staging_storage_dir=staging_root,
+                ),
+            )
+
+            compensator.compensate(
+                document_id=document.id,
+                operation_id="operation-test",
+            )
+
+            self.assertFalse(operation_dir.exists())
+            self.assertEqual(document.status, DocumentStatus.FAILED.value)
+            self.assertIsNone(document.active_operation_id)
+
+    def test_compensator_preserves_another_operations_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            staging_root = Path(temp_dir) / "staging"
+            old_operation_dir = staging_root / "operation-old"
+            old_operation_dir.mkdir(parents=True)
+            (old_operation_dir / "cleaned.md").write_text(
+                "cleaned",
+                encoding="utf-8",
+            )
+            document = _document(
+                status=DocumentStatus.PROCESSING.value,
+                active_operation_id="operation-new",
+            )
+            self._use_document(document)
+            compensator = self.service.ProcessDocumentCompensator(
+                ports=self.service.test_ports,
+                settings=SimpleNamespace(
+                    cleaned_storage_dir=Path("cleaned"),
+                    secondary_text_storage_dir=Path("secondary"),
+                    staging_storage_dir=staging_root,
+                ),
+            )
+
+            compensator.compensate(
+                document_id=document.id,
+                operation_id="operation-old",
+            )
+
+            self.assertTrue(old_operation_dir.exists())
+            self.assertEqual(document.status, DocumentStatus.PROCESSING.value)
+            self.assertEqual(document.active_operation_id, "operation-new")
 
     def test_completion_persists_artifacts_and_processed_in_one_uow(self) -> None:
         document = _document(status=DocumentStatus.PROCESSING.value)
@@ -471,6 +560,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
         )
         result = self.service.ProcessingExecutionResult(
             document_id=document.id,
+            operation_id="operation-test",
             cleaned_path=Path(cleaned.artifact_uri),
             prepared_source=prepared,
             cleaned_artifact=cleaned,
@@ -480,11 +570,45 @@ class DocumentProcessingServiceTest(unittest.TestCase):
 
         complete_uow = factory.instances[0]
         self.assertEqual(document.status, DocumentStatus.PROCESSED.value)
+        self.assertIsNone(document.active_operation_id)
         self.assertEqual(document.cleaned_uri, cleaned.artifact_uri)
         self.assertEqual(response.status, DocumentStatus.PROCESSED.value)
         self.assertEqual(len(complete_uow.document_artifacts.create_calls), 2)
         self.assertEqual(len(complete_uow.document_artifacts.superseded_calls), 2)
         self.assertEqual(complete_uow.commit_count, 1)
+
+    def test_completion_rejects_another_operation_owner(self) -> None:
+        document = _document(
+            status=DocumentStatus.PROCESSING.value,
+            active_operation_id="operation-new",
+        )
+        factory = self._use_document(document)
+        cleaned = _pending_artifact(
+            self.service,
+            artifact_type="cleaned_text",
+            artifact_role="process_output",
+            artifact_uri="old.cleaned.md",
+        )
+        result = self.service.ProcessingExecutionResult(
+            document_id=document.id,
+            operation_id="operation-old",
+            cleaned_path=Path(cleaned.artifact_uri),
+            prepared_source=self.service.PreparedProcessSource(
+                source_path=Path("source.md"),
+                source_type="md",
+            ),
+            cleaned_artifact=cleaned,
+        )
+
+        with self.assertRaisesRegex(
+            self.service.ProcessingAbortedError,
+            "已被其他执行接管",
+        ):
+            self.service._complete_processing(result)
+
+        self.assertEqual(document.status, DocumentStatus.PROCESSING.value)
+        self.assertEqual(document.active_operation_id, "operation-new")
+        self.assertEqual(factory.instances[0].commit_count, 0)
 
     def test_deletion_during_execution_discards_results_and_marks_failed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -509,6 +633,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
             )
             result = self.service.ProcessingExecutionResult(
                 document_id=document.id,
+                operation_id="operation-test",
                 cleaned_path=cleaned_path,
                 prepared_source=self.service.PreparedProcessSource(
                     source_path=secondary_path,
@@ -546,11 +671,13 @@ class DocumentProcessingServiceTest(unittest.TestCase):
             document.storage_status,
             DocumentStorageStatus.ARCHIVING.value,
         )
-        self.assertEqual(len(factory.instances), 3)
+        self.assertEqual(len(factory.instances), 5)
         completion_uow = factory.instances[1]
         self.assertEqual(completion_uow.document_artifacts.create_calls, [])
         self.assertEqual(completion_uow.commit_count, 0)
         self.assertEqual(factory.instances[2].commit_count, 1)
+        self.assertEqual(factory.instances[4].commit_count, 1)
+        self.assertIsNone(document.active_operation_id)
 
 
 if __name__ == "__main__":

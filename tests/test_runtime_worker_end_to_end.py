@@ -139,6 +139,7 @@ with (
         TaskDependency,
     )
     from app.modules.task_runtime.application.ports import (
+        CompensatorRegistry,
         ExecutorRegistry,
         TaskRuntimePorts,
     )
@@ -438,6 +439,11 @@ class _RuntimeExecutorAgentRunner:
         )
 
 
+class _NoopOperationCompensator:
+    async def compensate(self, *, operation_id, payload, context) -> None:
+        del operation_id, payload, context
+
+
 class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         load_all_models()
@@ -608,6 +614,13 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
                             _AuditWriter()
                         ),
                     ),
+                }
+            ),
+            compensators=CompensatorRegistry(
+                {
+                    "document.process": _NoopOperationCompensator(),
+                    "document.build_chunks": _NoopOperationCompensator(),
+                    "document.index_vectors": _NoopOperationCompensator(),
                 }
             ),
             retry_delay_seconds=0,

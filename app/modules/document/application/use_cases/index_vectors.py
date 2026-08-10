@@ -114,6 +114,7 @@ class IndexingContext:
     status_before: str | None = None
     pending_count: int = 0
     retry_count: int = 0
+    operation_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,13 @@ class IndexingExecutionResult:
 
     context: IndexingContext
     point_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class IndexingCompensationSnapshot:
+    document_id: int
+    chunk_ids: tuple[int, ...]
+    status_before: str
 
 
 class IndexVectorsUseCase:
@@ -168,6 +176,7 @@ def _index_document_vectors(
     if operation_context is not None:
         logger_kwargs["operation_context"] = operation_context
     index_logger = DocumentIndexLogger(**logger_kwargs)
+    operation_id = index_logger.operation_context.operation_id
     context: IndexingContext | None = None
     resolved_vector_store = vector_store
     confirmed_point_ids: tuple[int, ...] = ()
@@ -175,7 +184,11 @@ def _index_document_vectors(
     phase = "claim"
 
     try:
-        context = _claim_indexing(document_id, ports=ports)
+        context = _claim_indexing(
+            document_id,
+            operation_id=operation_id,
+            ports=ports,
+        )
         index_logger.claimed(context)
 
         phase = "execute"
@@ -270,6 +283,7 @@ def _index_document_vectors(
 def _claim_indexing(
     document_id: int,
     *,
+    operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> IndexingContext:
     """以行锁领取索引权，并提交 Document/Chunk 的 indexing 状态。"""
@@ -278,6 +292,11 @@ def _claim_indexing(
 
         if document is None:
             raise DocumentApplicationError(status_code=404, detail="文档不存在")
+        if document.active_operation_id is not None:
+            raise DocumentApplicationError(
+                status_code=409,
+                detail="文档已有未释放的索引 Operation",
+            )
         if document.status not in {
             DocumentStatus.CHUNKED.value,
             DocumentStatus.FAILED.value,
@@ -340,9 +359,11 @@ def _claim_indexing(
             status_before=status_before,
             pending_count=pending_count,
             retry_count=retry_count,
+            operation_id=operation_id,
         )
         uow.child_chunks.mark_indexing(chunks)
         document.status = DocumentStatus.INDEXING.value
+        document.active_operation_id = operation_id
         uow.flush()
         uow.commit()
 
@@ -488,10 +509,11 @@ def _complete_indexing(
         if document is None:
             raise DocumentApplicationError(status_code=404, detail="文档不存在")
         if document.status != DocumentStatus.INDEXING.value:
-            raise DocumentApplicationError(
-                status_code=409,
-                detail=f"文档索引状态已经变化: {document.status}",
+            raise IndexingAbortedError(
+                f"文档索引状态已经变化: {document.status}"
             )
+        if document.active_operation_id != context.operation_id:
+            raise IndexingAbortedError("当前索引 Operation 已被其他执行接管")
         if document.lifecycle_status not in INDEXABLE_LIFECYCLE_STATUSES:
             raise IndexingAbortedError("文档索引期间已经失效")
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
@@ -514,6 +536,7 @@ def _complete_indexing(
             raise IndexingAbortedError("文档仍存在未完成索引的子块")
 
         document.status = DocumentStatus.INDEXED.value
+        document.active_operation_id = None
         document.indexed_at = datetime.now()
         uow.flush()
         response = IndexVectorsResult(
@@ -533,36 +556,162 @@ def _fail_indexing(
     chunk_ids: tuple[int, ...],
     error: Exception,
     *,
+    operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> IndexFailureStateResult:
-    """以独立短事务把本次 indexing Document/Chunk 标记为 failed。"""
+    """仅供无外部 Point 的路径完成 ownership-aware 数据库补偿。"""
     del error
-    with ports.uow_factory() as uow:
-        document = uow.documents.get_by_id_for_update(document_id)
-        if document is None:
+    compensator = IndexVectorsCompensator(ports=ports)
+    snapshot = compensator._prepare(
+        document_id=document_id,
+        operation_id=operation_id,
+    )
+    if snapshot is None:
+        return NO_INDEX_FAILURE_STATE_CHANGE
+    return compensator._complete(
+        snapshot=snapshot,
+        operation_id=operation_id,
+        chunk_ids=chunk_ids,
+    )
+
+
+class IndexVectorsCompensator:
+    """围栏 Document 后按稳定 Chunk ID 删除 Qdrant Point。"""
+
+    def __init__(self, *, ports: DocumentApplicationPorts) -> None:
+        self._ports = ports
+
+    def compensate(
+        self,
+        *,
+        document_id: int,
+        operation_id: str,
+        point_ids: tuple[int, ...] | None = None,
+        vector_store: VectorStoreClient | None = None,
+        index_logger: DocumentIndexLogger | None = None,
+    ) -> IndexFailureStateResult:
+        snapshot = self._prepare(
+            document_id=document_id,
+            operation_id=operation_id,
+        )
+        if snapshot is None:
             return NO_INDEX_FAILURE_STATE_CHANGE
 
-        status_before = document.status
-        chunks = uow.child_chunks.list_by_ids_for_update(
-            document.id,
-            chunk_ids,
+        compensation_point_ids = (
+            snapshot.chunk_ids
+            if point_ids is None
+            else tuple(dict.fromkeys(point_ids))
         )
-        chunk_statuses_before = [chunk.vector_status for chunk in chunks]
-        uow.child_chunks.mark_failed(chunks)
-        chunk_state_updated_count = sum(
-            chunk_status_before != chunk.vector_status
-            for chunk_status_before, chunk in zip(chunk_statuses_before, chunks)
+        if compensation_point_ids:
+            resolved_vector_store = (
+                vector_store or self._ports.vector_store_factory()
+            )
+            started_at_ms = now_ms()
+            if index_logger is not None:
+                started_at_ms = index_logger.compensation_started(
+                    confirmed_point_count=len(compensation_point_ids),
+                    uncertain_point_count=0,
+                )
+            try:
+                resolved_vector_store.delete_points(
+                    list(compensation_point_ids)
+                )
+            except Exception as exc:
+                if index_logger is not None:
+                    index_logger.compensation_failed(
+                        error=exc,
+                        confirmed_point_count=len(compensation_point_ids),
+                        uncertain_point_count=0,
+                        point_count=len(compensation_point_ids),
+                        started_at_ms=started_at_ms,
+                    )
+                raise
+            if index_logger is not None:
+                index_logger.compensation_completed(
+                    requested_point_count=len(compensation_point_ids),
+                    started_at_ms=started_at_ms,
+                )
+
+        return self._complete(
+            snapshot=snapshot,
+            operation_id=operation_id,
+            chunk_ids=snapshot.chunk_ids,
         )
-        if document.status == DocumentStatus.INDEXING.value:
-            document.status = DocumentStatus.FAILED.value
-        uow.flush()
-        uow.commit()
-        return IndexFailureStateResult(
-            document_state_updated=status_before != document.status,
-            chunk_state_updated_count=chunk_state_updated_count,
-            status_before=status_before,
-            status_after=document.status,
-        )
+
+    def _prepare(
+        self,
+        *,
+        document_id: int,
+        operation_id: str,
+    ) -> IndexingCompensationSnapshot | None:
+        with self._ports.uow_factory() as uow:
+            document = uow.documents.get_by_id_for_update(document_id)
+            if (
+                document is None
+                or document.active_operation_id != operation_id
+                or document.status
+                not in {
+                    DocumentStatus.INDEXING.value,
+                    DocumentStatus.FAILED.value,
+                }
+            ):
+                return None
+            status_before = document.status
+            chunks = uow.child_chunks.list_indexable_by_doc_id(
+                document.id,
+                {"indexing"},
+            )
+            snapshot = IndexingCompensationSnapshot(
+                document_id=document.id,
+                chunk_ids=tuple(chunk.id for chunk in chunks),
+                status_before=status_before,
+            )
+            if document.status == DocumentStatus.INDEXING.value:
+                document.status = DocumentStatus.FAILED.value
+                uow.flush()
+                uow.commit()
+            return snapshot
+
+    def _complete(
+        self,
+        *,
+        snapshot: IndexingCompensationSnapshot,
+        operation_id: str,
+        chunk_ids: tuple[int, ...],
+    ) -> IndexFailureStateResult:
+        with self._ports.uow_factory() as uow:
+            document = uow.documents.get_by_id_for_update(
+                snapshot.document_id
+            )
+            if (
+                document is None
+                or document.active_operation_id != operation_id
+                or document.status != DocumentStatus.FAILED.value
+            ):
+                return NO_INDEX_FAILURE_STATE_CHANGE
+            chunks = uow.child_chunks.list_by_ids_for_update(
+                document.id,
+                chunk_ids,
+            )
+            chunk_statuses_before = [
+                chunk.vector_status for chunk in chunks
+            ]
+            uow.child_chunks.mark_failed(chunks)
+            chunk_state_updated_count = sum(
+                before != chunk.vector_status
+                for before, chunk in zip(chunk_statuses_before, chunks)
+            )
+            document.active_operation_id = None
+            uow.flush()
+            uow.commit()
+            return IndexFailureStateResult(
+                document_state_updated=(
+                    snapshot.status_before != document.status
+                ),
+                chunk_state_updated_count=chunk_state_updated_count,
+                status_before=snapshot.status_before,
+                status_after=document.status,
+            )
 
 
 def _handle_indexing_failure(
@@ -584,15 +733,22 @@ def _handle_indexing_failure(
     failure_result = NO_INDEX_FAILURE_STATE_CHANGE
     if context is not None:
         try:
-            failure_result = _fail_indexing(
-                document_id,
-                _context_chunk_ids(context),
-                error,
+            failure_result = IndexVectorsCompensator(
                 ports=ports,
+            ).compensate(
+                document_id=document_id,
+                operation_id=context.operation_id,
+                point_ids=tuple(
+                    dict.fromkeys(
+                        confirmed_point_ids + uncertain_point_ids
+                    )
+                ),
+                vector_store=vector_store,
+                index_logger=index_logger,
             )
         except Exception:
             logger.exception(
-                "向量索引失败状态登记失败",
+                "向量索引补偿失败",
                 extra={"document_id": document_id},
             )
 
@@ -611,38 +767,6 @@ def _handle_indexing_failure(
         uncertain_point_count=len(uncertain_point_ids),
     )
 
-    compensation_point_ids = tuple(
-        dict.fromkeys(confirmed_point_ids + uncertain_point_ids)
-    )
-    if vector_store is None or not compensation_point_ids:
-        return failure_result
-    compensation_started_at_ms = now_ms()
-    compensation_started_at_ms = index_logger.compensation_started(
-        confirmed_point_count=len(confirmed_point_ids),
-        uncertain_point_count=len(uncertain_point_ids),
-    )
-    try:
-        vector_store.delete_points(list(compensation_point_ids))
-        index_logger.compensation_completed(
-            requested_point_count=len(compensation_point_ids),
-            started_at_ms=compensation_started_at_ms,
-        )
-    except Exception as compensation_error:
-        index_logger.compensation_failed(
-            error=compensation_error,
-            confirmed_point_count=len(confirmed_point_ids),
-            uncertain_point_count=len(uncertain_point_ids),
-            point_count=len(compensation_point_ids),
-            started_at_ms=compensation_started_at_ms,
-        )
-        logger.exception(
-            "Qdrant 索引补偿删除失败",
-            extra={
-                "document_id": document_id,
-                "confirmed_point_count": len(confirmed_point_ids),
-                "uncertain_point_count": len(uncertain_point_ids),
-            },
-        )
     return failure_result
 
 

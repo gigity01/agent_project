@@ -81,8 +81,17 @@ class _ChunkBuildResult:
 class _DocumentChunkLogger:
     instances = []
 
-    def __init__(self, *, document_id=None) -> None:
+    def __init__(
+        self,
+        *,
+        document_id=None,
+        operation_context=None,
+    ) -> None:
         self.document_id = document_id
+        self.operation_context = (
+            operation_context
+            or SimpleNamespace(operation_id="operation-test")
+        )
         self.failed_fields = None
         self.__class__.instances.append(self)
 
@@ -186,9 +195,12 @@ def _load_service_module():
         original_claim = module._claim_chunking
         original_complete = module._complete_chunking
         original_fail = module._fail_chunking
-        module._claim_chunking = lambda document_id, *, ports=None: (
+        module._claim_chunking = lambda document_id, *, operation_id=(
+            "operation-test"
+        ), ports=None: (
             original_claim(
                 document_id,
+                operation_id=operation_id,
                 ports=ports or module.test_ports,
             )
         )
@@ -199,9 +211,12 @@ def _load_service_module():
             )
         )
         module._fail_chunking = (
-            lambda document_id, error, *, ports=None: original_fail(
+            lambda document_id, error, *, operation_id=(
+                "operation-test"
+            ), ports=None: original_fail(
                 document_id,
                 error,
+                operation_id=operation_id,
                 ports=ports or module.test_ports,
             )
         )
@@ -346,7 +361,13 @@ def _document(
     storage_status: str = DocumentStorageStatus.ACTIVE.value,
     cleaned_uri: str | None = "cleaned.md",
     active_content_hash: str | None = "active-hash",
+    active_operation_id: str | None = None,
 ) -> SimpleNamespace:
+    if (
+        active_operation_id is None
+        and status == DocumentStatus.CHUNKING.value
+    ):
+        active_operation_id = "operation-test"
     return SimpleNamespace(
         id=1,
         doc_code="DOC_001",
@@ -361,6 +382,7 @@ def _document(
         lifecycle_status=lifecycle_status,
         storage_status=storage_status,
         active_content_hash=active_content_hash,
+        active_operation_id=active_operation_id,
     )
 
 
@@ -447,6 +469,7 @@ class DocumentChunkingServiceTest(unittest.TestCase):
         context = self.service._claim_chunking(document.id)
 
         self.assertEqual(document.status, DocumentStatus.CHUNKING.value)
+        self.assertEqual(document.active_operation_id, "operation-test")
         self.assertEqual(context.cleaned_path, Path("artifact.md"))
         self.assertEqual(context.process_metadata, {"headings": 2})
         self.assertEqual(factory.instances[0].documents.locked_ids, [document.id])
@@ -683,6 +706,7 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             version=document.version,
             process_metadata={},
             status_before=DocumentStatus.PROCESSED.value,
+            operation_id="operation-test",
         )
         result = self.service.ChunkingExecutionResult(
             context=context,
@@ -702,6 +726,7 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             ],
         )
         self.assertEqual(document.status, DocumentStatus.CHUNKED.value)
+        self.assertIsNone(document.active_operation_id)
         self.assertEqual(response.parent_count, 2)
         self.assertEqual(response.child_count, 2)
         self.assertEqual(complete_uow.commit_count, 1)
