@@ -19,9 +19,10 @@ from app.agent_runtime.context import (
 from app.agent_runtime.errors import ToolNotAvailableError
 from app.modules.document.agent_tools.catalog import (
     DOCUMENT_COLLECTOR_TOOLS,
-    DOCUMENT_EXECUTOR_TOOLS,
-    get_document_tool_descriptors,
+    get_document_executor_tool_descriptors,
+    get_document_executor_tools,
     resolve_document_tool,
+    resolve_document_executor_tool,
 )
 from app.modules.document.agent_tools.command_tools import (
     process_document,
@@ -154,6 +155,8 @@ def _context(
         document_services=services,
         context_services=ContextToolServices(),
         workflow_id="workflow-1",
+        execution_id="execution-1",
+        operation_id="operation-1",
         attempt=2,
         audit_logger=AgentToolAuditLogger(writer),
     )
@@ -264,8 +267,8 @@ class DocumentAgentToolsTest(unittest.TestCase):
             self.assertEqual(operation_context.attempt, 2)
             operation_contexts.append(operation_context)
         self.assertEqual(
-            len({item.operation_id for item in operation_contexts}),
-            3,
+            {item.operation_id for item in operation_contexts},
+            {"operation-1"},
         )
 
     def test_business_rejection_is_structured(self) -> None:
@@ -351,11 +354,26 @@ class DocumentAgentToolsTest(unittest.TestCase):
         )
         self.assertEqual(completed["trace_id"], "trace-1")
         self.assertEqual(completed["task_id"], "task-1")
+        self.assertEqual(completed["workflow_id"], "workflow-1")
+        self.assertEqual(completed["execution_id"], "execution-1")
+        self.assertEqual(completed["operation_id"], "operation-1")
+        self.assertEqual(completed["attempt"], 2)
         self.assertEqual(completed["resource_refs"], ["document:7"])
 
-    def test_catalogs_expose_only_role_appropriate_tools(self) -> None:
+    def test_catalogs_expose_only_capability_appropriate_tools(self) -> None:
         collector_names = {tool.name for tool in DOCUMENT_COLLECTOR_TOOLS}
-        executor_names = {tool.name for tool in DOCUMENT_EXECUTOR_TOOLS}
+        process_names = {
+            tool.name
+            for tool in get_document_executor_tools("document.process")
+        }
+        chunks_names = {
+            tool.name
+            for tool in get_document_executor_tools("document.build_chunks")
+        }
+        vectors_names = {
+            tool.name
+            for tool in get_document_executor_tools("document.index_vectors")
+        }
 
         self.assertEqual(
             collector_names,
@@ -372,14 +390,47 @@ class DocumentAgentToolsTest(unittest.TestCase):
             },
         )
         self.assertNotIn("process_document", collector_names)
-        self.assertIn("process_document", executor_names)
-        descriptors = get_document_tool_descriptors("document_executor")
+        self.assertEqual(
+            process_names,
+            {
+                "get_document",
+                "get_document_pipeline_state",
+                "process_document",
+            },
+        )
+        self.assertEqual(
+            chunks_names,
+            {
+                "get_document",
+                "get_document_pipeline_state",
+                "get_document_chunk_statistics",
+                "build_document_chunks",
+            },
+        )
+        self.assertEqual(
+            vectors_names,
+            {
+                "get_document",
+                "get_document_pipeline_state",
+                "get_document_chunk_statistics",
+                "index_document_vectors",
+            },
+        )
+        descriptors = get_document_executor_tool_descriptors(
+            "document.process"
+        )
         process_descriptor = next(
             item for item in descriptors if item.name == "process_document"
         )
         self.assertTrue(process_descriptor.side_effect)
-        self.assertTrue(process_descriptor.approval_required)
-        self.assertTrue(process_document.needs_approval)
+        self.assertFalse(process_descriptor.approval_required)
+        self.assertFalse(process_document.needs_approval)
+
+        with self.assertRaises(ToolNotAvailableError):
+            resolve_document_executor_tool(
+                "document.process",
+                "index_document_vectors",
+            )
 
     def test_unregistered_tool_cannot_be_resolved(self) -> None:
         with self.assertRaises(ToolNotAvailableError):

@@ -13,6 +13,8 @@ class TaskSnapshot(BaseModel):
     task_id: str
     plan_id: str
     workflow_id: str
+    conversation_id: str
+    turn_id: str
     capability_code: str
     input_json: dict[str, Any]
     sequence: int
@@ -20,6 +22,7 @@ class TaskSnapshot(BaseModel):
     max_attempts: int
     execution_id: str
     operation_id: str
+    agent_run_id: str
     executor_code: str
 
 
@@ -34,8 +37,11 @@ class TaskRuntimeContext(BaseModel):
     workflow_id: str
     plan_id: str
     task_id: str
+    conversation_id: str
+    turn_id: str
     execution_id: str
     operation_id: str
+    agent_run_id: str
     attempt: int
 
 

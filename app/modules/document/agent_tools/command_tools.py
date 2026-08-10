@@ -1,10 +1,13 @@
 """Document 状态守卫型命令 Function Tools。"""
 
+from collections.abc import Callable
+from typing import Any
+
 from agents import RunContextWrapper, function_tool
 
 from app.agent_runtime.audit import execute_audited_tool_call
 from app.agent_runtime.context import AgentToolContext
-from app.agent_runtime.errors import safe_tool_error_function
+from app.agent_runtime.errors import AgentToolScopeError, safe_tool_error_function
 from app.modules.document.agent_tools.schemas import (
     BuildDocumentChunksToolInput,
     BuildDocumentChunksToolOutput,
@@ -24,8 +27,29 @@ DOCUMENT_INDEX_VECTORS_PERMISSION = "document:vectors:index"
 def _operation_context(context: AgentToolContext) -> DocumentOperationContext:
     return DocumentOperationContext.create(
         workflow_id=context.workflow_id,
+        operation_id=context.operation_id,
         attempt=context.attempt,
     )
+
+
+def _require_task_document_scope(
+    context: AgentToolContext,
+    document_id: int,
+) -> None:
+    if (
+        context.task_document_id is not None
+        and context.task_document_id != document_id
+    ):
+        raise AgentToolScopeError("Document Command 超出 Task 资源范围")
+
+
+def _execute_in_task_scope(
+    context: AgentToolContext,
+    document_id: int,
+    operation: Callable[[], Any],
+) -> Any:
+    _require_task_document_scope(context, document_id)
+    return operation()
 
 
 def process_document_handler(
@@ -40,11 +64,13 @@ def process_document_handler(
         required_permissions=(DOCUMENT_PROCESS_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="document_processed",
-        operation=lambda: (
-            ctx.context.document_services.process_document.execute(
+        operation=lambda: _execute_in_task_scope(
+            ctx.context,
+            tool_input.document_id,
+            lambda: ctx.context.document_services.process_document.execute(
                 tool_input.document_id,
                 operation_context=_operation_context(ctx.context),
-            )
+            ),
         ),
     )
     if execution.error is not None:
@@ -70,7 +96,6 @@ process_document = function_tool(
     name_override="process_document",
     description_override="处理或转换一份已上传文档，生成标准化清洗文本。",
     failure_error_function=safe_tool_error_function,
-    needs_approval=True,
 )(process_document_handler)
 
 
@@ -86,9 +111,13 @@ def build_document_chunks_handler(
         required_permissions=(DOCUMENT_BUILD_CHUNKS_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="document_chunks_built",
-        operation=lambda: ctx.context.document_services.build_chunks.execute(
+        operation=lambda: _execute_in_task_scope(
+            ctx.context,
             tool_input.document_id,
-            operation_context=_operation_context(ctx.context),
+            lambda: ctx.context.document_services.build_chunks.execute(
+                tool_input.document_id,
+                operation_context=_operation_context(ctx.context),
+            ),
         ),
     )
     if execution.error is not None:
@@ -115,7 +144,6 @@ build_document_chunks = function_tool(
     name_override="build_document_chunks",
     description_override="基于文档清洗产物构建父级语义块和可向量化子块。",
     failure_error_function=safe_tool_error_function,
-    needs_approval=True,
 )(build_document_chunks_handler)
 
 
@@ -131,9 +159,13 @@ def index_document_vectors_handler(
         required_permissions=(DOCUMENT_INDEX_VECTORS_PERMISSION,),
         resource_refs=resource_refs,
         success_result_code="document_vectors_indexed",
-        operation=lambda: ctx.context.document_services.index_vectors.execute(
+        operation=lambda: _execute_in_task_scope(
+            ctx.context,
             tool_input.document_id,
-            operation_context=_operation_context(ctx.context),
+            lambda: ctx.context.document_services.index_vectors.execute(
+                tool_input.document_id,
+                operation_context=_operation_context(ctx.context),
+            ),
         ),
     )
     if execution.error is not None:
@@ -161,5 +193,4 @@ index_document_vectors = function_tool(
     name_override="index_document_vectors",
     description_override="为文档中尚未完成索引的子块生成向量并写入 Qdrant。",
     failure_error_function=safe_tool_error_function,
-    needs_approval=True,
 )(index_document_vectors_handler)

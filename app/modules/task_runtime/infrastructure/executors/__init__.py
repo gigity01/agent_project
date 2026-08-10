@@ -1,13 +1,24 @@
-"""确定性 Task Executor。"""
+"""Task Executor 实现。"""
+
+from app.modules.task_runtime.infrastructure.executors.agent import (
+    AgentTaskExecutor,
+    adapt_build_document_chunks_output,
+    adapt_index_document_vectors_output,
+    adapt_process_document_output,
+)
 
 from app.modules.task_runtime.infrastructure.executors.document import (
-    BuildDocumentChunksExecutor,
-    IndexDocumentVectorsExecutor,
-    ProcessDocumentExecutor,
+    DeterministicBuildDocumentChunksExecutor,
+    DeterministicIndexDocumentVectorsExecutor,
+    DeterministicProcessDocumentExecutor,
 )
 
 __all__ = [
-    "BuildDocumentChunksExecutor",
-    "IndexDocumentVectorsExecutor",
-    "ProcessDocumentExecutor",
+    "AgentTaskExecutor",
+    "DeterministicBuildDocumentChunksExecutor",
+    "DeterministicIndexDocumentVectorsExecutor",
+    "DeterministicProcessDocumentExecutor",
+    "adapt_build_document_chunks_output",
+    "adapt_index_document_vectors_output",
+    "adapt_process_document_output",
 ]

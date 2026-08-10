@@ -180,11 +180,16 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             collectors=collectors,
         )
         self.assertEqual(
-            {tool.name for tool in configured_runner.agent.tools},
+            {tool.name for tool in configured_runner.evidence_agent.tools},
             {
                 "collect_document_information",
                 "collect_context_information",
                 "collect_operation_information",
+            },
+        )
+        self.assertEqual(
+            {tool.name for tool in configured_runner.commit_agent.tools},
+            {
                 "create_process_document_task",
                 "create_build_chunks_task",
                 "create_index_vectors_task",
@@ -199,7 +204,7 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         }
         exposed_collector_tools = [
             tool
-            for tool in configured_runner.agent.tools
+            for tool in configured_runner.evidence_agent.tools
             if tool.name in collector_tool_names
         ]
         self.assertEqual(len(exposed_collector_tools), 3)
@@ -207,19 +212,30 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             all(tool._is_agent_tool for tool in exposed_collector_tools)
         )
         self.assertTrue(
-            configured_runner.agent.model_settings.parallel_tool_calls
+            configured_runner.evidence_agent.model_settings.parallel_tool_calls
+        )
+        self.assertFalse(
+            configured_runner.commit_agent.model_settings.parallel_tool_calls
         )
         self.assertEqual(
-            configured_runner.run_config.tool_execution.max_function_tool_concurrency,
+            configured_runner.evidence_run_config.tool_execution.max_function_tool_concurrency,
             3,
         )
-        self.assertIsNone(configured_runner.agent.output_type)
         self.assertEqual(
-            [handoff.tool_name for handoff in configured_runner.agent.handoffs],
+            configured_runner.commit_run_config.tool_execution.max_function_tool_concurrency,
+            1,
+        )
+        self.assertIsNone(configured_runner.commit_agent.output_type)
+        self.assertEqual(configured_runner.evidence_agent.handoffs, [])
+        self.assertEqual(
+            [
+                handoff.tool_name
+                for handoff in configured_runner.commit_agent.handoffs
+            ],
             ["clarification_handoff"],
         )
         self.assertEqual(
-            configured_runner.agent.tool_use_behavior,
+            configured_runner.commit_agent.tool_use_behavior,
             {
                 "stop_at_tool_names": [
                     "finalize_plan",
@@ -227,6 +243,44 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
                 ]
             },
         )
+
+    async def test_planner_continues_commit_from_full_evidence_history(self) -> None:
+        collectors = build_collector_agents(
+            model="test-model",
+            model_settings=ModelSettings(parallel_tool_calls=False),
+        )
+        configured_runner = build_planner_agent(
+            model="test-model",
+            model_settings=ModelSettings(parallel_tool_calls=False),
+            collectors=collectors,
+        )
+        evidence_result = mock.Mock()
+        evidence_history = [{"role": "user", "content": "evidence"}]
+        evidence_result.to_input_list.return_value = evidence_history
+        commit_result = mock.Mock()
+        context = mock.Mock()
+
+        with mock.patch(
+            "app.agents.planner.Runner.run",
+            new=mock.AsyncMock(side_effect=[evidence_result, commit_result]),
+        ) as run:
+            result = await configured_runner.run(
+                user_input="处理文档 7",
+                context=context,
+            )
+
+        self.assertIs(result, commit_result)
+        self.assertEqual(run.await_count, 2)
+        evidence_call, commit_call = run.await_args_list
+        self.assertIs(evidence_call.args[0], configured_runner.evidence_agent)
+        self.assertEqual(evidence_call.args[1], "处理文档 7")
+        self.assertIs(commit_call.args[0], configured_runner.commit_agent)
+        self.assertIs(commit_call.args[1], evidence_history)
+        self.assertIs(
+            commit_call.kwargs["run_config"],
+            configured_runner.commit_run_config,
+        )
+        evidence_result.to_input_list.assert_called_once_with()
 
     async def test_routed_turn_runs_planner_and_publishes_database_plan(self) -> None:
         ports = PlanningApplicationPorts(

@@ -1,4 +1,4 @@
-"""直接调用 Document Use Case 的确定性 Executor。"""
+"""未启用 Agent Provider 时直接调用 Use Case 的确定性后备 Executor。"""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ async def _execute_document_use_case(call):
         ) from exc
 
 
-class ProcessDocumentExecutor:
+class DeterministicProcessDocumentExecutor:
     def __init__(self, use_case) -> None:
         self._use_case = use_case
 
@@ -70,7 +70,7 @@ class ProcessDocumentExecutor:
         )
 
 
-class BuildDocumentChunksExecutor:
+class DeterministicBuildDocumentChunksExecutor:
     def __init__(self, use_case) -> None:
         self._use_case = use_case
 
@@ -98,7 +98,7 @@ class BuildDocumentChunksExecutor:
         )
 
 
-class IndexDocumentVectorsExecutor:
+class DeterministicIndexDocumentVectorsExecutor:
     def __init__(self, use_case) -> None:
         self._use_case = use_case
 

@@ -14,6 +14,10 @@ class AgentToolPermissionError(PermissionError):
     """调用上下文缺少 Tool 所需权限。"""
 
 
+class AgentToolScopeError(PermissionError):
+    """Tool 请求超出已授权 Task 的资源范围。"""
+
+
 class ToolNotAvailableError(LookupError):
     """指定角色的 Catalog 未注册目标 Tool。"""
 
@@ -54,6 +58,15 @@ def classify_tool_error(
             outcome="rejected",
             result_code="permission_denied",
             message="当前 Agent 没有调用该工具的权限",
+            retryable=False,
+            resource_refs=resource_refs,
+        )
+
+    if isinstance(error, AgentToolScopeError):
+        return ToolErrorDetails(
+            outcome="rejected",
+            result_code="task_scope_violation",
+            message="工具请求超出当前 Task 的授权资源范围",
             retryable=False,
             resource_refs=resource_refs,
         )

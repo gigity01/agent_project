@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
+import json
 import os
 from types import SimpleNamespace
 import unittest
@@ -28,11 +30,16 @@ with (
         },
     ),
 ):
+    from agents import ModelSettings, RunContextWrapper
+
     from app.agent_runtime.audit import AgentToolAuditLogger
     from app.agent_runtime.context import (
         ContextToolServices,
         DocumentToolServices,
         OperationsToolServices,
+    )
+    from app.agents.document_executors import (
+        build_document_executor_agents,
     )
     from app.infrastructure.database.base import Base
     from app.infrastructure.database.model_registry import load_all_models
@@ -85,6 +92,25 @@ with (
     )
     from app.modules.conversation.presentation.router import router
     from app.modules.document.application.errors import DocumentApplicationError
+    from app.modules.document.agent_tools.command_tools import (
+        DOCUMENT_BUILD_CHUNKS_PERMISSION,
+        DOCUMENT_INDEX_VECTORS_PERMISSION,
+        DOCUMENT_PROCESS_PERMISSION,
+        build_document_chunks_handler,
+        index_document_vectors_handler,
+        process_document_handler,
+    )
+    from app.modules.document.agent_tools.query_tools import (
+        DOCUMENT_READ_PERMISSION,
+    )
+    from app.modules.document.agent_tools.schemas import (
+        BuildDocumentChunksToolInput,
+        BuildDocumentChunksToolOutput,
+        IndexDocumentVectorsToolInput,
+        IndexDocumentVectorsToolOutput,
+        ProcessDocumentToolInput,
+        ProcessDocumentToolOutput,
+    )
     from app.modules.messaging.application.outbox import OutboxPublisher
     from app.modules.messaging.infrastructure.persistence.models import (
         InboxEvent,
@@ -121,9 +147,10 @@ with (
     )
     from app.modules.task_runtime.application.runtime import TaskRuntimeService
     from app.modules.task_runtime.infrastructure.executors import (
-        BuildDocumentChunksExecutor,
-        IndexDocumentVectorsExecutor,
-        ProcessDocumentExecutor,
+        AgentTaskExecutor,
+        adapt_build_document_chunks_output,
+        adapt_index_document_vectors_output,
+        adapt_process_document_output,
     )
     from app.modules.task_runtime.infrastructure.persistence.models import (
         TaskExecution,
@@ -378,8 +405,36 @@ class _DocumentUseCase:
         return SimpleNamespace(
             document_id=document_id,
             status="indexed",
+            total_chunks=2,
             indexed_chunks=2,
             failed_chunks=0,
+        )
+
+
+class _RuntimeExecutorAgentRunner:
+    """离线执行 Agent 已选定的唯一 Command Tool。"""
+
+    async def __call__(self, _agent, agent_input, **kwargs):
+        data = json.loads(agent_input)
+        payload = data["task_payload"]
+        context = RunContextWrapper(kwargs["context"])
+        handlers = {
+            "document.process": (
+                process_document_handler,
+                ProcessDocumentToolInput,
+            ),
+            "document.build_chunks": (
+                build_document_chunks_handler,
+                BuildDocumentChunksToolInput,
+            ),
+            "document.index_vectors": (
+                index_document_vectors_handler,
+                IndexDocumentVectorsToolInput,
+            ),
+        }
+        handler, input_model = handlers[data["executor_code"]]
+        return SimpleNamespace(
+            final_output=handler(context, input_model.model_validate(payload))
         )
 
 
@@ -475,6 +530,17 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
         )
         build_chunks = _DocumentUseCase("build_chunks", calls)
         index_vectors = _DocumentUseCase("index_vectors", calls)
+        executor_services = replace(
+            _unused_document_tool_services(),
+            process_document=process,
+            build_chunks=build_chunks,
+            index_vectors=index_vectors,
+        )
+        executor_agents = build_document_executor_agents(
+            model="test-model",
+            model_settings=ModelSettings(parallel_tool_calls=True),
+        )
+        executor_runner = _RuntimeExecutorAgentRunner()
         task_runtime = TaskRuntimeService(
             ports=TaskRuntimePorts(
                 uow_factory=self.uow_factory,
@@ -485,12 +551,62 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
             capabilities=build_capability_registry(),
             executors=ExecutorRegistry(
                 {
-                    "document.process": ProcessDocumentExecutor(process),
-                    "document.build_chunks": BuildDocumentChunksExecutor(
-                        build_chunks
+                    "document.process": AgentTaskExecutor(
+                        agent=executor_agents.process,
+                        executor_code="document.process",
+                        primary_tool_name="process_document",
+                        tool_output_model=ProcessDocumentToolOutput,
+                        output_adapter=adapt_process_document_output,
+                        document_services=executor_services,
+                        permissions=frozenset(
+                            {
+                                DOCUMENT_READ_PERMISSION,
+                                DOCUMENT_PROCESS_PERMISSION,
+                            }
+                        ),
+                        run_config=executor_agents.run_config,
+                        runner=executor_runner,
+                        audit_logger_factory=lambda: AgentToolAuditLogger(
+                            _AuditWriter()
+                        ),
                     ),
-                    "document.index_vectors": IndexDocumentVectorsExecutor(
-                        index_vectors
+                    "document.build_chunks": AgentTaskExecutor(
+                        agent=executor_agents.build_chunks,
+                        executor_code="document.build_chunks",
+                        primary_tool_name="build_document_chunks",
+                        tool_output_model=BuildDocumentChunksToolOutput,
+                        output_adapter=adapt_build_document_chunks_output,
+                        document_services=executor_services,
+                        permissions=frozenset(
+                            {
+                                DOCUMENT_READ_PERMISSION,
+                                DOCUMENT_BUILD_CHUNKS_PERMISSION,
+                            }
+                        ),
+                        run_config=executor_agents.run_config,
+                        runner=executor_runner,
+                        audit_logger_factory=lambda: AgentToolAuditLogger(
+                            _AuditWriter()
+                        ),
+                    ),
+                    "document.index_vectors": AgentTaskExecutor(
+                        agent=executor_agents.index_vectors,
+                        executor_code="document.index_vectors",
+                        primary_tool_name="index_document_vectors",
+                        tool_output_model=IndexDocumentVectorsToolOutput,
+                        output_adapter=adapt_index_document_vectors_output,
+                        document_services=executor_services,
+                        permissions=frozenset(
+                            {
+                                DOCUMENT_READ_PERMISSION,
+                                DOCUMENT_INDEX_VECTORS_PERMISSION,
+                            }
+                        ),
+                        run_config=executor_agents.run_config,
+                        runner=executor_runner,
+                        audit_logger_factory=lambda: AgentToolAuditLogger(
+                            _AuditWriter()
+                        ),
                     ),
                 }
             ),

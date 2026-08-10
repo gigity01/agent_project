@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from agents import ModelSettings
 
 from app.agents.collectors import (
     CollectorRequest,
     CollectorResult,
+    _extract_collector_result,
     build_collector_agents,
 )
 
 
-class CollectorAgentsTest(unittest.TestCase):
+class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.collectors = build_collector_agents(
             model="test-model",
@@ -56,6 +58,7 @@ class CollectorAgentsTest(unittest.TestCase):
         ):
             self.assertIs(agent.output_type, CollectorResult)
             self.assertEqual(agent.handoffs, [])
+            self.assertFalse(agent.model_settings.parallel_tool_calls)
 
     def test_planner_receives_three_agent_as_tools(self) -> None:
         tools = self.collectors.planner_tools
@@ -87,6 +90,19 @@ class CollectorAgentsTest(unittest.TestCase):
 
         self.assertEqual(request.document_ids, [7])
         self.assertEqual(request.workflow_ids, ["workflow-1"])
+
+    async def test_custom_output_extractor_returns_stable_json(self) -> None:
+        result = CollectorResult(
+            collector_code="document_collector",
+            summary="文档状态已验证",
+            resource_refs=["document:7"],
+        )
+
+        output = await _extract_collector_result(
+            SimpleNamespace(final_output=result)
+        )
+
+        self.assertEqual(CollectorResult.model_validate_json(output), result)
 
 
 if __name__ == "__main__":

@@ -29,7 +29,12 @@ from app.modules.document.agent_tools.query_tools import (
 )
 
 
-DocumentToolRole = Literal["document_collector", "document_executor"]
+DocumentToolRole = Literal["document_collector"]
+DocumentExecutorCapability = Literal[
+    "document.process",
+    "document.build_chunks",
+    "document.index_vectors",
+]
 
 
 @dataclass(frozen=True)
@@ -74,7 +79,7 @@ def _command_registration(
             idempotency="state_guarded",
             required_permissions=[permission],
             resource_types=["document"],
-            approval_required=True,
+            approval_required=False,
         ),
     )
 
@@ -114,17 +119,47 @@ DOCUMENT_COLLECTOR_CATALOG = (
     ),
 )
 
-DOCUMENT_EXECUTOR_CATALOG = (
+DOCUMENT_PROCESS_EXECUTOR_CATALOG = (
     _query_registration(get_document, "获取文档完整状态"),
+    _query_registration(
+        get_document_pipeline_state,
+        "获取文档处理、切块和索引状态",
+    ),
     _command_registration(
         process_document,
         "处理或转换文档",
         DOCUMENT_PROCESS_PERMISSION,
     ),
+)
+
+DOCUMENT_BUILD_CHUNKS_EXECUTOR_CATALOG = (
+    _query_registration(get_document, "获取文档完整状态"),
+    _query_registration(
+        get_document_pipeline_state,
+        "获取文档处理、切块和索引状态",
+    ),
+    _query_registration(
+        get_document_chunk_statistics,
+        "获取文档切块与向量状态统计",
+        resource_types=["document", "parent_block", "child_chunk"],
+    ),
     _command_registration(
         build_document_chunks,
         "构建文档父块和子块",
         DOCUMENT_BUILD_CHUNKS_PERMISSION,
+    ),
+)
+
+DOCUMENT_INDEX_VECTORS_EXECUTOR_CATALOG = (
+    _query_registration(get_document, "获取文档完整状态"),
+    _query_registration(
+        get_document_pipeline_state,
+        "获取文档处理、切块和索引状态",
+    ),
+    _query_registration(
+        get_document_chunk_statistics,
+        "获取文档切块与向量状态统计",
+        resource_types=["document", "parent_block", "child_chunk"],
     ),
     _command_registration(
         index_document_vectors,
@@ -133,11 +168,16 @@ DOCUMENT_EXECUTOR_CATALOG = (
     ),
 )
 
+DOCUMENT_EXECUTOR_CATALOGS: dict[
+    str, tuple[DocumentToolRegistration, ...]
+] = {
+    "document.process": DOCUMENT_PROCESS_EXECUTOR_CATALOG,
+    "document.build_chunks": DOCUMENT_BUILD_CHUNKS_EXECUTOR_CATALOG,
+    "document.index_vectors": DOCUMENT_INDEX_VECTORS_EXECUTOR_CATALOG,
+}
+
 DOCUMENT_COLLECTOR_TOOLS = tuple(
     registration.tool for registration in DOCUMENT_COLLECTOR_CATALOG
-)
-DOCUMENT_EXECUTOR_TOOLS = tuple(
-    registration.tool for registration in DOCUMENT_EXECUTOR_CATALOG
 )
 
 
@@ -146,9 +186,18 @@ def _catalog_for_role(
 ) -> tuple[DocumentToolRegistration, ...]:
     if role == "document_collector":
         return DOCUMENT_COLLECTOR_CATALOG
-    if role == "document_executor":
-        return DOCUMENT_EXECUTOR_CATALOG
     raise ToolNotAvailableError(f"未知 Document Tool 角色: {role}")
+
+
+def _catalog_for_executor(
+    capability_code: str,
+) -> tuple[DocumentToolRegistration, ...]:
+    try:
+        return DOCUMENT_EXECUTOR_CATALOGS[capability_code]
+    except KeyError as exc:
+        raise ToolNotAvailableError(
+            f"未知 Document Executor Capability: {capability_code}"
+        ) from exc
 
 
 def get_document_tools(role: DocumentToolRole) -> tuple[FunctionTool, ...]:
@@ -173,4 +222,35 @@ def resolve_document_tool(
             return item.tool
     raise ToolNotAvailableError(
         f"Tool {tool_name!r} 未向角色 {role!r} 注册"
+    )
+
+
+def get_document_executor_tools(
+    capability_code: str,
+) -> tuple[FunctionTool, ...]:
+    """只返回指定 Capability Executor 可见的 Tool。"""
+    return tuple(
+        item.tool for item in _catalog_for_executor(capability_code)
+    )
+
+
+def get_document_executor_tool_descriptors(
+    capability_code: str,
+) -> tuple[ToolDescriptor, ...]:
+    """返回指定 Capability Executor 的受限能力描述。"""
+    return tuple(
+        item.descriptor for item in _catalog_for_executor(capability_code)
+    )
+
+
+def resolve_document_executor_tool(
+    capability_code: str,
+    tool_name: str,
+) -> FunctionTool:
+    """仅在指定 Capability Catalog 内解析 Tool。"""
+    for item in _catalog_for_executor(capability_code):
+        if item.descriptor.name == tool_name:
+            return item.tool
+    raise ToolNotAvailableError(
+        f"Tool {tool_name!r} 未向 Capability {capability_code!r} 注册"
     )

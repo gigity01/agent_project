@@ -24,7 +24,8 @@ Client
   ▼
 FastAPI
   ├─ Context Agent：路由完整用户输入并创建唯一 Turn
-  ├─ Planner：并行收集 Document / Context / Operations 事实
+  ├─ Planner Evidence：最多三路并行收集只读事实
+  ├─ Planner Commit：串行创建 Task、发布 Plan 或澄清
   ├─ MySQL：原子发布 Plan、Task DAG 和 Outbox Event
   └─ 返回 processing / needs_clarification / unsupported / ...
                          │
@@ -32,7 +33,7 @@ FastAPI
 Runtime Worker
   ├─ Outbox Publisher → Redis Stream
   ├─ Event Consumer → Task Runtime / Replan / Aggregation
-  ├─ Document Executor → Process / Chunk / Index Use Case
+  ├─ Capability-scoped Document Executor Agent → 唯一 Command Tool → Use Case
   └─ 聚合结果并完成 Context Turn
                          │
                          ▼
@@ -50,7 +51,7 @@ app/
 ├── main.py
 ├── api/router.py
 ├── workers/runtime_main.py       # 独立 Runtime Worker 入口
-├── agents/                       # Planner、Collector 与 Clarification Agent
+├── agents/                       # Planner、Collector、Clarification 与 Executor Agents
 ├── agent_runtime/                # Agent Tool 公共上下文、策略与审计
 ├── bootstrap/                    # 应用工厂、容器和 lifespan 装配
 ├── config/                       # 环境变量与应用配置
@@ -132,14 +133,18 @@ Conversation 的路由使用 Redis 短锁串行化；MySQL 保存完整事实，
 
 ### 2. Planner 与澄清
 
-Planner 直接持有 Document、Context、Operations 三个独立的只读
-Collector Agent-as-Tool，根据当前请求自主选择需要的 Collector。Planner
-开启 `parallel_tool_calls`，指令约束同一轮最多发出 3 个 Tool Call；
-`max_function_tool_concurrency` 为 3，因此已发出的多个独立 Collector
-可以最多三路并行取证。所需取证返回后，Planner 才能通过 Planning Tools
-创建 Task、发布 Plan、标记不支持，或移交 Clarification Agent 生成问题。三个
-Collector 统一返回 `collector_code`、`summary`、`facts`、`resource_refs` 和
-`gaps` 组成的 `CollectorResult`。
+Planner 是一个逻辑 Agent，但使用两个物理隔离的执行阶段。Evidence Agent 只能看到
+Document、Context、Operations 三个独立的只读 Collector Agent-as-Tool，开启
+`parallel_tool_calls` 且 `max_function_tool_concurrency=3`，因此最多三路并行取证；
+每个 Collector 内部保持串行，并通过统一 extractor 返回由 `collector_code`、
+`summary`、`facts`、`resource_refs` 和 `gaps` 组成的稳定 JSON
+`CollectorResult`。Evidence Run 的完整 Tool Call/Output 历史通过
+`RunResult.to_input_list()` 交给 Commit Agent。
+
+Commit Agent 物理上只看到 Planning Tools 和 Clarification Handoff，关闭
+`parallel_tool_calls` 且 `max_function_tool_concurrency=1`，只能串行创建 Task、
+发布 Plan、标记不支持或生成澄清问题。Collector 与 Planning Tool 不会出现在同一个
+Run 中，因此两类操作的隔离由代码保证，而不是仅依赖 Prompt。
 
 - 每个 Plan 必须包含 1～10 个 Task。
 - `sequence` 必须从 1 开始连续且唯一。
@@ -159,7 +164,23 @@ Plan revision。澄清请求在新 Plan 成功聚合后变为 `resolved`。
 - Inbox 记录抑制已完成事件的重复消费；处理失败的 Stream 消息不 ACK。
 - 同一 Plan 同时只执行一个 Task；只有依赖均成功的 Task 才能领取。
 - Claim、事务外 Executor 调用、Completion/Failure 使用三个独立阶段。
-- 每次执行保存稳定的 `execution_id`、`operation_id`、attempt 和输入快照。
+- 每次执行保存稳定的 `execution_id`、`operation_id`、`agent_run_id`、attempt 和
+  输入快照；这些字段贯穿 Agent Tool 审计与文档阶段日志。
+
+每个 Task 仍对应一个固定 Capability。启用 DeepSeek Provider 时，Runtime 通过通用
+`AgentTaskExecutor` 调用三个 capability-scoped Document Executor Agent：每个 Agent
+只能看到 `get_document`、流水线/切块状态等受限查询 Tool，以及当前 Capability 的
+唯一 Command Tool。Executor 内部关闭并行 Tool Call，允许在命令前多次查询；调用
+`process_document`、`build_document_chunks` 或 `index_document_vectors` 后由
+`StopAtTools` 立即结束 Run。Command Tool 不再二次请求 SDK approval，因为已领取的
+固定 Capability Task 就是授权边界；Command 的 `document_id` 还必须等于 Task Payload
+中的资源范围。
+
+Task 成败只由 Use Case 返回的结构化 Command Tool Output 和确定性 adapter 决定：
+`succeeded` 映射为 Task Output，`rejected` 映射为 blocked，`failed` 保留
+`retryable`；LLM 文本不能成为 Task Result。未配置 DeepSeek Provider 时保留明确命名
+的 deterministic Executor 作为现有非 Agent 启动路径的后备，Task/Plan 模型、
+Capability Registry、claim/complete/fail、重试和 Replan 状态机均不变。
 
 三种内置 Capability 的最大尝试次数均为 3；处理与切块超时为 300 秒，向量索引超时
 为 900 秒。可重试错误默认延迟 30 秒后再次唤醒。不可重试、阻塞或尝试耗尽时请求
@@ -195,7 +216,7 @@ uploaded → processing → processed → chunking → chunked → indexing → 
 
 - `SQLALCHEMY_DATABASE_URL`
 - `DASHSCOPE_API_KEY`
-- `DEEPSEEK_API_KEY`（使用 Context/Planner Agent 时）
+- `DEEPSEEK_API_KEY`（使用 Context、Planner 或 Executor Agent 时）
 
 运行时还需要可访问的 MySQL、Redis、Qdrant、DashScope；复杂办公格式需要 Docling，
 Agent 链路需要 DeepSeek。Redis 在应用和 Worker 启动时都会执行 `PING`，不可用则启动

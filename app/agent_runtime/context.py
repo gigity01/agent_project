@@ -150,6 +150,9 @@ class AgentToolContext:
     planning_services: PlanningToolServices | None = None
     plan_id: str | None = None
     workflow_id: str | None = None
+    execution_id: str | None = None
+    operation_id: str | None = None
+    task_document_id: int | None = None
     attempt: int = 1
     operations_services: OperationsToolServices = field(
         default_factory=OperationsToolServices

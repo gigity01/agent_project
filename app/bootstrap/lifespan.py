@@ -78,6 +78,19 @@ from app.modules.context.application.use_cases import (
 from app.modules.document.application.ports import (
     DocumentApplicationPorts,
 )
+from app.modules.document.agent_tools.command_tools import (
+    DOCUMENT_BUILD_CHUNKS_PERMISSION,
+    DOCUMENT_INDEX_VECTORS_PERMISSION,
+    DOCUMENT_PROCESS_PERMISSION,
+)
+from app.modules.document.agent_tools.query_tools import (
+    DOCUMENT_READ_PERMISSION,
+)
+from app.modules.document.agent_tools.schemas import (
+    BuildDocumentChunksToolOutput,
+    IndexDocumentVectorsToolOutput,
+    ProcessDocumentToolOutput,
+)
 from app.modules.document.application.settings import (
     DocumentIndexingSettings,
     DocumentProcessingSettings,
@@ -187,9 +200,13 @@ from app.modules.task_runtime.application.registry import (
 )
 from app.modules.task_runtime.application.runtime import TaskRuntimeService
 from app.modules.task_runtime.infrastructure.executors import (
-    BuildDocumentChunksExecutor,
-    IndexDocumentVectorsExecutor,
-    ProcessDocumentExecutor,
+    AgentTaskExecutor,
+    DeterministicBuildDocumentChunksExecutor,
+    DeterministicIndexDocumentVectorsExecutor,
+    DeterministicProcessDocumentExecutor,
+    adapt_build_document_chunks_output,
+    adapt_index_document_vectors_output,
+    adapt_process_document_output,
 )
 from app.modules.messaging.application.outbox import OutboxPublisher
 from app.modules.messaging.infrastructure.redis_streams import (
@@ -429,6 +446,21 @@ async def build_container() -> AppContainer:
                 embedding_vector_size=EMBEDDING_VECTOR_SIZE,
             ),
         )
+        document_services = DocumentToolServices(
+            get_document=get_document,
+            list_documents=list_documents,
+            search_documents=search_documents,
+            get_document_pipeline_state=get_document_pipeline_state,
+            list_document_artifacts=list_document_artifacts,
+            search_document_artifacts=search_document_artifacts,
+            list_parent_blocks=list_parent_blocks,
+            list_child_chunks=list_child_chunks,
+            get_document_chunk_statistics=get_document_chunk_statistics,
+            get_knowledge_base_statistics=get_knowledge_base_statistics,
+            process_document=process_document,
+            build_chunks=build_chunks,
+            index_vectors=index_vectors,
+        )
         planner_agent_runner = (
             _build_planner_agent(deepseek_provider, collector_agents)
             if deepseek_provider is not None and collector_agents is not None
@@ -439,27 +471,7 @@ async def build_container() -> AppContainer:
                 ports=planning_ports,
                 planning_use_cases=planning_use_cases,
                 planner_runner=planner_agent_runner,
-                document_services=DocumentToolServices(
-                    get_document=get_document,
-                    list_documents=list_documents,
-                    search_documents=search_documents,
-                    get_document_pipeline_state=(
-                        get_document_pipeline_state
-                    ),
-                    list_document_artifacts=list_document_artifacts,
-                    search_document_artifacts=search_document_artifacts,
-                    list_parent_blocks=list_parent_blocks,
-                    list_child_chunks=list_child_chunks,
-                    get_document_chunk_statistics=(
-                        get_document_chunk_statistics
-                    ),
-                    get_knowledge_base_statistics=(
-                        get_knowledge_base_statistics
-                    ),
-                    process_document=process_document,
-                    build_chunks=build_chunks,
-                    index_vectors=index_vectors,
-                ),
+                document_services=document_services,
                 context_services=ContextToolServices(
                     query_service=context_query_service,
                     get_conversation_turn=get_conversation_turn,
@@ -486,6 +498,71 @@ async def build_container() -> AppContainer:
             if planner_agent_runner is not None
             else None
         )
+        document_executor_agents = (
+            _build_document_executor_agents(deepseek_provider)
+            if deepseek_provider is not None
+            else None
+        )
+        if document_executor_agents is not None:
+            task_executors = {
+                "document.process": AgentTaskExecutor(
+                    agent=document_executor_agents.process,
+                    executor_code="document.process",
+                    primary_tool_name="process_document",
+                    tool_output_model=ProcessDocumentToolOutput,
+                    output_adapter=adapt_process_document_output,
+                    document_services=document_services,
+                    permissions=frozenset(
+                        {
+                            DOCUMENT_READ_PERMISSION,
+                            DOCUMENT_PROCESS_PERMISSION,
+                        }
+                    ),
+                    run_config=document_executor_agents.run_config,
+                ),
+                "document.build_chunks": AgentTaskExecutor(
+                    agent=document_executor_agents.build_chunks,
+                    executor_code="document.build_chunks",
+                    primary_tool_name="build_document_chunks",
+                    tool_output_model=BuildDocumentChunksToolOutput,
+                    output_adapter=adapt_build_document_chunks_output,
+                    document_services=document_services,
+                    permissions=frozenset(
+                        {
+                            DOCUMENT_READ_PERMISSION,
+                            DOCUMENT_BUILD_CHUNKS_PERMISSION,
+                        }
+                    ),
+                    run_config=document_executor_agents.run_config,
+                ),
+                "document.index_vectors": AgentTaskExecutor(
+                    agent=document_executor_agents.index_vectors,
+                    executor_code="document.index_vectors",
+                    primary_tool_name="index_document_vectors",
+                    tool_output_model=IndexDocumentVectorsToolOutput,
+                    output_adapter=adapt_index_document_vectors_output,
+                    document_services=document_services,
+                    permissions=frozenset(
+                        {
+                            DOCUMENT_READ_PERMISSION,
+                            DOCUMENT_INDEX_VECTORS_PERMISSION,
+                        }
+                    ),
+                    run_config=document_executor_agents.run_config,
+                ),
+            }
+        else:
+            task_executors = {
+                "document.process": DeterministicProcessDocumentExecutor(
+                    process_document
+                ),
+                "document.build_chunks": (
+                    DeterministicBuildDocumentChunksExecutor(build_chunks)
+                ),
+                "document.index_vectors": (
+                    DeterministicIndexDocumentVectorsExecutor(index_vectors)
+                ),
+            }
         task_runtime = TaskRuntimeService(
             ports=TaskRuntimePorts(
                 uow_factory=SQLAlchemyUnitOfWork,
@@ -494,19 +571,7 @@ async def build_container() -> AppContainer:
                 inbox_event_factory=InboxEvent,
             ),
             capabilities=build_capability_registry(),
-            executors=ExecutorRegistry(
-                {
-                    "document.process": ProcessDocumentExecutor(
-                        process_document
-                    ),
-                    "document.build_chunks": BuildDocumentChunksExecutor(
-                        build_chunks
-                    ),
-                    "document.index_vectors": IndexDocumentVectorsExecutor(
-                        index_vectors
-                    ),
-                }
-            ),
+            executors=ExecutorRegistry(task_executors),
         )
         aggregate_plan = AggregatePlanUseCase(
             uow_factory=SQLAlchemyUnitOfWork,
@@ -570,6 +635,7 @@ async def build_container() -> AppContainer:
             ),
             collector_agents=collector_agents,
             planner_agent_runner=planner_agent_runner,
+            document_executor_agents=document_executor_agents,
             planning_use_cases=planning_use_cases,
             run_planning=run_planning,
             replan=replan,
@@ -622,6 +688,18 @@ def _build_planner_agent(provider, collectors):
         model=provider.model,
         model_settings=provider.model_settings,
         collectors=collectors,
+    )
+
+
+def _build_document_executor_agents(provider):
+    """使用同一 DeepSeek Provider 装配受限 Document Executor Agents。"""
+    from app.agents.document_executors import (
+        build_document_executor_agents,
+    )
+
+    return build_document_executor_agents(
+        model=provider.model,
+        model_settings=provider.model_settings,
     )
 
 

@@ -73,8 +73,11 @@ class TaskRuntimeService:
                         workflow_id=task.workflow_id,
                         plan_id=task.plan_id,
                         task_id=task.task_id,
+                        conversation_id=task.conversation_id,
+                        turn_id=task.turn_id,
                         execution_id=task.execution_id,
                         operation_id=task.operation_id,
+                        agent_run_id=task.agent_run_id,
                         attempt=task.attempt,
                     ),
                 ),
@@ -208,6 +211,8 @@ class TaskRuntimeService:
                 plan.started_at = datetime.now()
             operation_id = _new_id("operation")
             execution_id = _new_id("execution")
+            agent_run_id = _new_id("agent_run")
+            conversation_id = self._turn_conversation_id(uow, plan.turn_id)
             uow.plans.set_current_task(plan, task.task_id)
             uow.task_executions.add(
                 self._ports.task_execution_factory(
@@ -224,7 +229,7 @@ class TaskRuntimeService:
                     error_code=None,
                     error_message=None,
                     retryable=None,
-                    agent_run_id=None,
+                    agent_run_id=agent_run_id,
                     operation_id=operation_id,
                     started_at=datetime.now(),
                     completed_at=None,
@@ -248,6 +253,8 @@ class TaskRuntimeService:
                     task_id=task.task_id,
                     plan_id=plan.plan_id,
                     workflow_id=plan.workflow_id,
+                    conversation_id=conversation_id,
+                    turn_id=plan.turn_id,
                     capability_code=task.capability_code,
                     input_json=dict(task.input_json),
                     sequence=task.sequence,
@@ -255,6 +262,7 @@ class TaskRuntimeService:
                     max_attempts=task.max_attempts,
                     execution_id=execution_id,
                     operation_id=operation_id,
+                    agent_run_id=agent_run_id,
                     executor_code=definition.executor_code,
                 ),
             )
@@ -430,6 +438,7 @@ class TaskRuntimeService:
             or execution.status != TaskExecutionStatus.RUNNING.value
             or execution.attempt != snapshot.attempt
             or execution.operation_id != snapshot.operation_id
+            or execution.agent_run_id != snapshot.agent_run_id
         ):
             raise RuntimeError("Task Execution token 已失效")
         return plan, task, execution

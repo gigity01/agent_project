@@ -69,6 +69,12 @@ resource_refs；无法验证的内容放入 gaps。不得把 Tool 错误包装�
 """.strip()
 
 
+async def _extract_collector_result(run_result) -> str:
+    """把嵌套 Collector 的结构化输出稳定序列化为 Tool JSON。"""
+    result = CollectorResult.model_validate(run_result.final_output)
+    return result.model_dump_json()
+
+
 def _instructions(collector_code: str, responsibility: str) -> str:
     return (
         f"{_COMMON_INSTRUCTIONS}\n\n"
@@ -82,6 +88,9 @@ def build_collector_agents(
     model_settings: ModelSettings,
 ) -> CollectorAgentSet:
     """创建三个无 Handoff Collector，并包装成 Planner 可调用的 Tool。"""
+    collector_settings = model_settings.resolve(
+        ModelSettings(parallel_tool_calls=False)
+    )
     document_agent = Agent[AgentToolContext](
         name="Document Collector Agent",
         instructions=_instructions(
@@ -91,7 +100,7 @@ def build_collector_agents(
         tools=list(DOCUMENT_COLLECTOR_TOOLS),
         handoffs=[],
         model=model,
-        model_settings=model_settings,
+        model_settings=collector_settings,
         output_type=CollectorResult,
     )
     context_agent = Agent[AgentToolContext](
@@ -103,7 +112,7 @@ def build_collector_agents(
         tools=list(CONTEXT_COLLECTOR_TOOLS),
         handoffs=[],
         model=model,
-        model_settings=model_settings,
+        model_settings=collector_settings,
         output_type=CollectorResult,
     )
     operations_agent = Agent[AgentToolContext](
@@ -115,7 +124,7 @@ def build_collector_agents(
         tools=list(OPERATIONS_COLLECTOR_TOOLS),
         handoffs=[],
         model=model,
-        model_settings=model_settings,
+        model_settings=collector_settings,
         output_type=CollectorResult,
     )
 
@@ -126,6 +135,7 @@ def build_collector_agents(
             parameters=CollectorRequest,
             include_input_schema=True,
             max_turns=8,
+            custom_output_extractor=_extract_collector_result,
         ),
         context_agent.as_tool(
             tool_name="collect_context_information",
@@ -133,6 +143,7 @@ def build_collector_agents(
             parameters=CollectorRequest,
             include_input_schema=True,
             max_turns=8,
+            custom_output_extractor=_extract_collector_result,
         ),
         operations_agent.as_tool(
             tool_name="collect_operation_information",
@@ -140,6 +151,7 @@ def build_collector_agents(
             parameters=CollectorRequest,
             include_input_schema=True,
             max_turns=8,
+            custom_output_extractor=_extract_collector_result,
         ),
     )
     return CollectorAgentSet(

@@ -99,6 +99,7 @@ from app.modules.task_runtime.application.runtime import TaskRuntimeService
 
 if TYPE_CHECKING:
     from app.agents.collectors import CollectorAgentSet
+    from app.agents.document_executors import DocumentExecutorAgentSet
     from app.agents.planner import PlannerAgentRunner
 
 
@@ -126,6 +127,7 @@ class AppContainer:
     get_document_workflow_timeline: GetDocumentWorkflowTimelineUseCase
     collector_agents: CollectorAgentSet | None
     planner_agent_runner: PlannerAgentRunner | None
+    document_executor_agents: DocumentExecutorAgentSet | None
     planning_use_cases: PlanningUseCases
     run_planning: RunPlanningUseCase | None
     replan: ReplanUseCase | None

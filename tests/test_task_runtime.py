@@ -174,6 +174,12 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first_claim.outcome, "claimed")
         self.assertEqual(second_claim.outcome, "already_running")
+        self.assertTrue(first_claim.task.agent_run_id.startswith("agent_run_"))
+        self.assertEqual(first_claim.task.turn_id, "turn-runtime")
+        self.assertEqual(
+            first_claim.task.conversation_id,
+            "conversation-runtime",
+        )
         self.runtime.complete_task(
             first_claim.task,
             {
@@ -209,6 +215,10 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 ["succeeded", "succeeded"],
             )
             self.assertEqual([item.attempt for item in executions], [1, 1])
+            self.assertEqual(
+                executions[0].agent_run_id,
+                first_claim.task.agent_run_id,
+            )
             self.assertEqual(
                 executions[0].resource_refs_json,
                 ["document:1"],
