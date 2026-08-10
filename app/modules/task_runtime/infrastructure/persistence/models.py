@@ -42,6 +42,7 @@ class TaskExecution(Base):
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     retryable: Mapped[bool | None] = mapped_column(nullable=True)
+    blocked: Mapped[bool] = mapped_column(nullable=False, default=False)
     agent_run_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     operation_id: Mapped[str] = mapped_column(String(100), nullable=False)
     started_at: Mapped[datetime] = mapped_column(

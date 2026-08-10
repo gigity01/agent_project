@@ -31,6 +31,7 @@ from app.modules.task_runtime.application.dto import (
     ClaimNextTaskInput,
     TaskExecutorResult,
 )
+from app.modules.task_runtime.application.errors import TaskExecutionError
 from app.modules.task_runtime.application.ports import (
     CompensatorRegistry,
     ExecutorRegistry,
@@ -46,7 +47,12 @@ from app.modules.task_runtime.infrastructure.persistence.models import (
 
 
 class _ProcessExecutor:
+    def __init__(self) -> None:
+        self.errors: list[TaskExecutionError] = []
+
     async def execute(self, payload, context) -> TaskExecutorResult:
+        if self.errors:
+            raise self.errors.pop(0)
         return TaskExecutorResult(
             output_json={
                 "document_id": payload.document_id,
@@ -61,9 +67,12 @@ class _NoopCompensator:
     def __init__(self) -> None:
         self.calls = []
         self.error: Exception | None = None
+        self.on_call = None
 
     async def compensate(self, *, operation_id, payload, context) -> None:
         self.calls.append((operation_id, payload.document_id, context))
+        if self.on_call is not None:
+            self.on_call()
         if self.error is not None:
             raise self.error
 
@@ -155,6 +164,7 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
             session.commit()
 
+        self.executor = _ProcessExecutor()
         self.compensator = _NoopCompensator()
         self.runtime = TaskRuntimeService(
             ports=TaskRuntimePorts(
@@ -167,7 +177,7 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             ),
             capabilities=build_capability_registry(),
             executors=ExecutorRegistry(
-                {"document.process": _ProcessExecutor()}
+                {"document.process": self.executor}
             ),
             compensators=CompensatorRegistry(
                 {"document.process": self.compensator}
@@ -273,6 +283,100 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 execution.error_code,
                 "execution_lease_expired",
             )
+
+    async def test_normal_failure_is_persisted_before_compensation(self) -> None:
+        self.executor.errors.append(
+            TaskExecutionError(
+                "temporary_failure",
+                "temporary failure",
+                retryable=True,
+            )
+        )
+        observed_statuses: list[str] = []
+
+        def observe_status() -> None:
+            with self.session_factory() as session:
+                execution = session.query(TaskExecution).one()
+                observed_statuses.append(execution.status)
+
+        self.compensator.on_call = observe_status
+
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "retry_scheduled")
+        self.assertEqual(observed_statuses, ["compensation_required"])
+        with self.session_factory() as session:
+            plan = session.get(Plan, "plan-runtime")
+            task = session.get(Task, "task-1")
+            execution = session.query(TaskExecution).one()
+            self.assertIsNone(plan.current_task_id)
+            self.assertEqual(task.status, "retry_wait")
+            self.assertEqual(execution.status, "compensated")
+            self.assertEqual(execution.error_code, "temporary_failure")
+            self.assertTrue(execution.retryable)
+            self.assertFalse(execution.blocked)
+
+    async def test_normal_compensation_failure_is_resumable(self) -> None:
+        self.executor.errors.append(
+            TaskExecutionError(
+                "temporary_failure",
+                "temporary failure",
+                retryable=True,
+            )
+        )
+        self.compensator.error = RuntimeError("compensation failed")
+
+        with self.assertRaisesRegex(RuntimeError, "compensation failed"):
+            await self.runtime.execute_next("plan-runtime")
+
+        with self.session_factory() as session:
+            plan = session.get(Plan, "plan-runtime")
+            task = session.get(Task, "task-1")
+            execution = session.query(TaskExecution).one()
+            self.assertEqual(plan.current_task_id, task.task_id)
+            self.assertEqual(task.status, "running")
+            self.assertEqual(execution.status, "compensation_required")
+
+        self.compensator.error = None
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "retry_scheduled")
+        self.assertEqual(len(self.compensator.calls), 2)
+        with self.session_factory() as session:
+            plan = session.get(Plan, "plan-runtime")
+            task = session.get(Task, "task-1")
+            execution = session.query(TaskExecution).one()
+            self.assertIsNone(plan.current_task_id)
+            self.assertEqual(task.status, "retry_wait")
+            self.assertEqual(execution.status, "compensated")
+
+    async def test_blocked_disposition_survives_compensation_retry(self) -> None:
+        self.executor.errors.append(
+            TaskExecutionError(
+                "resource_blocked",
+                "resource blocked",
+                retryable=False,
+                blocked=True,
+            )
+        )
+        self.compensator.error = RuntimeError("compensation failed")
+
+        with self.assertRaisesRegex(RuntimeError, "compensation failed"):
+            await self.runtime.execute_next("plan-runtime")
+
+        self.compensator.error = None
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "replan_requested")
+        with self.session_factory() as session:
+            plan = session.get(Plan, "plan-runtime")
+            task = session.get(Task, "task-1")
+            execution = session.query(TaskExecution).one()
+            self.assertEqual(plan.status, "replan_pending")
+            self.assertIsNone(plan.current_task_id)
+            self.assertEqual(task.status, "blocked")
+            self.assertEqual(execution.status, "compensated")
+            self.assertTrue(execution.blocked)
 
     async def test_compensation_failure_keeps_stale_task_owned(self) -> None:
         claimed = self.runtime.claim_next_task(

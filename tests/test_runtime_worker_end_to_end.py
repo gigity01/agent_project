@@ -440,8 +440,13 @@ class _RuntimeExecutorAgentRunner:
 
 
 class _NoopOperationCompensator:
+    def __init__(self, code: str, calls: list[tuple[str, str, int]]) -> None:
+        self._code = code
+        self._calls = calls
+
     async def compensate(self, *, operation_id, payload, context) -> None:
-        del operation_id, payload, context
+        del context
+        self._calls.append((self._code, operation_id, payload.document_id))
 
 
 class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
@@ -547,6 +552,7 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
             model_settings=ModelSettings(parallel_tool_calls=True),
         )
         executor_runner = _RuntimeExecutorAgentRunner()
+        compensation_calls: list[tuple[str, str, int]] = []
         task_runtime = TaskRuntimeService(
             ports=TaskRuntimePorts(
                 uow_factory=self.uow_factory,
@@ -618,9 +624,18 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
             ),
             compensators=CompensatorRegistry(
                 {
-                    "document.process": _NoopOperationCompensator(),
-                    "document.build_chunks": _NoopOperationCompensator(),
-                    "document.index_vectors": _NoopOperationCompensator(),
+                    "document.process": _NoopOperationCompensator(
+                        "document.process",
+                        compensation_calls,
+                    ),
+                    "document.build_chunks": _NoopOperationCompensator(
+                        "document.build_chunks",
+                        compensation_calls,
+                    ),
+                    "document.index_vectors": _NoopOperationCompensator(
+                        "document.index_vectors",
+                        compensation_calls,
+                    ),
                 }
             ),
             retry_delay_seconds=0,
@@ -656,6 +671,7 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
             worker=worker,
             redis=redis,
             calls=calls,
+            compensation_calls=compensation_calls,
         )
 
     async def _post_message(self, send_message, message: str):
@@ -794,7 +810,7 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 [execution.status for execution in old_executions],
-                ["failed", "failed"],
+                ["compensated", "compensated"],
             )
             self.assertEqual(
                 [execution.retryable for execution in old_executions],
@@ -803,7 +819,55 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(new_executions[0].status, "succeeded")
             self.assertEqual(turn.status, "completed")
         self.assertEqual(runtime.calls, ["process", "process", "process"])
+        self.assertEqual(
+            [call[0] for call in runtime.compensation_calls],
+            ["document.process", "document.process"],
+        )
         self.assertIn("planning.replan_requested", runtime.redis.event_types)
+
+    async def test_failure_compensates_then_retry_succeeds(self) -> None:
+        runtime = self._build_runtime(
+            ("process_document",),
+            process_failure_statuses=[503],
+        )
+        response = await self._post_message(
+            runtime.send_message,
+            "处理 document_id=1，暂时失败后重试",
+        )
+        body = response.json()
+
+        await self._drain_until_completed(runtime, body["turn_id"])
+
+        with self.session_factory() as session:
+            plan = session.get(Plan, body["plan_id"])
+            task = session.get(Task, body["task_ids"][0])
+            executions = (
+                session.query(TaskExecution)
+                .filter(TaskExecution.plan_id == plan.plan_id)
+                .order_by(TaskExecution.attempt)
+                .all()
+            )
+            self.assertEqual(plan.status, "completed")
+            self.assertEqual(task.status, "succeeded")
+            self.assertEqual(
+                [execution.status for execution in executions],
+                ["compensated", "succeeded"],
+            )
+            self.assertNotEqual(
+                executions[0].operation_id,
+                executions[1].operation_id,
+            )
+            self.assertEqual(
+                runtime.compensation_calls,
+                [
+                    (
+                        "document.process",
+                        executions[0].operation_id,
+                        1,
+                    )
+                ],
+            )
+        self.assertEqual(runtime.calls, ["process", "process"])
 
 
 if __name__ == "__main__":

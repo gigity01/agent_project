@@ -98,28 +98,22 @@ class TaskRuntimeService:
             output = definition.output_model.model_validate(
                 raw_result.output_json
             )
-        except asyncio.TimeoutError as exc:
+        except asyncio.TimeoutError:
             error = TaskExecutionError(
                 "executor_timeout",
                 "Task Executor 执行超时",
                 retryable=True,
             )
-            await self._compensate_task(task, definition)
-            await asyncio.to_thread(self._fail, task, error)
-            return self._failure_result(task, error)
+            return await self._handle_failure(task, definition, error)
         except TaskExecutionError as error:
-            await self._compensate_task(task, definition)
-            await asyncio.to_thread(self._fail, task, error)
-            return self._failure_result(task, error)
+            return await self._handle_failure(task, definition, error)
         except Exception as exc:
             error = TaskExecutionError(
                 "executor_system_error",
                 f"Task Executor 系统异常: {type(exc).__name__}",
                 retryable=False,
             )
-            await self._compensate_task(task, definition)
-            await asyncio.to_thread(self._fail, task, error)
-            return self._failure_result(task, error)
+            return await self._handle_failure(task, definition, error)
 
         await asyncio.to_thread(
             self._complete,
@@ -148,12 +142,13 @@ class TaskRuntimeService:
     ) -> None:
         self._complete(snapshot, output_json, resource_refs)
 
-    def fail_task(
+    async def fail_task(
         self,
         snapshot: TaskSnapshot,
         error: TaskExecutionError,
-    ) -> None:
-        self._fail(snapshot, error)
+    ) -> ExecutePlanResult:
+        definition = self._capabilities.require(snapshot.capability_code)
+        return await self._handle_failure(snapshot, definition, error)
 
     def _claim_next(
         self,
@@ -246,6 +241,7 @@ class TaskRuntimeService:
                     error_code=None,
                     error_message=None,
                     retryable=None,
+                    blocked=False,
                     agent_run_id=agent_run_id,
                     operation_id=operation_id,
                     started_at=datetime.now(),
@@ -325,6 +321,7 @@ class TaskRuntimeService:
         execution.error_code = "execution_lease_expired"
         execution.error_message = "Task Execution 超时未完成"
         execution.retryable = True
+        execution.blocked = False
         execution.completed_at = None
         return self._recovery_snapshot(uow, plan, task, execution)
 
@@ -346,8 +343,27 @@ class TaskRuntimeService:
             agent_run_id=execution.agent_run_id,
         )
 
-    async def _compensate_task(self, task: TaskSnapshot, definition) -> None:
-        await self._run_compensator(task, definition)
+    async def _handle_failure(
+        self,
+        snapshot: TaskSnapshot,
+        definition,
+        error: TaskExecutionError,
+    ) -> ExecutePlanResult:
+        if not definition.side_effect:
+            await asyncio.to_thread(self._fail, snapshot, error)
+            return self._failure_result(snapshot, error)
+
+        await asyncio.to_thread(
+            self._require_compensation,
+            snapshot,
+            error,
+        )
+        await self._run_compensator(snapshot, definition)
+        return await asyncio.to_thread(
+            self._complete_compensation,
+            snapshot,
+            None,
+        )
 
     async def _compensate_recovery(self, recovery: RecoverySnapshot) -> None:
         definition = self._capabilities.require(recovery.capability_code)
@@ -387,6 +403,30 @@ class TaskRuntimeService:
         snapshot: RecoverySnapshot,
         event_id: str | None,
     ) -> ExecutePlanResult:
+        return self._complete_compensation(snapshot, event_id)
+
+    def _require_compensation(
+        self,
+        snapshot: TaskSnapshot,
+        error: TaskExecutionError,
+    ) -> None:
+        """先持久化失败事实和补偿意图，再允许事务外补偿。"""
+        with self._ports.uow_factory() as uow:
+            _, _, execution = self._lock_execution(uow, snapshot)
+            execution.status = TaskExecutionStatus.COMPENSATION_REQUIRED.value
+            execution.error_code = error.error_code
+            execution.error_message = str(error)
+            execution.retryable = error.retryable
+            execution.blocked = error.blocked
+            execution.completed_at = None
+            uow.commit()
+
+    def _complete_compensation(
+        self,
+        snapshot: TaskSnapshot | RecoverySnapshot,
+        event_id: str | None,
+    ) -> ExecutePlanResult:
+        """补偿成功后原子释放 Task ownership 并决定 retry 或 replan。"""
         with self._ports.uow_factory() as uow:
             plan = uow.plans.get_by_id_for_update(snapshot.plan_id)
             task = uow.tasks.get_by_id_for_update(snapshot.task_id)
@@ -412,14 +452,34 @@ class TaskRuntimeService:
             task.last_error_message = execution.error_message
             task.completed_at = now
             uow.plans.set_current_task(plan, None)
-            if task.attempt_count < task.max_attempts:
-                task.status = TaskStatus.PENDING.value
+            if execution.retryable and task.attempt_count < task.max_attempts:
+                stale_recovery = (
+                    execution.error_code == "execution_lease_expired"
+                )
+                task.status = (
+                    TaskStatus.PENDING.value
+                    if stale_recovery
+                    else TaskStatus.RETRY_WAIT.value
+                )
                 uow.outbox.add(
-                    self._event(plan, RuntimeEventType.PLAN_WAKEUP)
+                    self._event(
+                        plan,
+                        RuntimeEventType.PLAN_WAKEUP,
+                        available_at=(
+                            now
+                            if stale_recovery
+                            else now
+                            + timedelta(seconds=self._retry_delay_seconds)
+                        ),
+                    )
                 )
                 outcome = "retry_scheduled"
             else:
-                task.status = TaskStatus.FAILED.value
+                task.status = (
+                    TaskStatus.BLOCKED.value
+                    if execution.blocked
+                    else TaskStatus.FAILED.value
+                )
                 plan.status = PlanStatus.REPLAN_PENDING.value
                 plan.failure_code = execution.error_code
                 plan.failure_reason = execution.error_message
@@ -433,7 +493,11 @@ class TaskRuntimeService:
                             "root_turn_id": plan.turn_id,
                             "previous_plan_id": plan.plan_id,
                             "next_revision": plan.revision + 1,
-                            "trigger_type": "task_terminal_failure",
+                            "trigger_type": (
+                                "task_blocked"
+                                if execution.blocked
+                                else "task_terminal_failure"
+                            ),
                             "source_task_id": task.task_id,
                             "error_code": execution.error_code,
                             "error_message": execution.error_message,
@@ -500,6 +564,7 @@ class TaskRuntimeService:
             execution.error_code = error.error_code
             execution.error_message = str(error)
             execution.retryable = error.retryable
+            execution.blocked = error.blocked
             execution.completed_at = now
             task.last_error_code = error.error_code
             task.last_error_message = str(error)

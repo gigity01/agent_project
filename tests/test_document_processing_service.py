@@ -476,11 +476,26 @@ class DocumentProcessingServiceTest(unittest.TestCase):
 
     def test_compensator_removes_only_owned_operation_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            staging_root = Path(temp_dir) / "staging"
+            temp_path = Path(temp_dir)
+            staging_root = temp_path / "staging"
+            cleaned_root = temp_path / "cleaned"
+            secondary_root = temp_path / "secondary"
             operation_dir = staging_root / "operation-test"
             operation_dir.mkdir(parents=True)
             (operation_dir / "cleaned.md").write_text(
                 "cleaned",
+                encoding="utf-8",
+            )
+            cleaned_operation_dir = cleaned_root / "operation-test"
+            cleaned_operation_dir.mkdir(parents=True)
+            (cleaned_operation_dir / "cleaned.md").write_text(
+                "cleaned",
+                encoding="utf-8",
+            )
+            secondary_operation_dir = secondary_root / "operation-test"
+            secondary_operation_dir.mkdir(parents=True)
+            (secondary_operation_dir / "secondary.md").write_text(
+                "secondary",
                 encoding="utf-8",
             )
             document = _document(
@@ -490,20 +505,91 @@ class DocumentProcessingServiceTest(unittest.TestCase):
             compensator = self.service.ProcessDocumentCompensator(
                 ports=self.service.test_ports,
                 settings=SimpleNamespace(
-                    cleaned_storage_dir=Path("cleaned"),
-                    secondary_text_storage_dir=Path("secondary"),
+                    cleaned_storage_dir=cleaned_root,
+                    secondary_text_storage_dir=secondary_root,
                     staging_storage_dir=staging_root,
                 ),
             )
 
-            compensator.compensate(
-                document_id=document.id,
+            for _ in range(3):
+                compensator.compensate(
+                    document_id=document.id,
+                    operation_id="operation-test",
+                )
+
+            self.assertFalse(operation_dir.exists())
+            self.assertFalse(cleaned_operation_dir.exists())
+            self.assertFalse(secondary_operation_dir.exists())
+            self.assertEqual(document.status, DocumentStatus.FAILED.value)
+            self.assertIsNone(document.active_operation_id)
+
+    def test_promote_moves_staging_files_to_formal_operation_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            settings = SimpleNamespace(
+                cleaned_storage_dir=temp_path / "cleaned",
+                secondary_text_storage_dir=temp_path / "secondary",
+                staging_storage_dir=temp_path / "staging",
+            )
+            operation_dir = settings.staging_storage_dir / "operation-test"
+            operation_dir.mkdir(parents=True)
+            cleaned_path = operation_dir / "DOC_001.cleaned.md"
+            secondary_path = operation_dir / "DOC_001.secondary.md"
+            cleaned_path.write_text("cleaned", encoding="utf-8")
+            secondary_path.write_text("secondary", encoding="utf-8")
+            secondary = _pending_artifact(
+                self.service,
+                artifact_type="secondary_text",
+                artifact_role="process_input",
+                artifact_uri=str(secondary_path),
+            )
+            cleaned = _pending_artifact(
+                self.service,
+                artifact_type="cleaned_text",
+                artifact_role="process_output",
+                artifact_uri=str(cleaned_path),
+            )
+            result = self.service.ProcessingExecutionResult(
+                document_id=1,
                 operation_id="operation-test",
+                cleaned_path=cleaned_path,
+                prepared_source=self.service.PreparedProcessSource(
+                    source_path=secondary_path,
+                    source_type="md",
+                    generated_secondary_text=True,
+                    secondary_artifact=secondary,
+                ),
+                cleaned_artifact=cleaned,
+            )
+
+            promoted = self.service._promote_processing_artifacts(
+                result,
+                settings=settings,
             )
 
             self.assertFalse(operation_dir.exists())
-            self.assertEqual(document.status, DocumentStatus.FAILED.value)
-            self.assertIsNone(document.active_operation_id)
+            self.assertEqual(
+                promoted.cleaned_path,
+                settings.cleaned_storage_dir
+                / "operation-test"
+                / cleaned_path.name,
+            )
+            self.assertEqual(
+                promoted.prepared_source.source_path,
+                settings.secondary_text_storage_dir
+                / "operation-test"
+                / secondary_path.name,
+            )
+            self.assertTrue(promoted.cleaned_path.is_file())
+            self.assertTrue(promoted.prepared_source.source_path.is_file())
+            self.assertEqual(
+                promoted.cleaned_artifact.artifact_uri,
+                str(promoted.cleaned_path),
+            )
+            self.assertEqual(
+                promoted.secondary_artifact.artifact_uri,
+                str(promoted.prepared_source.source_path),
+            )
 
     def test_compensator_preserves_another_operations_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

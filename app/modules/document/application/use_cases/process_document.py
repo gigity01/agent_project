@@ -2,7 +2,7 @@
 
 import logging
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -142,6 +142,12 @@ def _process_document(
         execution_result = _execute_processing(
             context,
             ports=ports,
+            settings=settings,
+        )
+
+        phase = "promote"
+        execution_result = _promote_processing_artifacts(
+            execution_result,
             settings=settings,
         )
 
@@ -404,6 +410,62 @@ def _complete_processing(
     return response
 
 
+def _promote_processing_artifacts(
+    result: ProcessingExecutionResult,
+    *,
+    settings: DocumentProcessingSettings,
+) -> ProcessingExecutionResult:
+    """把 operation staging 产物提升到正式的 operation-scoped 目录。"""
+    cleaned_dir = _operation_scoped_dir(
+        settings.cleaned_storage_dir,
+        result.operation_id,
+    )
+    cleaned_path = _promote_file(result.cleaned_path, cleaned_dir)
+    cleaned_artifact = replace(
+        result.cleaned_artifact,
+        artifact_uri=str(cleaned_path),
+    )
+
+    prepared_source = result.prepared_source
+    if result.secondary_artifact is not None:
+        secondary_dir = _operation_scoped_dir(
+            settings.secondary_text_storage_dir,
+            result.operation_id,
+        )
+        secondary_path = _promote_file(
+            prepared_source.source_path,
+            secondary_dir,
+        )
+        prepared_source = replace(
+            prepared_source,
+            source_path=secondary_path,
+            secondary_artifact=replace(
+                result.secondary_artifact,
+                artifact_uri=str(secondary_path),
+            ),
+        )
+
+    operation_dir = _processing_operation_dir(settings, result.operation_id)
+    if operation_dir.exists():
+        shutil.rmtree(operation_dir)
+
+    return replace(
+        result,
+        cleaned_path=cleaned_path,
+        prepared_source=prepared_source,
+        cleaned_artifact=cleaned_artifact,
+    )
+
+
+def _promote_file(source_path: Path, destination_dir: Path) -> Path:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination_path = destination_dir / source_path.name
+    if destination_path.exists():
+        raise RuntimeError(f"正式产物路径已存在: {destination_path}")
+    shutil.move(str(source_path), str(destination_path))
+    return destination_path
+
+
 def _register_processing_failure(
     *,
     document_id: int,
@@ -502,12 +564,27 @@ class ProcessDocumentCompensator:
         if not owns_operation:
             return failure_result
 
-        operation_dir = _processing_operation_dir(
-            self._settings,
-            operation_id,
+        operation_dirs = tuple(
+            dict.fromkeys(
+                (
+                    _processing_operation_dir(
+                        self._settings,
+                        operation_id,
+                    ),
+                    _operation_scoped_dir(
+                        self._settings.cleaned_storage_dir,
+                        operation_id,
+                    ),
+                    _operation_scoped_dir(
+                        self._settings.secondary_text_storage_dir,
+                        operation_id,
+                    ),
+                )
+            )
         )
-        if operation_dir.exists():
-            shutil.rmtree(operation_dir)
+        for operation_dir in operation_dirs:
+            if operation_dir.exists():
+                shutil.rmtree(operation_dir)
 
         with self._ports.uow_factory() as uow:
             document = uow.documents.get_by_id_for_update(document_id)
@@ -527,13 +604,18 @@ def _processing_operation_dir(
     operation_id: str,
 ) -> Path:
     """返回不能逃逸 staging 根目录的 Operation 产物目录。"""
+    return _operation_scoped_dir(settings.staging_storage_dir, operation_id)
+
+
+def _operation_scoped_dir(root: Path, operation_id: str) -> Path:
+    """返回不能逃逸指定根目录的 Operation 目录。"""
     if (
         not operation_id
         or Path(operation_id).name != operation_id
         or operation_id in {".", ".."}
     ):
         raise ValueError("operation_id 不能用于文件路径")
-    return settings.staging_storage_dir / operation_id
+    return root / operation_id
 
 
 def _persist_secondary_artifact(*, uow, document, artifact: PendingArtifact) -> None:

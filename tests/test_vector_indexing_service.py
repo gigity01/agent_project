@@ -753,6 +753,35 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(failed_fields["chunk_state_updated_count"], 2)
         self.assertNotIn("state_updated", failed_fields)
 
+    def test_second_embedding_batch_failure_deletes_first_batch_points(self) -> None:
+        document = _document()
+        chunks = [_chunk(1), _chunk(2), _chunk(3)]
+        factory = self._use(document, chunks)
+
+        def respond(texts):
+            if len(embedding.calls) == 2:
+                raise RuntimeError("second embedding batch failed")
+            return [[0.1, 0.2, 0.3] for _ in texts]
+
+        embedding = _EmbeddingClient(factory, responder=respond)
+        vector_store = _VectorStore(factory)
+
+        with self.assertRaises(self.service.HTTPException) as raised:
+            self.service.index_document_vectors(
+                document.id,
+                embedding_client=embedding,
+                vector_store=vector_store,
+            )
+
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertEqual(len(vector_store.upsert_calls), 1)
+        self.assertEqual(vector_store.delete_calls, [[1, 2]])
+        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertIsNone(document.active_operation_id)
+        self.assertTrue(
+            all(chunk.vector_status == "failed" for chunk in chunks)
+        )
+
     def test_compensation_failure_keeps_index_operation_owned(self) -> None:
         document = _document(status=DocumentStatus.INDEXING.value)
         chunks = [
@@ -786,6 +815,36 @@ class VectorIndexingServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(succeeding_store.delete_calls, [[1, 2]])
+        self.assertIsNone(document.active_operation_id)
+        self.assertTrue(
+            all(chunk.vector_status == "failed" for chunk in chunks)
+        )
+
+    def test_stale_compensation_deletes_all_indexing_chunk_points(self) -> None:
+        document = _document(status=DocumentStatus.INDEXING.value)
+        chunks = [
+            _chunk(1, vector_status="indexing"),
+            _chunk(2, vector_status="indexing"),
+        ]
+        factory = self._use(document, chunks)
+        vector_store = _VectorStore(factory)
+        compensator = self.service.IndexVectorsCompensator(
+            ports=self.service.test_ports
+        )
+
+        compensator.compensate(
+            document_id=document.id,
+            operation_id="operation-test",
+            vector_store=vector_store,
+        )
+        compensator.compensate(
+            document_id=document.id,
+            operation_id="operation-test",
+            vector_store=vector_store,
+        )
+
+        self.assertEqual(vector_store.delete_calls, [[1, 2]])
+        self.assertEqual(document.status, DocumentStatus.FAILED.value)
         self.assertIsNone(document.active_operation_id)
         self.assertTrue(
             all(chunk.vector_status == "failed" for chunk in chunks)

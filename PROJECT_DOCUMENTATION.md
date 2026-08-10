@@ -190,12 +190,13 @@ Capability Registry、claim/complete/fail、重试和 Replan 状态机均不变�
 Replan；同一 workflow 最多保留 3 个 revision，旧 Plan 和未完成 Task 会被标记为
 `superseded`。
 
-三个 Document Capability 均在 Capability Registry 中声明对应的 Compensator。
-普通 Executor 失败会先运行补偿再进入 Failure/Retry；过期执行恢复则拆为三个阶段：
-数据库先把 `TaskExecution` 标记为 `compensation_required`，事务外执行文件系统或
-Qdrant 补偿，最后以新事务标记 `compensated` 并将 Task 退回 `pending` 或请求 Replan。
-补偿失败时保留原 Task 和 Document ownership，Stream 消息不完成，新的 attempt 不能
-接管该资源。
+三个 Document Capability 均在 Capability Registry 中声明对应的 Compensator。普通
+Executor 失败和过期执行恢复使用同一套三阶段管线：数据库先把 `TaskExecution` 标记为
+`compensation_required` 并持久化 error、`retryable` 与 `blocked` disposition，事务外
+执行文件系统或 Qdrant 补偿，最后以新事务标记 `compensated`，清除 Plan 当前 Task，再
+安排 retry 或请求 Replan。普通可重试错误继续使用 `retry_wait` 和默认 30 秒延迟；lease
+过期恢复直接回到 `pending`。补偿失败时保留原 Task 和 Document ownership，Stream 消息
+不完成，新的 attempt 不能接管该资源。
 
 ### 4. 聚合与完成
 
@@ -214,9 +215,11 @@ uploaded → processing → processed → chunking → chunked → indexing → 
 
 - `txt`、`md`、`csv` 使用本地 Processor；`pdf`、`doc`、`docx`、`ppt`、`pptx`
   先经 Docling 转为 Markdown。
-- Process 生成的 secondary/cleaned 文件位于
-  `storage/staging/{operation_id}/`，成功后该 operation-scoped URI 作为 Artifact 和
-  `cleaned_uri` 的持久化事实；失败补偿只删除当前 owner 对应目录。
+- Process 先在 `storage/staging/{operation_id}/` 生成 secondary/cleaned 文件，再分别
+  提升到 `storage/secondary_text/{operation_id}/` 和
+  `storage/cleaned/{operation_id}/`；正式 URI 作为 Artifact 和 `cleaned_uri` 的持久化
+  事实。失败补偿按当前 owner 同时清理 staging 与可能只完成部分提升的正式目录，全部
+  清理成功后才释放 ownership。
 - 文本与 Markdown 按语义父块和长度子块切分；CSV 一条记录对应一个子块。
 - Embedding 使用 DashScope OpenAI-compatible API，向量以 ChildChunk ID 幂等
   upsert 到 Qdrant。
@@ -254,7 +257,7 @@ uv run --frozen python -m app.workers.runtime_main
 ```
 
 存储路径是相对路径，应从项目根目录启动。当前 Alembic 迁移头为
-`b1c3d5e7f9a2`。
+`c2d4e6f8a0b1`。
 
 ## 验证
 
