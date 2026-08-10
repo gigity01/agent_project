@@ -195,8 +195,11 @@ Executor 失败和过期执行恢复使用同一套三阶段管线：数据库�
 `compensation_required` 并持久化 error、`retryable` 与 `blocked` disposition，事务外
 执行文件系统或 Qdrant 补偿，最后以新事务标记 `compensated`，清除 Plan 当前 Task，再
 安排 retry 或请求 Replan。普通可重试错误继续使用 `retry_wait` 和默认 30 秒延迟；lease
-过期恢复直接回到 `pending`。补偿失败时保留原 Task 和 Document ownership，Stream 消息
-不完成，新的 attempt 不能接管该资源。
+过期恢复直接回到 `pending`。补偿失败时保留原 Task、`compensation_required` 状态和
+Document ownership，同时在 Outbox 中可靠写入新的 `runtime.plan_wakeup`：从 30 秒开始
+指数退避，最大延迟 300 秒，不设自动放弃次数。新事件携带补偿 attempt 和目标
+`operation_id`，只能恢复该 Operation，不能误领后续 Task；原 Stream 消息可在重试事件
+持久化后 ACK。补偿成功前新的 Task attempt 仍不能接管该资源。
 
 ### 4. 聚合与完成
 
@@ -222,11 +225,15 @@ uploaded → processing → processed → chunking → chunked → indexing → 
   清理成功后才释放 ownership。
 - 文本与 Markdown 按语义父块和长度子块切分；CSV 一条记录对应一个子块。
 - Embedding 使用 DashScope OpenAI-compatible API，向量以 ChildChunk ID 幂等
-  upsert 到 Qdrant。
+  upsert 到 Qdrant；Point payload 同时保存本次 `operation_id` 作为外部归属事实。
 - Chunk finalize 的父子块替换保持单一数据库事务，补偿只释放 `chunking` ownership。
-- Index 补偿先围栏旧 finalize，再按当前 `indexing` Chunk 的稳定 ID 删除 Qdrant
-  Point；删除成功后才把 Chunk 标记为 `failed` 并释放 ownership。MySQL、文件系统和
-  Qdrant 仍不共享事务，因此补偿失败会显式阻止 retry，而不是假定跨存储已经一致。
+- Index 的每批 Qdrant upsert 都先获取文档级 MySQL named lock，并在锁内复核
+  `active_operation_id`；补偿先把 Document 标记为 `failed` 但保留 token，再使用同一
+  围栏删除当前 `indexing` Chunk 的稳定 Point ID，删除成功后才把 Chunk 标记为
+  `failed` 并释放 ownership。围栏获取最多等待 30 秒，失败时进入上述补偿重试。这样
+  已超时的旧线程即使稍后恢复，也不能在补偿完成或新 Operation 接管后再次 upsert。
+  MySQL、文件系统和 Qdrant 仍不共享事务，因此系统继续采用 fail-closed 补偿，而不是
+  假定跨存储已经一致。
 
 ## 配置与本地运行
 

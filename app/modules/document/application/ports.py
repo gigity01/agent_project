@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, ContextManager, Protocol
 
 
 class UploadFilePort(Protocol):
@@ -25,6 +25,13 @@ class UploadMetadataPort(Protocol):
     expired_at: Any
 
 
+class ExternalEffectFencePort(Protocol):
+    """跨进程串行化同一资源的外部副作用。"""
+
+    def hold(self, resource_key: str) -> ContextManager[None]:
+        ...
+
+
 @dataclass(frozen=True)
 class DocumentApplicationPorts:
     """由 Bootstrap 显式注入 Document 用例的外部能力集合。"""
@@ -37,6 +44,7 @@ class DocumentApplicationPorts:
     chunker_factory: Callable[[str], Any]
     embedding_factory: Callable[[], Any]
     vector_store_factory: Callable[[], Any]
+    external_effect_fence: ExternalEffectFencePort
     docling_factory: Callable[[], Any]
     point_factory: Callable[..., Any]
     validate_content_type: Callable[[UploadFilePort], None]

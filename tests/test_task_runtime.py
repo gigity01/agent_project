@@ -183,6 +183,8 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 {"document.process": self.compensator}
             ),
             retry_delay_seconds=0,
+            compensation_retry_delay_seconds=5,
+            compensation_retry_max_delay_seconds=20,
         )
 
     async def asyncTearDown(self) -> None:
@@ -326,8 +328,9 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.compensator.error = RuntimeError("compensation failed")
 
-        with self.assertRaisesRegex(RuntimeError, "compensation failed"):
-            await self.runtime.execute_next("plan-runtime")
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "compensation_retry_scheduled")
 
         with self.session_factory() as session:
             plan = session.get(Plan, "plan-runtime")
@@ -336,9 +339,26 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plan.current_task_id, task.task_id)
             self.assertEqual(task.status, "running")
             self.assertEqual(execution.status, "compensation_required")
+            retry_events = [
+                event
+                for event in session.query(OutboxEvent).all()
+                if event.payload_json.get("compensation_attempt") == 1
+            ]
+            self.assertEqual(len(retry_events), 1)
+            self.assertEqual(
+                retry_events[0].payload_json[
+                    "compensation_operation_id"
+                ],
+                execution.operation_id,
+            )
 
         self.compensator.error = None
-        result = await self.runtime.execute_next("plan-runtime")
+        result = await self.runtime.execute_next(
+            "plan-runtime",
+            event_id=retry_events[0].event_id,
+            compensation_attempt=1,
+            compensation_operation_id=execution.operation_id,
+        )
 
         self.assertEqual(result.outcome, "retry_scheduled")
         self.assertEqual(len(self.compensator.calls), 2)
@@ -349,6 +369,17 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(plan.current_task_id)
             self.assertEqual(task.status, "retry_wait")
             self.assertEqual(execution.status, "compensated")
+
+        stale_retry = await self.runtime.execute_next(
+            "plan-runtime",
+            event_id="stale-compensation-retry",
+            compensation_attempt=2,
+            compensation_operation_id=execution.operation_id,
+        )
+        self.assertEqual(stale_retry.outcome, "terminal")
+        with self.session_factory() as session:
+            task = session.get(Task, "task-1")
+            self.assertEqual(task.status, "retry_wait")
 
     async def test_blocked_disposition_survives_compensation_retry(self) -> None:
         self.executor.errors.append(
@@ -361,11 +392,15 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.compensator.error = RuntimeError("compensation failed")
 
-        with self.assertRaisesRegex(RuntimeError, "compensation failed"):
-            await self.runtime.execute_next("plan-runtime")
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "compensation_retry_scheduled")
 
         self.compensator.error = None
-        result = await self.runtime.execute_next("plan-runtime")
+        result = await self.runtime.execute_next(
+            "plan-runtime",
+            compensation_attempt=1,
+        )
 
         self.assertEqual(result.outcome, "replan_requested")
         with self.session_factory() as session:
@@ -388,8 +423,9 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             session.commit()
         self.compensator.error = RuntimeError("compensation failed")
 
-        with self.assertRaisesRegex(RuntimeError, "compensation failed"):
-            await self.runtime.execute_next("plan-runtime")
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "compensation_retry_scheduled")
 
         with self.session_factory() as session:
             plan = session.get(Plan, "plan-runtime")
@@ -401,6 +437,55 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plan.current_task_id, task.task_id)
             self.assertEqual(task.status, "running")
             self.assertEqual(execution.status, "compensation_required")
+            retry_event = next(
+                event
+                for event in session.query(OutboxEvent).all()
+                if event.payload_json.get("compensation_attempt") == 1
+            )
+            self.assertGreaterEqual(
+                retry_event.available_at,
+                datetime.now() + timedelta(seconds=4),
+            )
+
+    async def test_compensation_retry_uses_exponential_backoff_with_cap(self) -> None:
+        self.executor.errors.append(
+            TaskExecutionError(
+                "temporary_failure",
+                "temporary failure",
+                retryable=True,
+            )
+        )
+        self.compensator.error = RuntimeError("compensation failed")
+
+        for attempt in range(4):
+            before = datetime.now()
+            result = await self.runtime.execute_next(
+                "plan-runtime",
+                compensation_attempt=attempt,
+            )
+            self.assertEqual(
+                result.outcome,
+                "compensation_retry_scheduled",
+            )
+            with self.session_factory() as session:
+                event = next(
+                    item
+                    for item in reversed(
+                        session.query(OutboxEvent)
+                        .order_by(OutboxEvent.created_at).all()
+                    )
+                    if item.payload_json.get("compensation_attempt")
+                    == attempt + 1
+                )
+                expected_delay = min(5 * (2 ** attempt), 20)
+                self.assertGreaterEqual(
+                    event.available_at,
+                    before + timedelta(seconds=expected_delay - 1),
+                )
+                self.assertLessEqual(
+                    event.available_at,
+                    datetime.now() + timedelta(seconds=expected_delay + 1),
+                )
 
 
 if __name__ == "__main__":

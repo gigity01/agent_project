@@ -42,6 +42,8 @@ from app.agent_runtime.context import (
     DocumentToolServices,
     OperationsToolServices,
 )
+from app.infrastructure.database.named_lock import MySQLNamedLockManager
+from app.infrastructure.database.session import engine
 from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
 from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
 from app.infrastructure.redis.client import (
@@ -379,6 +381,7 @@ async def build_container() -> AppContainer:
             chunker_factory=get_chunker,
             embedding_factory=EmbeddingService,
             vector_store_factory=QdrantVectorStore,
+            external_effect_fence=MySQLNamedLockManager(engine),
             docling_factory=DoclingClient,
             point_factory=PointStruct,
             validate_content_type=validate_content_type,

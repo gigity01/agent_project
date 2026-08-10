@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,6 +46,19 @@ class _PointStruct:
         self.id = id
         self.vector = vector
         self.payload = payload
+
+
+class _ExternalEffectFence:
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+        self.on_hold = None
+
+    @contextmanager
+    def hold(self, resource_key: str):
+        self.keys.append(resource_key)
+        if self.on_hold is not None:
+            self.on_hold(resource_key)
+        yield
 
 
 class _DocumentIndexLogger:
@@ -149,6 +163,7 @@ def _load_service_module():
             uow_factory=lambda: module.SQLAlchemyUnitOfWork(),
             embedding_factory=lambda: module.EmbeddingService(),
             vector_store_factory=lambda: module.QdrantVectorStore(),
+            external_effect_fence=_ExternalEffectFence(),
             point_factory=lambda **values: module.PointStruct(**values),
         )
         module.test_settings = SimpleNamespace(
@@ -466,6 +481,7 @@ class VectorIndexingServiceTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.original_uow = self.service.SQLAlchemyUnitOfWork
+        self.service.test_ports.external_effect_fence = _ExternalEffectFence()
 
     def tearDown(self) -> None:
         self.service.SQLAlchemyUnitOfWork = self.original_uow
@@ -637,6 +653,7 @@ class VectorIndexingServiceTest(unittest.TestCase):
                 "source_type": "md",
                 "title": "Document title",
                 "original_filename": "document.md",
+                "operation_id": "operation-test",
             },
         )
         self.assertEqual(document.status, DocumentStatus.INDEXED.value)
@@ -646,9 +663,13 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual([chunk.qdrant_point_id for chunk in chunks], ["1", "2", "3"])
         self.assertEqual(response.total_chunks, 3)
         self.assertEqual(response.indexed_chunks, 3)
-        self.assertEqual(len(factory.instances), 2)
+        self.assertEqual(len(factory.instances), 4)
         self.assertEqual(factory.instances[0].commit_count, 1)
-        self.assertEqual(factory.instances[1].commit_count, 1)
+        self.assertEqual(factory.instances[3].commit_count, 1)
+        self.assertEqual(
+            self.service.test_ports.external_effect_fence.keys,
+            ["document:index:1", "document:index:1"],
+        )
 
     def test_embedding_count_mismatch_marks_document_and_chunks_failed(self) -> None:
         document = _document(active_content_hash="keep-me")
@@ -831,6 +852,20 @@ class VectorIndexingServiceTest(unittest.TestCase):
         compensator = self.service.IndexVectorsCompensator(
             ports=self.service.test_ports
         )
+        observed_fence_state = []
+
+        def observe_fence_state(resource_key: str) -> None:
+            observed_fence_state.append(
+                (
+                    resource_key,
+                    document.status,
+                    document.active_operation_id,
+                )
+            )
+
+        self.service.test_ports.external_effect_fence.on_hold = (
+            observe_fence_state
+        )
 
         compensator.compensate(
             document_id=document.id,
@@ -849,10 +884,24 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertTrue(
             all(chunk.vector_status == "failed" for chunk in chunks)
         )
+        self.assertEqual(
+            observed_fence_state,
+            [
+                (
+                    "document:index:1",
+                    DocumentStatus.FAILED.value,
+                    "operation-test",
+                )
+            ],
+        )
 
     def test_failed_batch_distinguishes_confirmed_and_uncertain_points(self) -> None:
-        document = _document()
-        chunks = [_chunk(1), _chunk(2), _chunk(3)]
+        document = _document(status=DocumentStatus.INDEXING.value)
+        chunks = [
+            _chunk(1, vector_status="indexing"),
+            _chunk(2, vector_status="indexing"),
+            _chunk(3, vector_status="indexing"),
+        ]
         factory = self._use(document, chunks)
         embedding = _EmbeddingClient(factory)
         vector_store = _VectorStore(factory, fail_upsert_call=2)
@@ -867,6 +916,7 @@ class VectorIndexingServiceTest(unittest.TestCase):
                     chunks=tuple(
                         self.service._to_chunk_input(chunk) for chunk in chunks
                     ),
+                    operation_id="operation-test",
                 ),
                 embedding_client=embedding,
                 vector_store=vector_store,
@@ -878,6 +928,38 @@ class VectorIndexingServiceTest(unittest.TestCase):
         self.assertEqual(raised.exception.batch_index, 2)
         self.assertEqual(raised.exception.batch_size, 1)
         self.assertEqual(vector_store.ensure_count, 1)
+
+    def test_old_operation_cannot_upsert_after_new_owner_takes_over(self) -> None:
+        document = _document(
+            status=DocumentStatus.INDEXING.value,
+            active_operation_id="operation-new",
+        )
+        chunk = _chunk(1, vector_status="indexing")
+        factory = self._use(document, [chunk])
+        vector_store = _VectorStore(factory)
+
+        with self.assertRaisesRegex(
+            self.service.IndexingAbortedError,
+            "ownership 已失效",
+        ):
+            self.service._execute_indexing(
+                self.service.IndexingContext(
+                    document_id=document.id,
+                    source_type=document.source_type,
+                    title=document.title,
+                    original_filename=document.original_filename,
+                    chunks=(self.service._to_chunk_input(chunk),),
+                    operation_id="operation-old",
+                ),
+                embedding_client=_EmbeddingClient(factory),
+                vector_store=vector_store,
+            )
+
+        self.assertEqual(vector_store.upsert_calls, [])
+        self.assertEqual(
+            self.service.test_ports.external_effect_fence.keys,
+            ["document:index:1"],
+        )
 
     def test_failure_state_result_preserves_concurrent_document_status(self) -> None:
         document = _document(status=DocumentStatus.INDEXED.value)
@@ -930,10 +1012,11 @@ class VectorIndexingServiceTest(unittest.TestCase):
         )
         self.assertTrue(all(chunk.vector_status == "failed" for chunk in chunks))
         self.assertEqual(vector_store.delete_calls, [[1, 2]])
-        self.assertEqual(len(factory.instances), 4)
+        self.assertEqual(len(factory.instances), 5)
         self.assertEqual(factory.instances[1].commit_count, 0)
-        self.assertEqual(factory.instances[2].commit_count, 1)
+        self.assertEqual(factory.instances[2].commit_count, 0)
         self.assertEqual(factory.instances[3].commit_count, 1)
+        self.assertEqual(factory.instances[4].commit_count, 1)
         self.assertIsNone(document.active_operation_id)
 
     def test_chunk_status_change_aborts_completion_and_compensates(self) -> None:
@@ -987,9 +1070,9 @@ class VectorIndexingServiceTest(unittest.TestCase):
         )
         self.assertNotEqual(document.status, DocumentStatus.INDEXED.value)
         self.assertEqual(vector_store.delete_calls, [[1]])
-        self.assertEqual(factory.instances[1].commit_count, 0)
+        self.assertEqual(factory.instances[2].commit_count, 0)
         self.assertEqual(
-            factory.instances[1].child_chunks.count_not_indexed_calls,
+            factory.instances[2].child_chunks.count_not_indexed_calls,
             [document.id],
         )
 

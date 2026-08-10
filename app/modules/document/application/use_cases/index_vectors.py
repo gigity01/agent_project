@@ -470,7 +470,13 @@ def _execute_indexing(
 
         qdrant_started_at_ms = now_ms()
         try:
-            vector_store.upsert_points(points)
+            with ports.external_effect_fence.hold(
+                _index_effect_fence_key(context.document_id)
+            ):
+                _assert_indexing_owned(context, ports=ports)
+                vector_store.upsert_points(points)
+        except IndexingAbortedError:
+            raise
         except Exception as exc:
             raise IndexingExecutionError(
                 "Qdrant Upsert 失败",
@@ -597,46 +603,49 @@ class IndexVectorsCompensator:
         if snapshot is None:
             return NO_INDEX_FAILURE_STATE_CHANGE
 
-        compensation_point_ids = (
-            snapshot.chunk_ids
-            if point_ids is None
-            else tuple(dict.fromkeys(point_ids))
-        )
-        if compensation_point_ids:
-            resolved_vector_store = (
-                vector_store or self._ports.vector_store_factory()
+        with self._ports.external_effect_fence.hold(
+            _index_effect_fence_key(document_id)
+        ):
+            compensation_point_ids = (
+                snapshot.chunk_ids
+                if point_ids is None
+                else tuple(dict.fromkeys(point_ids))
             )
-            started_at_ms = now_ms()
-            if index_logger is not None:
-                started_at_ms = index_logger.compensation_started(
-                    confirmed_point_count=len(compensation_point_ids),
-                    uncertain_point_count=0,
+            if compensation_point_ids:
+                resolved_vector_store = (
+                    vector_store or self._ports.vector_store_factory()
                 )
-            try:
-                resolved_vector_store.delete_points(
-                    list(compensation_point_ids)
-                )
-            except Exception as exc:
+                started_at_ms = now_ms()
                 if index_logger is not None:
-                    index_logger.compensation_failed(
-                        error=exc,
+                    started_at_ms = index_logger.compensation_started(
                         confirmed_point_count=len(compensation_point_ids),
                         uncertain_point_count=0,
-                        point_count=len(compensation_point_ids),
+                    )
+                try:
+                    resolved_vector_store.delete_points(
+                        list(compensation_point_ids)
+                    )
+                except Exception as exc:
+                    if index_logger is not None:
+                        index_logger.compensation_failed(
+                            error=exc,
+                            confirmed_point_count=len(compensation_point_ids),
+                            uncertain_point_count=0,
+                            point_count=len(compensation_point_ids),
+                            started_at_ms=started_at_ms,
+                        )
+                    raise
+                if index_logger is not None:
+                    index_logger.compensation_completed(
+                        requested_point_count=len(compensation_point_ids),
                         started_at_ms=started_at_ms,
                     )
-                raise
-            if index_logger is not None:
-                index_logger.compensation_completed(
-                    requested_point_count=len(compensation_point_ids),
-                    started_at_ms=started_at_ms,
-                )
 
-        return self._complete(
-            snapshot=snapshot,
-            operation_id=operation_id,
-            chunk_ids=snapshot.chunk_ids,
-        )
+            return self._complete(
+                snapshot=snapshot,
+                operation_id=operation_id,
+                chunk_ids=snapshot.chunk_ids,
+            )
 
     def _prepare(
         self,
@@ -842,8 +851,29 @@ def _build_point(
             "source_type": context.source_type,
             "title": context.title,
             "original_filename": context.original_filename,
+            "operation_id": context.operation_id,
         },
     )
+
+
+def _assert_indexing_owned(
+    context: IndexingContext,
+    *,
+    ports: DocumentApplicationPorts,
+) -> None:
+    """在外部写入围栏内复核 Operation 仍持有 Document。"""
+    with ports.uow_factory() as uow:
+        document = uow.documents.get_by_id_for_update(context.document_id)
+        if (
+            document is None
+            or document.status != DocumentStatus.INDEXING.value
+            or document.active_operation_id != context.operation_id
+        ):
+            raise IndexingAbortedError("当前索引 Operation ownership 已失效")
+
+
+def _index_effect_fence_key(document_id: int) -> str:
+    return f"document:index:{document_id}"
 
 
 def _context_chunk_ids(context: IndexingContext) -> tuple[int, ...]:

@@ -44,27 +44,50 @@ class TaskRuntimeService:
         executors: ExecutorRegistry,
         compensators: CompensatorRegistry,
         retry_delay_seconds: int = 30,
+        compensation_retry_delay_seconds: int = 30,
+        compensation_retry_max_delay_seconds: int = 300,
     ) -> None:
+        if compensation_retry_delay_seconds < 0:
+            raise ValueError("补偿重试延迟不能小于 0")
+        if compensation_retry_max_delay_seconds < 0:
+            raise ValueError("补偿重试最大延迟不能小于 0")
         self._ports = ports
         self._capabilities = capabilities
         self._executors = executors
         self._compensators = compensators
         self._retry_delay_seconds = retry_delay_seconds
+        self._compensation_retry_delay_seconds = (
+            compensation_retry_delay_seconds
+        )
+        self._compensation_retry_max_delay_seconds = (
+            compensation_retry_max_delay_seconds
+        )
 
     async def execute_next(
         self,
         plan_id: str,
         *,
         event_id: str | None = None,
+        compensation_attempt: int = 0,
+        compensation_operation_id: str | None = None,
     ) -> ExecutePlanResult:
         claimed = await asyncio.to_thread(
             self._claim_next,
             ClaimNextTaskInput(plan_id=plan_id),
             event_id,
+            compensation_operation_id,
         )
         if claimed.recovery is not None:
             recovery = claimed.recovery
-            await self._compensate_recovery(recovery)
+            try:
+                await self._compensate_recovery(recovery)
+            except Exception:
+                return await asyncio.to_thread(
+                    self._schedule_compensation_retry,
+                    recovery,
+                    event_id,
+                    compensation_attempt,
+                )
             return await asyncio.to_thread(
                 self._complete_stale_recovery,
                 recovery,
@@ -104,16 +127,34 @@ class TaskRuntimeService:
                 "Task Executor 执行超时",
                 retryable=True,
             )
-            return await self._handle_failure(task, definition, error)
+            return await self._handle_failure(
+                task,
+                definition,
+                error,
+                event_id=event_id,
+                compensation_attempt=compensation_attempt,
+            )
         except TaskExecutionError as error:
-            return await self._handle_failure(task, definition, error)
+            return await self._handle_failure(
+                task,
+                definition,
+                error,
+                event_id=event_id,
+                compensation_attempt=compensation_attempt,
+            )
         except Exception as exc:
             error = TaskExecutionError(
                 "executor_system_error",
                 f"Task Executor 系统异常: {type(exc).__name__}",
                 retryable=False,
             )
-            return await self._handle_failure(task, definition, error)
+            return await self._handle_failure(
+                task,
+                definition,
+                error,
+                event_id=event_id,
+                compensation_attempt=compensation_attempt,
+            )
 
         await asyncio.to_thread(
             self._complete,
@@ -154,6 +195,7 @@ class TaskRuntimeService:
         self,
         command: ClaimNextTaskInput,
         event_id: str | None = None,
+        compensation_operation_id: str | None = None,
     ) -> ClaimNextTaskResult:
         with self._ports.uow_factory() as uow:
             if event_id is not None and uow.inbox.exists(
@@ -177,6 +219,15 @@ class TaskRuntimeService:
             if plan.current_task_id is not None:
                 recovery = self._recover_stale_execution(uow, plan)
                 if recovery is not None:
+                    if (
+                        compensation_operation_id is not None
+                        and recovery.operation_id
+                        != compensation_operation_id
+                    ):
+                        self._record_inbox(uow, event_id)
+                        if event_id is not None:
+                            uow.commit()
+                        return ClaimNextTaskResult(outcome="terminal")
                     uow.commit()
                     return ClaimNextTaskResult(
                         outcome="compensation_required",
@@ -186,6 +237,11 @@ class TaskRuntimeService:
                 if event_id is not None:
                     uow.commit()
                 return ClaimNextTaskResult(outcome="already_running")
+            if compensation_operation_id is not None:
+                self._record_inbox(uow, event_id)
+                if event_id is not None:
+                    uow.commit()
+                return ClaimNextTaskResult(outcome="terminal")
             if plan.status not in {
                 PlanStatus.READY.value,
                 PlanStatus.RUNNING.value,
@@ -348,6 +404,9 @@ class TaskRuntimeService:
         snapshot: TaskSnapshot,
         definition,
         error: TaskExecutionError,
+        *,
+        event_id: str | None = None,
+        compensation_attempt: int = 0,
     ) -> ExecutePlanResult:
         if not definition.side_effect:
             await asyncio.to_thread(self._fail, snapshot, error)
@@ -358,7 +417,15 @@ class TaskRuntimeService:
             snapshot,
             error,
         )
-        await self._run_compensator(snapshot, definition)
+        try:
+            await self._run_compensator(snapshot, definition)
+        except Exception:
+            return await asyncio.to_thread(
+                self._schedule_compensation_retry,
+                snapshot,
+                event_id,
+                compensation_attempt,
+            )
         return await asyncio.to_thread(
             self._complete_compensation,
             snapshot,
@@ -404,6 +471,71 @@ class TaskRuntimeService:
         event_id: str | None,
     ) -> ExecutePlanResult:
         return self._complete_compensation(snapshot, event_id)
+
+    def _schedule_compensation_retry(
+        self,
+        snapshot: TaskSnapshot | RecoverySnapshot,
+        event_id: str | None,
+        compensation_attempt: int,
+    ) -> ExecutePlanResult:
+        """补偿失败后保留 ownership，并可靠发布下一次补偿尝试。"""
+        with self._ports.uow_factory() as uow:
+            plan = uow.plans.get_by_id_for_update(snapshot.plan_id)
+            task = uow.tasks.get_by_id_for_update(snapshot.task_id)
+            execution = uow.task_executions.get_by_id_for_update(
+                snapshot.execution_id
+            )
+            if plan is None or task is None or execution is None:
+                raise RuntimeError("Task Runtime 补偿重试状态记录不存在")
+            if (
+                plan.current_task_id != task.task_id
+                or task.status != TaskStatus.RUNNING.value
+                or execution.status
+                != TaskExecutionStatus.COMPENSATION_REQUIRED.value
+                or execution.attempt != snapshot.attempt
+                or execution.operation_id != snapshot.operation_id
+            ):
+                raise RuntimeError("Task Execution 补偿重试 token 已失效")
+
+            current_attempt = (
+                compensation_attempt
+                if isinstance(compensation_attempt, int)
+                and compensation_attempt >= 0
+                else 0
+            )
+            next_attempt = current_attempt + 1
+            delay_seconds = min(
+                self._compensation_retry_delay_seconds
+                * (2 ** min(current_attempt, 30)),
+                self._compensation_retry_max_delay_seconds,
+            )
+            uow.outbox.add(
+                self._event(
+                    plan,
+                    RuntimeEventType.PLAN_WAKEUP,
+                    payload={
+                        "workflow_id": plan.workflow_id,
+                        "plan_id": plan.plan_id,
+                        "compensation_attempt": next_attempt,
+                        "compensation_operation_id": snapshot.operation_id,
+                    },
+                    available_at=(
+                        datetime.now() + timedelta(seconds=delay_seconds)
+                    ),
+                )
+            )
+            if event_id is not None and not uow.inbox.exists(
+                "task_runtime",
+                event_id,
+            ):
+                self._record_inbox(uow, event_id)
+            uow.commit()
+            return ExecutePlanResult(
+                plan_id=plan.plan_id,
+                outcome="compensation_retry_scheduled",
+                task_id=task.task_id,
+                execution_id=execution.execution_id,
+            )
 
     def _require_compensation(
         self,

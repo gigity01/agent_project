@@ -76,6 +76,7 @@ class ExecutePlanResult(BaseModel):
     plan_id: str
     outcome: Literal[
         "task_succeeded",
+        "compensation_retry_scheduled",
         "retry_scheduled",
         "replan_requested",
         "already_running",
