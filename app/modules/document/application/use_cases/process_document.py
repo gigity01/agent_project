@@ -1,6 +1,5 @@
 """处理文档应用用例：以短事务编排领取、执行与结果登记。"""
 
-import logging
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -41,7 +40,6 @@ PROCESSABLE_LIFECYCLE_STATUSES = frozenset(
         DocumentLifecycleStatus.SCHEDULED.value,
     }
 )
-logger = logging.getLogger(__name__)
 
 
 class ProcessingAbortedError(RuntimeError):
@@ -77,15 +75,6 @@ class ProcessingExecutionResult:
     @property
     def secondary_artifact(self) -> PendingArtifact | None:
         return self.prepared_source.secondary_artifact
-
-    def cleanup_generated_files(self) -> None:
-        """删除本次尚未成功登记的 cleaned 和 secondary 文件。"""
-        try:
-            self.cleaned_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        self.prepared_source.cleanup_generated_file()
-
 
 class ProcessDocumentUseCase:
     """在短事务之间编排 Document 转换与清洗。"""
@@ -127,8 +116,6 @@ def _process_document(
     process_logger = DocumentProcessLogger(**logger_kwargs)
     operation_id = process_logger.operation_context.operation_id
     context: ProcessingContext | None = None
-    execution_result: ProcessingExecutionResult | None = None
-    finalized = False
     phase = "claim"
     try:
         context = _claim_processing(
@@ -153,7 +140,6 @@ def _process_document(
 
         phase = "finalize"
         response = _complete_processing(execution_result, ports=ports)
-        finalized = True
         process_logger.completed(
             processed_source_type=(
                 execution_result.cleaned_artifact.artifact_format
@@ -162,66 +148,36 @@ def _process_document(
         )
         return response
     except ProcessingAbortedError as exc:
-        failure_result = _register_processing_failure(
-            document_id=document_id,
-            error=exc,
-            claimed=context is not None,
-            operation_id=operation_id,
-            ports=ports,
-            settings=settings,
-        )
-        if execution_result is not None and not finalized:
-            execution_result.cleanup_generated_files()
         process_logger.failed(
             error=exc,
             phase=phase,
             context=context,
-            state_updated=failure_result.state_updated,
-            status_before=failure_result.status_before,
-            status_after=failure_result.status_after,
+            state_updated=False,
+            status_before=None,
+            status_after=None,
         )
         raise DocumentApplicationError(
             status_code=409,
             detail=str(exc),
         ) from exc
     except DocumentApplicationError as exc:
-        failure_result = _register_processing_failure(
-            document_id=document_id,
-            error=exc,
-            claimed=context is not None,
-            operation_id=operation_id,
-            ports=ports,
-            settings=settings,
-        )
-        if execution_result is not None and not finalized:
-            execution_result.cleanup_generated_files()
         process_logger.failed(
             error=exc,
             phase=phase,
             context=context,
-            state_updated=failure_result.state_updated,
-            status_before=failure_result.status_before,
-            status_after=failure_result.status_after,
+            state_updated=False,
+            status_before=None,
+            status_after=None,
         )
         raise
     except Exception as exc:
-        failure_result = _register_processing_failure(
-            document_id=document_id,
-            error=exc,
-            claimed=context is not None,
-            operation_id=operation_id,
-            ports=ports,
-            settings=settings,
-        )
-        if execution_result is not None and not finalized:
-            execution_result.cleanup_generated_files()
         process_logger.failed(
             error=exc,
             phase=phase,
             context=context,
-            state_updated=failure_result.state_updated,
-            status_before=failure_result.status_before,
-            status_after=failure_result.status_after,
+            state_updated=False,
+            status_before=None,
+            status_after=None,
         )
         raise DocumentApplicationError(
             status_code=500,
@@ -304,59 +260,47 @@ def _execute_processing(
             detail=f"原始路径不是有效文件: {context.source_path}",
         )
 
-    prepared_source: PreparedProcessSource | None = None
-    cleaned_path: Path | None = None
     operation_dir = _processing_operation_dir(
         settings,
         context.operation_id,
     )
-    try:
-        prepared_source = prepare_process_source(
-            context,
-            ports=ports,
-            settings=settings,
-            output_dir=operation_dir,
-        )
-        operation_dir.mkdir(parents=True, exist_ok=True)
-        cleaned_filename = (
-            f"{context.doc_code}.cleaned.{prepared_source.source_type}"
-        )
-        cleaned_path = operation_dir / cleaned_filename
-        processor = ports.processor_factory(prepared_source.source_type)
-        process_result = processor.process(
-            source_path=prepared_source.source_path,
-            cleaned_path=cleaned_path,
-        )
+    prepared_source = prepare_process_source(
+        context,
+        ports=ports,
+        settings=settings,
+        output_dir=operation_dir,
+    )
+    operation_dir.mkdir(parents=True, exist_ok=True)
+    cleaned_filename = (
+        f"{context.doc_code}.cleaned.{prepared_source.source_type}"
+    )
+    cleaned_path = operation_dir / cleaned_filename
+    processor = ports.processor_factory(prepared_source.source_type)
+    process_result = processor.process(
+        source_path=prepared_source.source_path,
+        cleaned_path=cleaned_path,
+    )
 
-        cleaned_artifact = PendingArtifact(
-            artifact_type="cleaned_text",
-            artifact_role="process_output",
-            artifact_format=process_result.source_type,
-            artifact_uri=str(cleaned_path),
-            artifact_hash=ports.calculate_file_hash(cleaned_path),
-            provider=None,
-            processor=processor.__class__.__name__,
-            file_size=cleaned_path.stat().st_size,
-            char_count=process_result.char_count,
-            line_count=process_result.line_count,
-            metadata=process_result.metadata,
-        )
-        return ProcessingExecutionResult(
-            document_id=context.document_id,
-            operation_id=context.operation_id,
-            cleaned_path=cleaned_path,
-            prepared_source=prepared_source,
-            cleaned_artifact=cleaned_artifact,
-        )
-    except Exception:
-        if cleaned_path is not None:
-            try:
-                cleaned_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        if prepared_source is not None:
-            prepared_source.cleanup_generated_file()
-        raise
+    cleaned_artifact = PendingArtifact(
+        artifact_type="cleaned_text",
+        artifact_role="process_output",
+        artifact_format=process_result.source_type,
+        artifact_uri=str(cleaned_path),
+        artifact_hash=ports.calculate_file_hash(cleaned_path),
+        provider=None,
+        processor=processor.__class__.__name__,
+        file_size=cleaned_path.stat().st_size,
+        char_count=process_result.char_count,
+        line_count=process_result.line_count,
+        metadata=process_result.metadata,
+    )
+    return ProcessingExecutionResult(
+        document_id=context.document_id,
+        operation_id=context.operation_id,
+        cleaned_path=cleaned_path,
+        prepared_source=prepared_source,
+        cleaned_artifact=cleaned_artifact,
+    )
 
 
 def _complete_processing(
@@ -464,34 +408,6 @@ def _promote_file(source_path: Path, destination_dir: Path) -> Path:
         raise RuntimeError(f"正式产物路径已存在: {destination_path}")
     shutil.move(str(source_path), str(destination_path))
     return destination_path
-
-
-def _register_processing_failure(
-    *,
-    document_id: int,
-    error: Exception,
-    claimed: bool,
-    operation_id: str,
-    ports: DocumentApplicationPorts,
-    settings: DocumentProcessingSettings,
-) -> FailureStateResult:
-    """尽力登记失败状态；登记异常时保留原始业务异常。"""
-    if not claimed:
-        return NO_FAILURE_STATE_CHANGE
-    try:
-        return ProcessDocumentCompensator(
-            ports=ports,
-            settings=settings,
-        ).compensate(
-            document_id=document_id,
-            operation_id=operation_id,
-        )
-    except Exception:
-        logger.exception(
-            "文档处理失败状态登记失败",
-            extra={"document_id": document_id},
-        )
-        return NO_FAILURE_STATE_CHANGE
 
 
 def _fail_processing(

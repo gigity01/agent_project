@@ -170,6 +170,13 @@ Plan revision。澄清请求在新 Plan 成功聚合后变为 `resolved`。
   写入 `documents.active_operation_id`，finalize 和补偿只有在 token 相同时才能推进或
   释放状态。
 
+UseCase 负责局部执行正确性，Task Runtime 负责 Operation 失败生命周期，Compensator
+负责持久化业务副作用恢复。claim 提交前，UseCase 可以回滚事务并清理不属于 Operation
+的局部临时资源；claim 提交后，UseCase 失败只记录诊断并抛出错误，必须保留 Document
+状态、`active_operation_id`、operation-scoped 文件、Chunk 状态和 Qdrant Point，由
+Runtime 先持久化 `compensation_required`，再驱动幂等且 operation-fenced 的
+Compensator 恢复。
+
 每个 Task 仍对应一个固定 Capability。启用 DeepSeek Provider 时，Runtime 通过通用
 `AgentTaskExecutor` 调用三个 capability-scoped Document Executor Agent：每个 Agent
 只能看到 `get_document`、流水线/切块状态等受限查询 Tool，以及当前 Capability 的
@@ -191,16 +198,19 @@ Replan；同一 workflow 最多保留 3 个 revision，旧 Plan 和未完成 Tas
 `superseded`。
 
 三个 Document Capability 均在 Capability Registry 中声明对应的 Compensator。普通
-Executor 失败和过期执行恢复使用同一套三阶段管线：数据库先把 `TaskExecution` 标记为
-`compensation_required` 并持久化 error、`retryable` 与 `blocked` disposition，事务外
-执行文件系统或 Qdrant 补偿，最后以新事务标记 `compensated`，清除 Plan 当前 Task，再
-安排 retry 或请求 Replan。普通可重试错误继续使用 `retry_wait` 和默认 30 秒延迟；lease
-过期恢复直接回到 `pending`。
+Executor 失败和过期执行恢复使用同一个补偿执行入口：数据库先把 `TaskExecution` 标记为
+`compensation_required` 并持久化 error、`retryable` 与 `blocked` disposition；每次真正
+准备调用 Compensator 前，Runtime 先递增 `compensation_attempt_count`、更新
+`compensation_last_attempt_at` 并提交，再在事务外执行文件系统或 Qdrant 补偿；成功后
+以新事务标记 `compensated`，清除 Plan 当前 Task，再安排 retry 或请求 Replan。普通可
+重试错误继续使用 `retry_wait` 和默认 30 秒延迟；lease 过期恢复直接回到 `pending`。
 
-补偿失败次数是 `TaskExecution.compensation_attempt_count` 的持久化事实；每次失败还会
-更新 `compensation_last_error` 与 `compensation_last_attempt_at`。自动补偿默认最多执行
-5 次，未达上限时保留原 Task、`compensation_required` 状态和 Document ownership，并在
-Outbox 中可靠写入新的 `runtime.plan_wakeup`：从 30 秒开始指数退避，最大延迟 300 秒。
+`TaskExecution.compensation_attempt_count` 表示 Compensator 调用尝试次数，包括首次成功
+调用，而不是补偿失败次数。只有调用失败才更新 `compensation_last_error`；后续补偿成功
+保留既往错误，便于识别经历故障后恢复成功的执行。自动补偿默认最多执行 5 次，未达
+上限时保留原 Task、`compensation_required` 状态和 Document ownership，并在 Outbox 中
+可靠写入新的 `runtime.plan_wakeup`：第 1、2、3 次调用失败后分别从 30、60、120 秒继续
+指数退避，最大延迟 300 秒。
 补偿消息的控制字段只携带目标 `execution_id` 与 `operation_id`，Runtime 从数据库读取
 尝试次数，因此旧消息不能改写计数或误领后续 Task；原 Stream 消息可在重试事件持久化
 后 ACK。
@@ -231,16 +241,20 @@ uploaded → processing → processed → chunking → chunked → indexing → 
 - Process 先在 `storage/staging/{operation_id}/` 生成 secondary/cleaned 文件，再分别
   提升到 `storage/secondary_text/{operation_id}/` 和
   `storage/cleaned/{operation_id}/`；正式 URI 作为 Artifact 和 `cleaned_uri` 的持久化
-  事实。失败补偿按当前 owner 同时清理 staging 与可能只完成部分提升的正式目录，全部
-  清理成功后才释放 ownership。
+  事实。claim 后失败时 UseCase 保留 staging 与可能只完成部分提升的正式目录；Runtime
+  驱动的补偿按当前 owner 清理三类 operation-scoped 目录，全部清理成功后才释放
+  ownership。
 - 文本与 Markdown 按语义父块和长度子块切分；CSV 一条记录对应一个子块。
 - Embedding 使用 DashScope OpenAI-compatible API，向量以 ChildChunk ID 幂等
   upsert 到 Qdrant；Point payload 同时保存本次 `operation_id` 作为外部归属事实。
-- Chunk finalize 的父子块替换保持单一数据库事务，补偿只释放 `chunking` ownership。
+- Chunk finalize 的父子块替换保持单一数据库事务；失败时事务回滚并保留
+  `chunking` ownership，Runtime 驱动的补偿只负责将文档标记为 `failed` 并释放 token。
 - Index 的每批 Qdrant upsert 都先获取文档级 MySQL named lock，并在锁内复核
-  `active_operation_id`；补偿先把 Document 标记为 `failed` 但保留 token，再使用同一
-  围栏删除当前 `indexing` Chunk 的稳定 Point ID，删除成功后才把 Chunk 标记为
-  `failed` 并释放 ownership。围栏获取最多等待 30 秒，失败时进入上述补偿重试。这样
+  `active_operation_id`；UseCase 失败时保留 `indexing` Chunk 和 token，内存中的
+  confirmed/uncertain Point ID 只进入诊断日志。Runtime 驱动的 Compensator 从数据库
+  当前 `indexing` Chunk 的稳定 ID 独立推导待删 Point，先把 Document 标记为 `failed`
+  但保留 token，再使用同一围栏删除 Point；删除成功后才把 Chunk 标记为 `failed` 并
+  释放 ownership。围栏获取最多等待 30 秒，失败时进入上述补偿重试。这样
   已超时的旧线程即使稍后恢复，也不能在补偿完成或新 Operation 接管后再次 upsert。
   MySQL、文件系统和 Qdrant 仍不共享事务，因此系统继续采用 fail-closed 补偿，而不是
   假定跨存储已经一致。

@@ -599,7 +599,9 @@ class DocumentChunkingServiceTest(unittest.TestCase):
         self.assertEqual(document.status, DocumentStatus.INDEXED.value)
         self.assertEqual(factory.instances[0].commit_count, 0)
 
-    def test_chunker_failure_marks_failed_without_releasing_hash(self) -> None:
+    def test_chunker_failure_preserves_operation_until_compensator_runs(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cleaned_path = Path(temp_dir) / "cleaned.md"
             cleaned_path.write_text("content", encoding="utf-8")
@@ -623,11 +625,21 @@ class DocumentChunkingServiceTest(unittest.TestCase):
                     self.service.build_document_chunks(document.id)
 
         self.assertEqual(raised.exception.status_code, 500)
-        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertEqual(document.status, DocumentStatus.CHUNKING.value)
+        self.assertEqual(document.active_operation_id, "operation-test")
         self.assertEqual(document.active_content_hash, "keep-me")
-        self.assertEqual(len(factory.instances), 2)
+        self.assertEqual(len(factory.instances), 1)
         self.assertEqual(factory.instances[0].commit_count, 1)
-        self.assertEqual(factory.instances[1].commit_count, 1)
+
+        self.service.BuildChunksCompensator(
+            ports=self.service.test_ports
+        ).compensate(
+            document_id=document.id,
+            operation_id="operation-test",
+        )
+
+        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertIsNone(document.active_operation_id)
 
     def test_invalid_chunk_build_results_are_rejected(self) -> None:
         duplicate_parent = _chunk_result()
@@ -741,7 +753,9 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             )
         )
 
-    def test_deletion_during_execution_discards_chunks_and_marks_failed(self) -> None:
+    def test_deletion_during_execution_preserves_operation_for_compensator(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cleaned_path = Path(temp_dir) / "cleaned.md"
             cleaned_path.write_text("content", encoding="utf-8")
@@ -765,7 +779,8 @@ class DocumentChunkingServiceTest(unittest.TestCase):
                     self.service.build_document_chunks(document.id)
 
         self.assertEqual(raised.exception.status_code, 409)
-        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertEqual(document.status, DocumentStatus.CHUNKING.value)
+        self.assertEqual(document.active_operation_id, "operation-test")
         self.assertEqual(
             document.lifecycle_status,
             DocumentLifecycleStatus.DELETED.value,
@@ -774,11 +789,10 @@ class DocumentChunkingServiceTest(unittest.TestCase):
             document.storage_status,
             DocumentStorageStatus.ARCHIVING.value,
         )
-        self.assertEqual(len(factory.instances), 3)
+        self.assertEqual(len(factory.instances), 2)
         completion_uow = factory.instances[1]
         self.assertEqual(completion_uow.events, [])
         self.assertEqual(completion_uow.commit_count, 0)
-        self.assertEqual(factory.instances[2].commit_count, 1)
 
 
 if __name__ == "__main__":

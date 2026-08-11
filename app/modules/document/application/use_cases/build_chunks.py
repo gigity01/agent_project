@@ -1,6 +1,5 @@
 """构建文档切块应用用例：以短事务编排领取、执行与结果登记。"""
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,7 +37,6 @@ CHUNKABLE_LIFECYCLE_STATUSES = frozenset(
         DocumentLifecycleStatus.SCHEDULED.value,
     }
 )
-logger = logging.getLogger(__name__)
 
 
 class ChunkingAbortedError(RuntimeError):
@@ -142,57 +140,36 @@ def _build_document_chunks(
         chunk_logger.completed(response)
         return response
     except ChunkingAbortedError as exc:
-        failure_result = _register_chunking_failure(
-            document_id=document_id,
-            error=exc,
-            claimed=context is not None,
-            operation_id=operation_id,
-            ports=ports,
-        )
         chunk_logger.failed(
             error=exc,
             phase=phase,
             context=context,
-            state_updated=failure_result.state_updated,
-            status_before=failure_result.status_before,
-            status_after=failure_result.status_after,
+            state_updated=False,
+            status_before=None,
+            status_after=None,
         )
         raise DocumentApplicationError(
             status_code=409,
             detail=str(exc),
         ) from exc
     except DocumentApplicationError as exc:
-        failure_result = _register_chunking_failure(
-            document_id=document_id,
-            error=exc,
-            claimed=context is not None,
-            operation_id=operation_id,
-            ports=ports,
-        )
         chunk_logger.failed(
             error=exc,
             phase=phase,
             context=context,
-            state_updated=failure_result.state_updated,
-            status_before=failure_result.status_before,
-            status_after=failure_result.status_after,
+            state_updated=False,
+            status_before=None,
+            status_after=None,
         )
         raise
     except Exception as exc:
-        failure_result = _register_chunking_failure(
-            document_id=document_id,
-            error=exc,
-            claimed=context is not None,
-            operation_id=operation_id,
-            ports=ports,
-        )
         chunk_logger.failed(
             error=exc,
             phase=phase,
             context=context,
-            state_updated=failure_result.state_updated,
-            status_before=failure_result.status_before,
-            status_after=failure_result.status_after,
+            state_updated=False,
+            status_before=None,
+            status_after=None,
         )
         raise DocumentApplicationError(
             status_code=500,
@@ -444,30 +421,6 @@ def _complete_chunking(
         uow.commit()
 
     return response
-
-
-def _register_chunking_failure(
-    *,
-    document_id: int,
-    error: Exception,
-    claimed: bool,
-    operation_id: str,
-    ports: DocumentApplicationPorts,
-) -> FailureStateResult:
-    """尽力登记失败状态；登记异常时保留原始业务异常。"""
-    if not claimed:
-        return NO_FAILURE_STATE_CHANGE
-    try:
-        return BuildChunksCompensator(ports=ports).compensate(
-            document_id=document_id,
-            operation_id=operation_id,
-        )
-    except Exception:
-        logger.exception(
-            "文档切块失败状态登记失败",
-            extra={"document_id": document_id},
-        )
-        return NO_FAILURE_STATE_CHANGE
 
 
 def _fail_chunking(

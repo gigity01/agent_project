@@ -97,19 +97,13 @@ class TaskRuntimeService:
             )
         if claimed.recovery is not None:
             recovery = claimed.recovery
-            try:
-                await self._compensate_recovery(recovery)
-            except Exception as error:
-                return await asyncio.to_thread(
-                    self._schedule_compensation_retry,
-                    recovery,
-                    event_id,
-                    error,
-                )
-            return await asyncio.to_thread(
-                self._complete_stale_recovery,
+            definition = self._capabilities.require(
+                recovery.capability_code
+            )
+            return await self._execute_compensation(
                 recovery,
-                event_id,
+                definition,
+                event_id=event_id,
             )
         if claimed.task is None:
             return ExecutePlanResult(plan_id=plan_id, outcome=claimed.outcome)
@@ -455,24 +449,38 @@ class TaskRuntimeService:
             snapshot,
             error,
         )
+        return await self._execute_compensation(
+            snapshot,
+            definition,
+            event_id=None,
+        )
+
+    async def _execute_compensation(
+        self,
+        snapshot: TaskSnapshot | RecoverySnapshot,
+        definition,
+        *,
+        event_id: str | None,
+    ) -> ExecutePlanResult:
+        attempt = await asyncio.to_thread(
+            self._begin_compensation_attempt,
+            snapshot,
+        )
         try:
             await self._run_compensator(snapshot, definition)
         except Exception as compensation_error:
             return await asyncio.to_thread(
-                self._schedule_compensation_retry,
+                self._handle_compensation_failure,
                 snapshot,
                 event_id,
                 compensation_error,
+                attempt,
             )
         return await asyncio.to_thread(
             self._complete_compensation,
             snapshot,
-            None,
+            event_id,
         )
-
-    async def _compensate_recovery(self, recovery: RecoverySnapshot) -> None:
-        definition = self._capabilities.require(recovery.capability_code)
-        await self._run_compensator(recovery, definition)
 
     async def _run_compensator(self, snapshot, definition) -> None:
         if definition.compensator_code is None:
@@ -503,45 +511,56 @@ class TaskRuntimeService:
             attempt=snapshot.attempt,
         )
 
-    def _complete_stale_recovery(
-        self,
-        snapshot: RecoverySnapshot,
-        event_id: str | None,
-    ) -> ExecutePlanResult:
-        return self._complete_compensation(snapshot, event_id)
-
-    def _schedule_compensation_retry(
+    def _begin_compensation_attempt(
         self,
         snapshot: TaskSnapshot | RecoverySnapshot,
-        event_id: str | None,
-        error: Exception,
-    ) -> ExecutePlanResult:
-        """持久化补偿失败，并可靠发布下次尝试或冻结补偿生命周期。"""
+    ) -> int:
+        """在调用 Compensator 前持久化一次真实补偿尝试。"""
         with self._ports.uow_factory() as uow:
             plan = uow.plans.get_by_id_for_update(snapshot.plan_id)
             task = uow.tasks.get_by_id_for_update(snapshot.task_id)
             execution = uow.task_executions.get_by_id_for_update(
                 snapshot.execution_id
             )
-            if plan is None or task is None or execution is None:
-                raise RuntimeError("Task Runtime 补偿重试状态记录不存在")
-            if (
-                plan.current_task_id != task.task_id
-                or task.status != TaskStatus.RUNNING.value
-                or execution.status
-                != TaskExecutionStatus.COMPENSATION_REQUIRED.value
-                or execution.attempt != snapshot.attempt
-                or execution.operation_id != snapshot.operation_id
-            ):
-                raise RuntimeError("Task Execution 补偿重试 token 已失效")
+            self._assert_compensation_token(
+                plan,
+                task,
+                execution,
+                snapshot,
+            )
 
-            current_attempt = execution.compensation_attempt_count
-            next_attempt = current_attempt + 1
+            execution.compensation_attempt_count += 1
+            execution.compensation_last_attempt_at = datetime.now()
+            attempt = execution.compensation_attempt_count
+            uow.commit()
+            return attempt
+
+    def _handle_compensation_failure(
+        self,
+        snapshot: TaskSnapshot | RecoverySnapshot,
+        event_id: str | None,
+        error: Exception,
+        attempt: int,
+    ) -> ExecutePlanResult:
+        """记录已执行补偿的失败，并可靠重试或冻结补偿生命周期。"""
+        with self._ports.uow_factory() as uow:
+            plan = uow.plans.get_by_id_for_update(snapshot.plan_id)
+            task = uow.tasks.get_by_id_for_update(snapshot.task_id)
+            execution = uow.task_executions.get_by_id_for_update(
+                snapshot.execution_id
+            )
+            self._assert_compensation_token(
+                plan,
+                task,
+                execution,
+                snapshot,
+            )
+            if execution.compensation_attempt_count != attempt:
+                raise RuntimeError("Task Execution 补偿 attempt 已失效")
+
             now = datetime.now()
-            execution.compensation_attempt_count = next_attempt
             execution.compensation_last_error = str(error)
-            execution.compensation_last_attempt_at = now
-            if next_attempt >= self._max_compensation_attempts:
+            if attempt >= self._max_compensation_attempts:
                 return self._lock_compensation(
                     uow,
                     plan,
@@ -552,7 +571,7 @@ class TaskRuntimeService:
                 )
             delay_seconds = min(
                 self._compensation_retry_delay_seconds
-                * (2 ** min(current_attempt, 30)),
+                * (2 ** (attempt - 1)),
                 self._compensation_retry_max_delay_seconds,
             )
             uow.outbox.add(
@@ -641,17 +660,12 @@ class TaskRuntimeService:
             execution = uow.task_executions.get_by_id_for_update(
                 snapshot.execution_id
             )
-            if plan is None or task is None or execution is None:
-                raise RuntimeError("Task Runtime 恢复状态记录不存在")
-            if (
-                plan.current_task_id != task.task_id
-                or task.status != TaskStatus.RUNNING.value
-                or execution.status
-                != TaskExecutionStatus.COMPENSATION_REQUIRED.value
-                or execution.attempt != snapshot.attempt
-                or execution.operation_id != snapshot.operation_id
-            ):
-                raise RuntimeError("Task Execution 补偿 token 已失效")
+            self._assert_compensation_token(
+                plan,
+                task,
+                execution,
+                snapshot,
+            )
 
             now = datetime.now()
             execution.status = TaskExecutionStatus.COMPENSATED.value
@@ -721,6 +735,26 @@ class TaskRuntimeService:
                 task_id=task.task_id,
                 execution_id=execution.execution_id,
             )
+
+    @staticmethod
+    def _assert_compensation_token(
+        plan,
+        task,
+        execution,
+        snapshot: TaskSnapshot | RecoverySnapshot,
+    ) -> None:
+        """统一校验 Runtime 当前补偿 Operation 的持久化 ownership。"""
+        if plan is None or task is None or execution is None:
+            raise RuntimeError("Task Runtime 补偿状态记录不存在")
+        if (
+            plan.current_task_id != task.task_id
+            or task.status != TaskStatus.RUNNING.value
+            or execution.status
+            != TaskExecutionStatus.COMPENSATION_REQUIRED.value
+            or execution.attempt != snapshot.attempt
+            or execution.operation_id != snapshot.operation_id
+        ):
+            raise RuntimeError("Task Execution 补偿 token 已失效")
 
     def _complete(
         self,

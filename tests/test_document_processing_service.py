@@ -12,6 +12,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from app.modules.document.application.use_cases.prepare_document_source import (
+    prepare_process_source as prepare_process_source_under_test,
+)
 from app.modules.document.domain.enums import (
     DocumentLifecycleStatus,
     DocumentStatus,
@@ -64,10 +67,6 @@ class _PreparedProcessSource:
     source_type: str
     generated_secondary_text: bool = False
     secondary_artifact: _PendingArtifact | None = None
-
-    def cleanup_generated_file(self) -> None:
-        if self.generated_secondary_text:
-            self.source_path.unlink(missing_ok=True)
 
 
 class _DocumentProcessLogger:
@@ -443,7 +442,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
         self.assertEqual(document.status, DocumentStatus.PROCESSED.value)
         self.assertEqual(factory.instances[0].commit_count, 0)
 
-    def test_docling_failure_marks_failed_without_releasing_hash(self) -> None:
+    def test_docling_failure_preserves_operation_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             source_path = Path(temp_dir) / "source.pdf"
             source_path.write_bytes(b"pdf")
@@ -466,13 +465,56 @@ class DocumentProcessingServiceTest(unittest.TestCase):
                     self.service.process_document(document.id)
 
         self.assertEqual(raised.exception.status_code, 500)
-        self.assertEqual(document.status, DocumentStatus.FAILED.value)
+        self.assertEqual(document.status, DocumentStatus.PROCESSING.value)
+        self.assertEqual(document.active_operation_id, "operation-test")
         self.assertEqual(document.active_content_hash, "keep-me")
-        self.assertEqual(len(factory.instances), 4)
+        self.assertEqual(len(factory.instances), 1)
         self.assertEqual(factory.instances[0].commit_count, 1)
-        self.assertEqual(factory.instances[1].commit_count, 1)
-        self.assertEqual(factory.instances[3].commit_count, 1)
-        self.assertIsNone(document.active_operation_id)
+        self.assertFalse(
+            self.service.DocumentProcessLogger.instances[-1].failed_fields[
+                "state_updated"
+            ]
+        )
+
+    def test_prepare_failure_preserves_operation_scoped_secondary_file(
+        self,
+    ) -> None:
+        class _DoclingClient:
+            def convert_to_markdown(self, **kwargs):
+                return SimpleNamespace(
+                    markdown="# converted",
+                    provider="test-docling",
+                    metadata={},
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "staging" / "operation-test"
+            context = SimpleNamespace(
+                source_type="pdf",
+                source_path=Path(temp_dir) / "source.pdf",
+                doc_code="DOC_001",
+            )
+            ports = SimpleNamespace(
+                docling_factory=lambda: _DoclingClient(),
+                calculate_file_hash=mock.Mock(
+                    side_effect=RuntimeError("hash failed")
+                ),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "hash failed"):
+                prepare_process_source_under_test(
+                    context,
+                    ports=ports,
+                    settings=SimpleNamespace(),
+                    output_dir=output_dir,
+                )
+
+            generated_files = list(output_dir.glob("*.md"))
+            self.assertEqual(len(generated_files), 1)
+            self.assertEqual(
+                generated_files[0].read_text(encoding="utf-8"),
+                "# converted",
+            )
 
     def test_compensator_removes_only_owned_operation_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -696,11 +738,18 @@ class DocumentProcessingServiceTest(unittest.TestCase):
         self.assertEqual(document.active_operation_id, "operation-new")
         self.assertEqual(factory.instances[0].commit_count, 0)
 
-    def test_deletion_during_execution_discards_results_and_marks_failed(self) -> None:
+    def test_process_failure_preserves_files_until_compensator_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            cleaned_path = temp_path / "cleaned.md"
-            secondary_path = temp_path / "secondary.md"
+            settings = SimpleNamespace(
+                cleaned_storage_dir=temp_path / "cleaned",
+                secondary_text_storage_dir=temp_path / "secondary",
+                staging_storage_dir=temp_path / "staging",
+            )
+            operation_dir = settings.staging_storage_dir / "operation-test"
+            operation_dir.mkdir(parents=True)
+            cleaned_path = operation_dir / "cleaned.md"
+            secondary_path = operation_dir / "secondary.md"
             cleaned_path.write_text("cleaned", encoding="utf-8")
             secondary_path.write_text("secondary", encoding="utf-8")
             document = _document()
@@ -729,6 +778,10 @@ class DocumentProcessingServiceTest(unittest.TestCase):
                 ),
                 cleaned_artifact=cleaned,
             )
+            use_case = self.service.ProcessDocumentUseCase(
+                ports=self.service.test_ports,
+                settings=settings,
+            )
 
             def finish_after_deletion(context, **kwargs):
                 document.lifecycle_status = DocumentLifecycleStatus.DELETED.value
@@ -742,28 +795,47 @@ class DocumentProcessingServiceTest(unittest.TestCase):
                 side_effect=finish_after_deletion,
             ):
                 with self.assertRaises(self.service.HTTPException) as raised:
-                    self.service.process_document(document.id)
+                    use_case.execute(document.id)
 
-            self.assertFalse(cleaned_path.exists())
-            self.assertFalse(secondary_path.exists())
+            promoted_cleaned_dir = (
+                settings.cleaned_storage_dir / "operation-test"
+            )
+            promoted_secondary_dir = (
+                settings.secondary_text_storage_dir / "operation-test"
+            )
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertEqual(document.status, DocumentStatus.PROCESSING.value)
+            self.assertEqual(document.active_operation_id, "operation-test")
+            self.assertTrue(promoted_cleaned_dir.is_dir())
+            self.assertTrue(promoted_secondary_dir.is_dir())
+            self.assertEqual(len(factory.instances), 2)
+            completion_uow = factory.instances[1]
+            self.assertEqual(
+                completion_uow.document_artifacts.create_calls,
+                [],
+            )
+            self.assertEqual(completion_uow.commit_count, 0)
 
-        self.assertEqual(raised.exception.status_code, 409)
-        self.assertEqual(document.status, DocumentStatus.FAILED.value)
-        self.assertEqual(
-            document.lifecycle_status,
-            DocumentLifecycleStatus.DELETED.value,
-        )
-        self.assertEqual(
-            document.storage_status,
-            DocumentStorageStatus.ARCHIVING.value,
-        )
-        self.assertEqual(len(factory.instances), 5)
-        completion_uow = factory.instances[1]
-        self.assertEqual(completion_uow.document_artifacts.create_calls, [])
-        self.assertEqual(completion_uow.commit_count, 0)
-        self.assertEqual(factory.instances[2].commit_count, 1)
-        self.assertEqual(factory.instances[4].commit_count, 1)
-        self.assertIsNone(document.active_operation_id)
+            self.service.ProcessDocumentCompensator(
+                ports=self.service.test_ports,
+                settings=settings,
+            ).compensate(
+                document_id=document.id,
+                operation_id="operation-test",
+            )
+
+            self.assertFalse(promoted_cleaned_dir.exists())
+            self.assertFalse(promoted_secondary_dir.exists())
+            self.assertEqual(document.status, DocumentStatus.FAILED.value)
+            self.assertIsNone(document.active_operation_id)
+            self.assertEqual(
+                document.lifecycle_status,
+                DocumentLifecycleStatus.DELETED.value,
+            )
+            self.assertEqual(
+                document.storage_status,
+                DocumentStorageStatus.ARCHIVING.value,
+            )
 
 
 if __name__ == "__main__":

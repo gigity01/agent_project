@@ -319,8 +319,12 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 execution.error_code,
                 "execution_lease_expired",
             )
+            self.assertEqual(execution.compensation_attempt_count, 1)
+            self.assertIsNotNone(execution.compensation_last_attempt_at)
 
-    async def test_normal_failure_is_persisted_before_compensation(self) -> None:
+    async def test_first_successful_compensation_counts_as_attempt_one(
+        self,
+    ) -> None:
         self.executor.errors.append(
             TaskExecutionError(
                 "temporary_failure",
@@ -328,19 +332,28 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 retryable=True,
             )
         )
-        observed_statuses: list[str] = []
+        observed_attempts: list[tuple[str, int, bool]] = []
 
         def observe_status() -> None:
             with self.session_factory() as session:
                 execution = session.query(TaskExecution).one()
-                observed_statuses.append(execution.status)
+                observed_attempts.append(
+                    (
+                        execution.status,
+                        execution.compensation_attempt_count,
+                        execution.compensation_last_attempt_at is not None,
+                    )
+                )
 
         self.compensator.on_call = observe_status
 
         result = await self.runtime.execute_next("plan-runtime")
 
         self.assertEqual(result.outcome, "retry_scheduled")
-        self.assertEqual(observed_statuses, ["compensation_required"])
+        self.assertEqual(
+            observed_attempts,
+            [("compensation_required", 1, True)],
+        )
         with self.session_factory() as session:
             plan = session.get(Plan, "plan-runtime")
             task = session.get(Task, "task-1")
@@ -351,6 +364,71 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(execution.error_code, "temporary_failure")
             self.assertTrue(execution.retryable)
             self.assertFalse(execution.blocked)
+            self.assertEqual(execution.compensation_attempt_count, 1)
+
+    async def test_failed_compensation_persists_attempt_before_invocation(
+        self,
+    ) -> None:
+        self.executor.errors.append(
+            TaskExecutionError(
+                "temporary_failure",
+                "temporary failure",
+                retryable=True,
+            )
+        )
+        observed_attempts: list[tuple[str, int, bool]] = []
+
+        def observe_attempt() -> None:
+            with self.session_factory() as session:
+                execution = session.query(TaskExecution).one()
+                observed_attempts.append(
+                    (
+                        execution.status,
+                        execution.compensation_attempt_count,
+                        execution.compensation_last_attempt_at is not None,
+                    )
+                )
+
+        self.compensator.on_call = observe_attempt
+        self.compensator.error = RuntimeError("compensation failed")
+
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "compensation_retry_scheduled")
+        self.assertEqual(
+            observed_attempts,
+            [("compensation_required", 1, True)],
+        )
+
+    async def test_compensation_attempt_survives_crash_before_completion(
+        self,
+    ) -> None:
+        claimed = self.runtime.claim_next_task(
+            ClaimNextTaskInput(plan_id="plan-runtime")
+        )
+        error = TaskExecutionError(
+            "temporary_failure",
+            "temporary failure",
+            retryable=True,
+        )
+        self.runtime._require_compensation(claimed.task, error)
+
+        attempt = self.runtime._begin_compensation_attempt(claimed.task)
+
+        self.assertEqual(attempt, 1)
+        with self.session_factory() as session:
+            execution = session.query(TaskExecution).one()
+            self.assertEqual(execution.status, "compensation_required")
+            self.assertEqual(execution.compensation_attempt_count, 1)
+
+        result = await self.runtime.execute_next("plan-runtime")
+
+        self.assertEqual(result.outcome, "retry_scheduled")
+        self.assertEqual(len(self.compensator.calls), 1)
+        with self.session_factory() as session:
+            execution = session.query(TaskExecution).one()
+            self.assertEqual(execution.status, "compensated")
+            self.assertEqual(execution.compensation_attempt_count, 2)
 
     async def test_normal_compensation_failure_is_resumable(self) -> None:
         self.executor.errors.append(
@@ -412,6 +490,11 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(plan.current_task_id)
             self.assertEqual(task.status, "retry_wait")
             self.assertEqual(execution.status, "compensated")
+            self.assertEqual(execution.compensation_attempt_count, 2)
+            self.assertEqual(
+                execution.compensation_last_error,
+                "compensation failed",
+            )
 
         stale_retry = await self.runtime.execute_next(
             "plan-runtime",

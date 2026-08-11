@@ -1,6 +1,5 @@
 """索引文档向量应用用例：以短事务编排领取、执行与结果登记。"""
 
-import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -23,9 +22,6 @@ from app.modules.document.domain.enums import (
 from app.shared.observability.document_index_logger import DocumentIndexLogger
 from app.shared.observability.correlation import DocumentOperationContext
 from app.shared.time import now_ms
-
-
-logger = logging.getLogger(__name__)
 
 INDEXABLE_LIFECYCLE_STATUSES = frozenset(
     {
@@ -61,7 +57,7 @@ class IndexingAbortedError(RuntimeError):
 
 
 class IndexingExecutionError(RuntimeError):
-    """携带失败操作位置和仅用于运行时补偿的 Point ID。"""
+    """携带失败操作位置和仅用于诊断的 Point ID。"""
 
     def __init__(
         self,
@@ -178,7 +174,6 @@ def _index_document_vectors(
     index_logger = DocumentIndexLogger(**logger_kwargs)
     operation_id = index_logger.operation_context.operation_id
     context: IndexingContext | None = None
-    resolved_vector_store = vector_store
     confirmed_point_ids: tuple[int, ...] = ()
     uncertain_point_ids: tuple[int, ...] = ()
     phase = "claim"
@@ -195,9 +190,7 @@ def _index_document_vectors(
         resolved_embedding_client = (
             embedding_client or ports.embedding_factory()
         )
-        resolved_vector_store = (
-            resolved_vector_store or ports.vector_store_factory()
-        )
+        resolved_vector_store = vector_store or ports.vector_store_factory()
         execution_result = _execute_indexing(
             context,
             embedding_client=resolved_embedding_client,
@@ -216,18 +209,15 @@ def _index_document_vectors(
         confirmed_point_ids = exc.confirmed_point_ids
         uncertain_point_ids = exc.uncertain_point_ids
         _handle_indexing_failure(
-            document_id=document_id,
             context=context,
             phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
-            vector_store=resolved_vector_store,
             error=exc,
             index_logger=index_logger,
             operation=exc.operation,
             batch_index=exc.batch_index,
             batch_size=exc.batch_size,
-            ports=ports,
         )
         raise DocumentApplicationError(
             status_code=500,
@@ -235,15 +225,12 @@ def _index_document_vectors(
         ) from exc
     except IndexingAbortedError as exc:
         _handle_indexing_failure(
-            document_id=document_id,
             context=context,
             phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
-            vector_store=resolved_vector_store,
             error=exc,
             index_logger=index_logger,
-            ports=ports,
         )
         raise DocumentApplicationError(
             status_code=409,
@@ -251,28 +238,22 @@ def _index_document_vectors(
         ) from exc
     except DocumentApplicationError as exc:
         _handle_indexing_failure(
-            document_id=document_id,
             context=context,
             phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
-            vector_store=resolved_vector_store,
             error=exc,
             index_logger=index_logger,
-            ports=ports,
         )
         raise
     except Exception as exc:
         _handle_indexing_failure(
-            document_id=document_id,
             context=context,
             phase=phase,
             confirmed_point_ids=confirmed_point_ids,
             uncertain_point_ids=uncertain_point_ids,
-            vector_store=resolved_vector_store,
             error=exc,
             index_logger=index_logger,
-            ports=ports,
         )
         raise DocumentApplicationError(
             status_code=500,
@@ -557,30 +538,6 @@ def _complete_indexing(
     return response
 
 
-def _fail_indexing(
-    document_id: int,
-    chunk_ids: tuple[int, ...],
-    error: Exception,
-    *,
-    operation_id: str,
-    ports: DocumentApplicationPorts,
-) -> IndexFailureStateResult:
-    """仅供无外部 Point 的路径完成 ownership-aware 数据库补偿。"""
-    del error
-    compensator = IndexVectorsCompensator(ports=ports)
-    snapshot = compensator._prepare(
-        document_id=document_id,
-        operation_id=operation_id,
-    )
-    if snapshot is None:
-        return NO_INDEX_FAILURE_STATE_CHANGE
-    return compensator._complete(
-        snapshot=snapshot,
-        operation_id=operation_id,
-        chunk_ids=chunk_ids,
-    )
-
-
 class IndexVectorsCompensator:
     """围栏 Document 后按稳定 Chunk ID 删除 Qdrant Point。"""
 
@@ -592,7 +549,6 @@ class IndexVectorsCompensator:
         *,
         document_id: int,
         operation_id: str,
-        point_ids: tuple[int, ...] | None = None,
         vector_store: VectorStoreClient | None = None,
         index_logger: DocumentIndexLogger | None = None,
     ) -> IndexFailureStateResult:
@@ -606,11 +562,7 @@ class IndexVectorsCompensator:
         with self._ports.external_effect_fence.hold(
             _index_effect_fence_key(document_id)
         ):
-            compensation_point_ids = (
-                snapshot.chunk_ids
-                if point_ids is None
-                else tuple(dict.fromkeys(point_ids))
-            )
+            compensation_point_ids = snapshot.chunk_ids
             if compensation_point_ids:
                 resolved_vector_store = (
                     vector_store or self._ports.vector_store_factory()
@@ -725,58 +677,29 @@ class IndexVectorsCompensator:
 
 def _handle_indexing_failure(
     *,
-    document_id: int,
     context: IndexingContext | None,
     phase: str,
     confirmed_point_ids: tuple[int, ...],
     uncertain_point_ids: tuple[int, ...],
-    vector_store: VectorStoreClient | None,
     error: Exception,
     index_logger: DocumentIndexLogger,
     operation: str | None = None,
     batch_index: int | None = None,
     batch_size: int | None = None,
-    ports: DocumentApplicationPorts,
-) -> IndexFailureStateResult:
-    """不掩盖原异常地执行数据库失败登记和 Qdrant Point 补偿。"""
-    failure_result = NO_INDEX_FAILURE_STATE_CHANGE
-    if context is not None:
-        try:
-            failure_result = IndexVectorsCompensator(
-                ports=ports,
-            ).compensate(
-                document_id=document_id,
-                operation_id=context.operation_id,
-                point_ids=tuple(
-                    dict.fromkeys(
-                        confirmed_point_ids + uncertain_point_ids
-                    )
-                ),
-                vector_store=vector_store,
-                index_logger=index_logger,
-            )
-        except Exception:
-            logger.exception(
-                "向量索引补偿失败",
-                extra={"document_id": document_id},
-            )
-
+) -> None:
+    """记录失败诊断；claim 提交后的正式补偿由 Runtime 编排。"""
     index_logger.failed(
         error=error,
         phase=phase,
         context=context,
-        document_state_updated=failure_result.document_state_updated,
-        chunk_state_updated_count=failure_result.chunk_state_updated_count,
-        status_before=failure_result.status_before,
-        status_after=failure_result.status_after,
+        document_state_updated=False,
+        chunk_state_updated_count=0,
         operation=operation,
         batch_index=batch_index,
         batch_size=batch_size,
         confirmed_point_count=len(confirmed_point_ids),
         uncertain_point_count=len(uncertain_point_ids),
     )
-
-    return failure_result
 
 
 def _validate_indexing_chunk_ownership(document, chunks) -> None:

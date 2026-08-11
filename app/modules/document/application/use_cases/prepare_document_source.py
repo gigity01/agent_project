@@ -48,16 +48,6 @@ class PreparedProcessSource:
     generated_secondary_text: bool = False
     secondary_artifact: PendingArtifact | None = None
 
-    def cleanup_generated_file(self) -> None:
-        """仅删除本次转换生成、尚未登记成功的二级文本文件。"""
-        if self.generated_secondary_text:
-            try:
-                self.source_path.unlink(missing_ok=True)
-            except OSError:
-                # 文件补偿失败不能改变数据库状态机的处理结果。
-                pass
-
-
 def prepare_process_source(
     document: ProcessingContext,
     *,
@@ -86,27 +76,20 @@ def prepare_process_source(
     artifact_code = _generate_artifact_code(document.doc_code)
     secondary_path = output_dir / f"{artifact_code}.md"
 
-    try:
-        secondary_path.write_text(markdown_result.markdown, encoding="utf-8")
-        pending_artifact = PendingArtifact(
-            artifact_type="secondary_text",
-            artifact_role="process_input",
-            artifact_format="md",
-            artifact_uri=str(secondary_path),
-            artifact_hash=ports.calculate_file_hash(secondary_path),
-            provider=markdown_result.provider,
-            processor=docling_client.__class__.__name__,
-            file_size=secondary_path.stat().st_size,
-            char_count=len(markdown_result.markdown),
-            line_count=len(markdown_result.markdown.splitlines()),
-            metadata=markdown_result.metadata,
-        )
-    except Exception:
-        try:
-            secondary_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    secondary_path.write_text(markdown_result.markdown, encoding="utf-8")
+    pending_artifact = PendingArtifact(
+        artifact_type="secondary_text",
+        artifact_role="process_input",
+        artifact_format="md",
+        artifact_uri=str(secondary_path),
+        artifact_hash=ports.calculate_file_hash(secondary_path),
+        provider=markdown_result.provider,
+        processor=docling_client.__class__.__name__,
+        file_size=secondary_path.stat().st_size,
+        char_count=len(markdown_result.markdown),
+        line_count=len(markdown_result.markdown.splitlines()),
+        metadata=markdown_result.metadata,
+    )
 
     return PreparedProcessSource(
         source_path=secondary_path,
