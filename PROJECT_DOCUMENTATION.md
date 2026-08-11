@@ -195,11 +195,21 @@ Executor 失败和过期执行恢复使用同一套三阶段管线：数据库�
 `compensation_required` 并持久化 error、`retryable` 与 `blocked` disposition，事务外
 执行文件系统或 Qdrant 补偿，最后以新事务标记 `compensated`，清除 Plan 当前 Task，再
 安排 retry 或请求 Replan。普通可重试错误继续使用 `retry_wait` 和默认 30 秒延迟；lease
-过期恢复直接回到 `pending`。补偿失败时保留原 Task、`compensation_required` 状态和
-Document ownership，同时在 Outbox 中可靠写入新的 `runtime.plan_wakeup`：从 30 秒开始
-指数退避，最大延迟 300 秒，不设自动放弃次数。新事件携带补偿 attempt 和目标
-`operation_id`，只能恢复该 Operation，不能误领后续 Task；原 Stream 消息可在重试事件
-持久化后 ACK。补偿成功前新的 Task attempt 仍不能接管该资源。
+过期恢复直接回到 `pending`。
+
+补偿失败次数是 `TaskExecution.compensation_attempt_count` 的持久化事实；每次失败还会
+更新 `compensation_last_error` 与 `compensation_last_attempt_at`。自动补偿默认最多执行
+5 次，未达上限时保留原 Task、`compensation_required` 状态和 Document ownership，并在
+Outbox 中可靠写入新的 `runtime.plan_wakeup`：从 30 秒开始指数退避，最大延迟 300 秒。
+补偿消息的控制字段只携带目标 `execution_id` 与 `operation_id`，Runtime 从数据库读取
+尝试次数，因此旧消息不能改写计数或误领后续 Task；原 Stream 消息可在重试事件持久化
+后 ACK。
+
+第五次自动补偿仍失败时，同一事务把 Execution 置为 `compensation_locked`，记录
+`compensation_locked_at`、最后错误和 `retry_exhausted` 原因，不再发布自动补偿唤醒。
+该状态表示补偿生命周期被冻结而非业务终止：Plan 当前 Task、运行中 Task、Operation
+和 Document ownership 全部保留；后续 Plan 唤醒只返回锁定结果，不执行补偿、不创建新
+Task attempt、不请求 Replan，也不释放 ownership，等待未来系统级运维恢复能力接管。
 
 ### 4. 聚合与完成
 
@@ -264,7 +274,7 @@ uv run --frozen python -m app.workers.runtime_main
 ```
 
 存储路径是相对路径，应从项目根目录启动。当前 Alembic 迁移头为
-`c2d4e6f8a0b1`。
+`d8f2a4c6e9b1`。
 
 ## 验证
 

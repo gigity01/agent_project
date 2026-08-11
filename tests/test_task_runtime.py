@@ -15,6 +15,12 @@ from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn,
 )
+from app.modules.document.infrastructure.persistence.models.document import (
+    Document,
+)
+from app.modules.document.infrastructure.persistence.models.knowledge_base import (
+    KnowledgeBase,
+)
 from app.modules.messaging.infrastructure.persistence.models import OutboxEvent
 from app.modules.messaging.infrastructure.persistence.models import InboxEvent
 from app.modules.planning.domain.enums import (
@@ -49,8 +55,11 @@ from app.modules.task_runtime.infrastructure.persistence.models import (
 class _ProcessExecutor:
     def __init__(self) -> None:
         self.errors: list[TaskExecutionError] = []
+        self.on_execute = None
 
     async def execute(self, payload, context) -> TaskExecutorResult:
+        if self.on_execute is not None:
+            self.on_execute(context)
         if self.errors:
             raise self.errors.pop(0)
         return TaskExecutorResult(
@@ -90,6 +99,8 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             expire_on_commit=False,
         )
         self.tables = [
+            KnowledgeBase.__table__,
+            Document.__table__,
             ConversationTurn.__table__,
             Plan.__table__,
             Task.__table__,
@@ -100,6 +111,29 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
         ]
         Base.metadata.create_all(self.engine, tables=self.tables)
         with self.session_factory() as session:
+            session.add(
+                KnowledgeBase(
+                    id=1,
+                    kb_code="kb-runtime",
+                    name="Runtime Test",
+                    domain_code="test",
+                    embedding_model="test-embedding",
+                    vector_collection="runtime-test",
+                )
+            )
+            session.add(
+                Document(
+                    id=1,
+                    doc_code="doc-runtime",
+                    kb_id=1,
+                    domain_code="test",
+                    title="Runtime Test Document",
+                    source_type="txt",
+                    source_uri="storage/raw/runtime.txt",
+                    content_hash="runtime-content-hash",
+                    active_content_hash="runtime-content-hash",
+                )
+            )
             session.add(
                 ConversationTurn(
                     turn_id="turn-runtime",
@@ -339,24 +373,33 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plan.current_task_id, task.task_id)
             self.assertEqual(task.status, "running")
             self.assertEqual(execution.status, "compensation_required")
+            self.assertEqual(execution.compensation_attempt_count, 1)
+            self.assertEqual(
+                execution.compensation_last_error,
+                "compensation failed",
+            )
+            self.assertIsNotNone(execution.compensation_last_attempt_at)
             retry_events = [
                 event
                 for event in session.query(OutboxEvent).all()
-                if event.payload_json.get("compensation_attempt") == 1
+                if event.payload_json.get("execution_id")
+                == execution.execution_id
             ]
             self.assertEqual(len(retry_events), 1)
             self.assertEqual(
-                retry_events[0].payload_json[
-                    "compensation_operation_id"
-                ],
+                retry_events[0].payload_json["operation_id"],
                 execution.operation_id,
+            )
+            self.assertNotIn(
+                "compensation_attempt",
+                retry_events[0].payload_json,
             )
 
         self.compensator.error = None
         result = await self.runtime.execute_next(
             "plan-runtime",
             event_id=retry_events[0].event_id,
-            compensation_attempt=1,
+            compensation_execution_id=execution.execution_id,
             compensation_operation_id=execution.operation_id,
         )
 
@@ -373,7 +416,7 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
         stale_retry = await self.runtime.execute_next(
             "plan-runtime",
             event_id="stale-compensation-retry",
-            compensation_attempt=2,
+            compensation_execution_id=execution.execution_id,
             compensation_operation_id=execution.operation_id,
         )
         self.assertEqual(stale_retry.outcome, "terminal")
@@ -396,10 +439,21 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.outcome, "compensation_retry_scheduled")
 
+        with self.session_factory() as session:
+            execution = session.query(TaskExecution).one()
+            retry_event = next(
+                event
+                for event in session.query(OutboxEvent).all()
+                if event.payload_json.get("execution_id")
+                == execution.execution_id
+            )
+
         self.compensator.error = None
         result = await self.runtime.execute_next(
             "plan-runtime",
-            compensation_attempt=1,
+            event_id=retry_event.event_id,
+            compensation_execution_id=execution.execution_id,
+            compensation_operation_id=execution.operation_id,
         )
 
         self.assertEqual(result.outcome, "replan_requested")
@@ -440,7 +494,8 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             retry_event = next(
                 event
                 for event in session.query(OutboxEvent).all()
-                if event.payload_json.get("compensation_attempt") == 1
+                if event.payload_json.get("execution_id")
+                == execution.execution_id
             )
             self.assertGreaterEqual(
                 retry_event.available_at,
@@ -457,35 +512,179 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
         )
         self.compensator.error = RuntimeError("compensation failed")
 
-        for attempt in range(4):
+        retry_event = None
+        for failed_attempt in range(1, 5):
             before = datetime.now()
+            kwargs = {}
+            if retry_event is not None:
+                kwargs = {
+                    "event_id": retry_event.event_id,
+                    "compensation_execution_id": (
+                        retry_event.payload_json["execution_id"]
+                    ),
+                    "compensation_operation_id": (
+                        retry_event.payload_json["operation_id"]
+                    ),
+                }
             result = await self.runtime.execute_next(
                 "plan-runtime",
-                compensation_attempt=attempt,
+                **kwargs,
             )
             self.assertEqual(
                 result.outcome,
                 "compensation_retry_scheduled",
             )
             with self.session_factory() as session:
-                event = next(
+                execution = session.query(TaskExecution).one()
+                self.assertEqual(
+                    execution.compensation_attempt_count,
+                    failed_attempt,
+                )
+                retry_event = next(
                     item
                     for item in reversed(
                         session.query(OutboxEvent)
                         .order_by(OutboxEvent.created_at).all()
                     )
-                    if item.payload_json.get("compensation_attempt")
-                    == attempt + 1
+                    if item.payload_json.get("execution_id")
+                    == execution.execution_id
                 )
-                expected_delay = min(5 * (2 ** attempt), 20)
+                expected_delay = min(
+                    5 * (2 ** (failed_attempt - 1)),
+                    20,
+                )
                 self.assertGreaterEqual(
-                    event.available_at,
+                    retry_event.available_at,
                     before + timedelta(seconds=expected_delay - 1),
                 )
                 self.assertLessEqual(
-                    event.available_at,
+                    retry_event.available_at,
                     datetime.now() + timedelta(seconds=expected_delay + 1),
                 )
+
+    async def test_compensation_is_locked_after_attempt_limit(self) -> None:
+        self.executor.errors.append(
+            TaskExecutionError(
+                "temporary_failure",
+                "temporary failure",
+                retryable=True,
+            )
+        )
+
+        def claim_document(context) -> None:
+            with self.session_factory() as session:
+                document = session.get(Document, 1)
+                document.status = "processing"
+                document.active_operation_id = context.operation_id
+                session.commit()
+
+        self.executor.on_execute = claim_document
+        self.compensator.error = RuntimeError("compensation failed")
+
+        retry_event = None
+        result = None
+        for failed_attempt in range(1, 6):
+            kwargs = {}
+            if retry_event is not None:
+                kwargs = {
+                    "event_id": retry_event.event_id,
+                    "compensation_execution_id": (
+                        retry_event.payload_json["execution_id"]
+                    ),
+                    "compensation_operation_id": (
+                        retry_event.payload_json["operation_id"]
+                    ),
+                }
+            result = await self.runtime.execute_next("plan-runtime", **kwargs)
+            expected_outcome = (
+                "compensation_locked"
+                if failed_attempt == 5
+                else "compensation_retry_scheduled"
+            )
+            self.assertEqual(result.outcome, expected_outcome)
+            with self.session_factory() as session:
+                execution = session.query(TaskExecution).one()
+                self.assertEqual(
+                    execution.compensation_attempt_count,
+                    failed_attempt,
+                )
+                retry_events = [
+                    event
+                    for event in session.query(OutboxEvent).all()
+                    if event.payload_json.get("execution_id")
+                    == execution.execution_id
+                ]
+                if failed_attempt < 5:
+                    retry_event = retry_events[-1]
+
+        self.assertIsNotNone(result)
+        self.assertEqual(len(self.compensator.calls), 5)
+        with self.session_factory() as session:
+            plan = session.get(Plan, "plan-runtime")
+            task = session.get(Task, "task-1")
+            execution = session.query(TaskExecution).one()
+            document = session.get(Document, 1)
+            retry_events = [
+                event
+                for event in session.query(OutboxEvent).all()
+                if event.payload_json.get("execution_id")
+                == execution.execution_id
+            ]
+            replan_events = [
+                event
+                for event in session.query(OutboxEvent).all()
+                if event.event_type == "planning.replan_requested"
+            ]
+            self.assertEqual(plan.current_task_id, task.task_id)
+            self.assertEqual(plan.status, "running")
+            self.assertEqual(task.status, "running")
+            self.assertEqual(task.attempt_count, 1)
+            self.assertEqual(execution.status, "compensation_locked")
+            self.assertEqual(execution.compensation_attempt_count, 5)
+            self.assertEqual(
+                execution.compensation_last_error,
+                "compensation failed",
+            )
+            self.assertIsNotNone(execution.compensation_last_attempt_at)
+            self.assertIsNotNone(execution.compensation_locked_at)
+            self.assertEqual(
+                execution.compensation_lock_reason,
+                "retry_exhausted",
+            )
+            self.assertIsNone(execution.completed_at)
+            self.assertEqual(len(retry_events), 4)
+            self.assertEqual(replan_events, [])
+            self.assertEqual(document.status, "processing")
+            self.assertEqual(
+                document.active_operation_id,
+                execution.operation_id,
+            )
+
+        locked_result = await self.runtime.execute_next(
+            "plan-runtime",
+            event_id="locked-plan-wakeup",
+        )
+
+        self.assertEqual(locked_result.outcome, "compensation_locked")
+        self.assertEqual(len(self.compensator.calls), 5)
+        with self.session_factory() as session:
+            task = session.get(Task, "task-1")
+            execution = session.query(TaskExecution).one()
+            document = session.get(Document, 1)
+            retry_events = [
+                event
+                for event in session.query(OutboxEvent).all()
+                if event.payload_json.get("execution_id")
+                == execution.execution_id
+            ]
+            self.assertEqual(task.status, "running")
+            self.assertEqual(task.attempt_count, 1)
+            self.assertEqual(execution.status, "compensation_locked")
+            self.assertEqual(len(retry_events), 4)
+            self.assertEqual(
+                document.active_operation_id,
+                execution.operation_id,
+            )
 
 
 if __name__ == "__main__":

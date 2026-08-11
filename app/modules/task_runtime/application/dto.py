@@ -45,6 +45,7 @@ class ClaimNextTaskResult(BaseModel):
     outcome: Literal[
         "claimed",
         "compensation_required",
+        "compensation_locked",
         "already_running",
         "no_task",
         "terminal",
@@ -77,6 +78,7 @@ class ExecutePlanResult(BaseModel):
     outcome: Literal[
         "task_succeeded",
         "compensation_retry_scheduled",
+        "compensation_locked",
         "retry_scheduled",
         "replan_requested",
         "already_running",

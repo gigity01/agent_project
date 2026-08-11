@@ -45,6 +45,28 @@ class TaskExecution(Base):
     blocked: Mapped[bool] = mapped_column(nullable=False, default=False)
     agent_run_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     operation_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    compensation_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    compensation_last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    compensation_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    compensation_locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    compensation_lock_reason: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

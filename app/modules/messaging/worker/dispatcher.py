@@ -39,13 +39,8 @@ class RuntimeEventDispatcher:
             return await self._runtime.execute_next(
                 event.payload["plan_id"],
                 event_id=event.event_id,
-                compensation_attempt=event.payload.get(
-                    "compensation_attempt",
-                    0,
-                ),
-                compensation_operation_id=event.payload.get(
-                    "compensation_operation_id"
-                ),
+                compensation_execution_id=event.payload.get("execution_id"),
+                compensation_operation_id=event.payload.get("operation_id"),
             )
         if await asyncio.to_thread(self._already_processed, event.event_id):
             return None
