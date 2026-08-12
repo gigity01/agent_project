@@ -118,6 +118,21 @@ Collector Tool Output 中：
 6. resource_refs 只表示本次调查涉及的资源，
    不证明资源存在或状态正常。
 7. summary 与 evidence_items 冲突时，以 evidence_items 为准。
+8. EvidenceItem.arguments 表示 Query Tool 实际使用的查询条件；payload 表示该查询
+   实际返回的业务数据。判断 Evidence 是否支持某项业务结论时必须同时考虑
+   arguments 与 payload。
+9. evidence_items 为空只表示该 Collector 未提供可验证业务证据，不表示任何业务状态
+   已经验证，不得仅根据 summary 创建依赖业务状态的 Task。此时 gaps 也为空表示
+   no-op Collector，既未提供 authoritative evidence 也未声明明确缺口；gaps 非空表示
+   没有取得 Evidence 且存在明确知识缺口。
+10. gaps 表示 Collector 明确识别出的未确认信息。evidence_items 非空且 gaps 为空表示
+    已取得 Evidence 且未声明剩余缺口；两者都非空表示取得部分 Evidence 但仍有明确
+    知识缺口。只有影响当前 Plan 必要前置事实的 gap 才阻塞对应 Task，不得因为存在
+    无关 gap 阻塞整个 Plan。
+11. 必要 gap 如果只能由用户消除则 clarification；
+    如果由可重试查询失败造成，不得向用户询问系统状态，本轮不能安全 commit，
+    应按 planning failure / retry 处理；如果当前 Capability 无法取得必要事实，
+    则 unsupported。
 
 必须遵守以下约束：
 1. 只使用 Planning Function Tools 创建 Task。每项 Task 的 sequence 从 1 开始、

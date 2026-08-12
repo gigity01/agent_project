@@ -47,10 +47,11 @@ class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
         self,
         call_id: str | None,
         tool_name: str | None,
+        arguments: Any = "{}",
     ) -> ToolCallItem:
         raw_item: dict[str, Any] = {
             "type": "function_call",
-            "arguments": "{}",
+            "arguments": arguments,
         }
         if call_id is not None:
             raw_item["call_id"] = call_id
@@ -246,6 +247,105 @@ class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_same_tool_calls_pair_arguments_and_outputs_by_call_id(
+        self,
+    ) -> None:
+        first_call = self._tool_call(
+            "call-1",
+            "get_document",
+            json.dumps({"document_id": 7}),
+        )
+        second_call = self._tool_call(
+            "call-2",
+            "get_document",
+            json.dumps({"document_id": 8}),
+        )
+        first_output = self._tool_output(
+            "call-1",
+            {
+                "outcome": "succeeded",
+                "result_code": "document_found",
+                "message": "已找到文档 7",
+                "retryable": False,
+                "resource_refs": ["document:7"],
+                "document": {"id": 7},
+            },
+        )
+        second_output = self._tool_output(
+            "call-2",
+            {
+                "outcome": "succeeded",
+                "result_code": "document_found",
+                "message": "已找到文档 8",
+                "retryable": False,
+                "resource_refs": ["document:8"],
+                "document": {"id": 8},
+            },
+        )
+
+        evidence_items = _extract_evidence_items(
+            [first_call, second_call, second_output, first_output]
+        )
+        evidence_by_call_id = {
+            item.tool_call_id: item for item in evidence_items
+        }
+
+        self.assertEqual(
+            evidence_by_call_id["call-1"].arguments,
+            {"document_id": 7},
+        )
+        self.assertEqual(
+            evidence_by_call_id["call-1"].payload["document"]["id"],
+            7,
+        )
+        self.assertEqual(
+            evidence_by_call_id["call-2"].arguments,
+            {"document_id": 8},
+        )
+        self.assertEqual(
+            evidence_by_call_id["call-2"].payload["document"]["id"],
+            8,
+        )
+
+    def test_tool_call_arguments_must_be_json_object(self) -> None:
+        valid_output = {
+            "outcome": "succeeded",
+            "result_code": "ok",
+            "message": "ok",
+            "retryable": False,
+            "resource_refs": [],
+        }
+        invalid_arguments = {
+            "missing": None,
+            "non_string_object": {},
+            "malformed_json": "{",
+            "json_array": "[]",
+            "json_string": '"document:7"',
+            "json_number": "7",
+        }
+
+        for case_name, arguments in invalid_arguments.items():
+            with self.subTest(case_name=case_name):
+                with self.assertRaises(ValueError):
+                    _extract_evidence_items(
+                        [
+                            self._tool_call(
+                                "call-1",
+                                "get_document",
+                                arguments,
+                            ),
+                            self._tool_output("call-1", valid_output),
+                        ]
+                    )
+
+        evidence_items = _extract_evidence_items(
+            [
+                self._tool_call("call-1", "get_document", "{}"),
+                self._tool_output("call-1", valid_output),
+            ]
+        )
+        self.assertEqual(evidence_items[0].arguments, {})
+
     def test_missing_or_duplicate_call_boundaries_fail_closed(self) -> None:
         valid_output = {
             "outcome": "succeeded",
@@ -378,6 +478,7 @@ class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(result.evidence_items), 2)
         self.assertEqual(result.evidence_items[1].outcome, "rejected")
+        self.assertEqual(result.gaps, ["文档 8 不存在"])
         self.assertNotIn("facts", output_data)
 
     async def test_extractor_allows_collector_without_tool_calls(self) -> None:
@@ -395,6 +496,58 @@ class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.evidence_items, [])
         self.assertEqual(result.resource_refs, [])
+        self.assertEqual(result.gaps, [])
+
+    async def test_extractor_allows_collector_without_evidence_and_with_gap(
+        self,
+    ) -> None:
+        extractor = _build_collector_output_extractor("context_collector")
+
+        output = await extractor(
+            SimpleNamespace(
+                final_output=CollectorLLMResult(
+                    summary="未取得必要上下文证据",
+                    gaps=["无法确认 chain-1 当前状态"],
+                ),
+                new_items=[],
+            )
+        )
+        result = CollectorResult.model_validate_json(output)
+
+        self.assertEqual(result.evidence_items, [])
+        self.assertEqual(result.gaps, ["无法确认 chain-1 当前状态"])
+
+    async def test_extractor_allows_evidence_without_gap(self) -> None:
+        extractor = _build_collector_output_extractor("document_collector")
+        new_items = [
+            self._tool_call(
+                "call-1",
+                "get_document",
+                json.dumps({"document_id": 7}),
+            ),
+            self._tool_output(
+                "call-1",
+                {
+                    "outcome": "succeeded",
+                    "result_code": "document_found",
+                    "message": "已找到文档",
+                    "retryable": False,
+                    "resource_refs": ["document:7"],
+                    "document": {"id": 7},
+                },
+            ),
+        ]
+
+        output = await extractor(
+            SimpleNamespace(
+                final_output=CollectorLLMResult(summary="文档已确认"),
+                new_items=new_items,
+            )
+        )
+        result = CollectorResult.model_validate_json(output)
+
+        self.assertEqual(len(result.evidence_items), 1)
+        self.assertEqual(result.gaps, [])
 
 
 if __name__ == "__main__":

@@ -138,13 +138,21 @@ Document、Context、Operations 三个独立的只读 Collector Agent-as-Tool，
 `parallel_tool_calls` 且 `max_function_tool_concurrency=3`，因此最多三路并行取证；
 每个 Collector 内部保持串行。Collector LLM 的结构化输出只包含 `summary` 和
 `gaps`；Runtime 从 nested Run 的 `new_items` 按 `call_id` 配对实际 Tool Call 与
-Tool Output，每次调用生成一个 `EvidenceItem`，并把公共执行字段与全部 Tool-specific
-`payload` 确定性组合成 `CollectorResult`。缺少调用边界、缺少公共 envelope、重复
-`call_id` 或非法输出时 extractor 会 fail closed，不生成不完整证据。
+Tool Output，每次调用生成一个 `EvidenceItem`。其中 `arguments` 保存 Tool 实际使用的
+查询条件，`payload` 保存公共执行 envelope 之外的实际业务查询结果；Runtime 再把公共
+执行字段与这些 Tool-specific 数据确定性组合成 `CollectorResult`。缺少调用边界或
+arguments、arguments 不是 JSON object、缺少公共 envelope、重复 `call_id` 或非法输出
+时 extractor 会 fail closed，不生成不完整证据。
 
 `CollectorResult.resource_refs` 是全部 EvidenceItem 引用的稳定去重并集，只表示本次
 调查涉及相应资源，不证明资源存在或状态正常。Commit Planner 以 `evidence_items` 为
-业务状态的主要依据，`summary` 和 `gaps` 只能辅助解释，冲突时以前者为准。Evidence
+业务状态的主要依据，判断证据是否支持结论时必须同时考虑 `arguments` 和 `payload`；
+`summary` 和 `gaps` 只能辅助解释，冲突时以前者为准。空 `evidence_items` 只表示该
+Collector 没有贡献 Query Evidence，绝不表示业务事实已验证；它与空 `gaps` 组合表示
+no-op，与非空 `gaps` 组合表示没有取得 Evidence 且有明确知识缺口。非空 Evidence 与
+空 gaps 表示未声明剩余缺口，两者都非空表示取得部分 Evidence 后仍有明确缺口。只有
+影响 Plan 必要前置事实的 gap 才阻塞对应 Task，并按用户信息缺失、可重试查询失败或
+当前 Capability 不足分别进入 clarification、planning retry 或 unsupported。Evidence
 Run 的完整 Tool Call/Output 历史仍通过 `RunResult.to_input_list()` 交给 Commit Agent；
 当前不持久化 Evidence Graph。
 

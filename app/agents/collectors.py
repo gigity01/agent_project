@@ -37,22 +37,29 @@ CollectorCode = Literal[
 
 
 class CollectorLLMResult(BaseModel):
-    """Collector LLM 只负责解释和指出信息缺口。"""
+    """Collector LLM 只负责解释证据并指出仍未确认的相关信息。"""
 
     summary: str = Field(min_length=1)
     gaps: list[str] = Field(default_factory=list)
 
 
 class EvidenceItem(BaseModel):
-    """Collector 内一次只读 Function Tool 调用的真实结果。"""
+    """Collector 内一次只读 Function Tool Invocation 的真实记录。"""
 
     tool_name: str = Field(min_length=1)
     tool_call_id: str = Field(min_length=1)
+
+    # ToolCallItem：实际查询输入。
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    # ToolCallOutputItem：实际查询结果。
     outcome: Literal["succeeded", "rejected", "failed"]
     result_code: str = Field(min_length=1)
     message: str
     retryable: bool
     resource_refs: list[str] = Field(default_factory=list)
+
+    # 公共结果 envelope 之外的 Tool-specific business output。
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -61,6 +68,12 @@ class CollectorResult(BaseModel):
 
     ``resource_refs`` 是全部 EvidenceItem 资源引用的稳定去重并集，只表示
     本次调查涉及这些资源，不证明资源存在或状态正常。
+
+    ``evidence_items`` 与 ``gaps`` 的组合语义固定为：两者都为空表示 no-op
+    Collector；只有 gaps 表示没有取得 Evidence 且存在明确知识缺口；只有
+    evidence_items 表示取得 Evidence 且未声明剩余缺口；两者都有表示取得部分
+    Evidence 但仍有明确知识缺口。空 evidence_items 只表示 Collector 没有贡献
+    Query Evidence，绝不表示业务事实已经验证。
     """
 
     collector_code: CollectorCode
@@ -88,7 +101,8 @@ _COMMON_INSTRUCTIONS = """
 
 最终结构化输出只负责：
 - summary：简洁总结查询 Tool 已验证的信息；
-- gaps：列出完成当前问题判断仍缺少的信息。
+- gaps：列出调查后仍无法确认且与当前问题相关的信息；未调用 Tool 或 Tool failed
+  本身不是 gap，应描述因此仍无法确认的业务事实。
 
 不得编造 Tool 未返回的业务事实，不得把 rejected 或 failed Tool
 结果描述成成功业务状态。
@@ -108,6 +122,29 @@ _COMMON_EVIDENCE_FIELDS = frozenset(
     }
 )
 _REQUIRED_EVIDENCE_FIELDS = _COMMON_EVIDENCE_FIELDS
+
+
+def _extract_tool_arguments(item: ToolCallItem) -> dict[str, Any]:
+    """从 SDK 原始 ToolCall item 提取实际 JSON object 查询参数。"""
+    raw_item = item.raw_item
+
+    if isinstance(raw_item, dict):
+        raw_arguments = raw_item.get("arguments")
+    else:
+        raw_arguments = getattr(raw_item, "arguments", None)
+
+    if not isinstance(raw_arguments, str):
+        raise ValueError("Collector ToolCall 缺少 arguments")
+
+    try:
+        parsed = json.loads(raw_arguments)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Collector ToolCall arguments 不是有效 JSON") from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Collector ToolCall arguments 必须是 JSON object")
+
+    return parsed
 
 
 def _normalize_tool_output(output: Any) -> dict[str, Any]:
@@ -141,7 +178,7 @@ def _validate_tool_output_envelope(data: dict[str, Any]) -> None:
 
 def _extract_evidence_items(new_items: list[Any]) -> list[EvidenceItem]:
     """按 call_id 配对真实 Tool Call 与 Output，并 fail closed。"""
-    calls: dict[str, str] = {}
+    calls: dict[str, tuple[str, dict[str, Any]]] = {}
     for item in new_items:
         if not isinstance(item, ToolCallItem):
             continue
@@ -152,7 +189,10 @@ def _extract_evidence_items(new_items: list[Any]) -> list[EvidenceItem]:
             raise ValueError("Collector ToolCall 缺少 call_id 或 tool_name")
         if call_id in calls:
             raise ValueError(f"重复 Tool call_id: {call_id}")
-        calls[call_id] = tool_name
+        calls[call_id] = (
+            tool_name,
+            _extract_tool_arguments(item),
+        )
 
     evidence_items: list[EvidenceItem] = []
     consumed_call_ids: set[str] = set()
@@ -164,14 +204,15 @@ def _extract_evidence_items(new_items: list[Any]) -> list[EvidenceItem]:
         if not call_id:
             raise ValueError("Collector ToolCallOutput 缺少 call_id")
 
-        tool_name = calls.get(call_id)
-        if tool_name is None:
+        call = calls.get(call_id)
+        if call is None:
             raise ValueError(
                 f"找不到 ToolCallOutput 对应的 ToolCall: {call_id}"
             )
         if call_id in consumed_call_ids:
             raise ValueError(f"同一 ToolCall 出现多个 Output: {call_id}")
 
+        tool_name, arguments = call
         data = _normalize_tool_output(item.output)
         _validate_tool_output_envelope(data)
         payload = {
@@ -183,6 +224,7 @@ def _extract_evidence_items(new_items: list[Any]) -> list[EvidenceItem]:
             EvidenceItem(
                 tool_name=tool_name,
                 tool_call_id=call_id,
+                arguments=arguments,
                 outcome=data["outcome"],
                 result_code=data["result_code"],
                 message=data["message"],

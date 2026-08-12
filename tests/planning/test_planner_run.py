@@ -244,6 +244,19 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+        commit_instructions = configured_runner.commit_agent.instructions
+        self.assertIsInstance(commit_instructions, str)
+        for invariant in (
+            "EvidenceItem.arguments 表示 Query Tool 实际使用的查询条件",
+            "evidence_items 为空只表示该 Collector 未提供可验证业务证据",
+            "no-op Collector",
+            "只有影响当前 Plan 必要前置事实的 gap 才阻塞对应 Task",
+            "如果由可重试查询失败造成，不得向用户询问系统状态",
+            "当前 Capability 无法取得必要事实",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, commit_instructions)
+
     async def test_planner_continues_commit_from_full_evidence_history(self) -> None:
         collectors = build_collector_agents(
             model="test-model",
