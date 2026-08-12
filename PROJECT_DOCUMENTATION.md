@@ -197,6 +197,12 @@ Capability Registry、claim/complete/fail、重试和 Replan 状态机均不变�
 Replan；同一 workflow 最多保留 3 个 revision，旧 Plan 和未完成 Task 会被标记为
 `superseded`。
 
+Document Executor 的 timeout 是“到达截止时间后请求取消，等待副作用执行静默，再进入
+补偿”，不是强制终止同步线程。deterministic Executor 会排空其 `to_thread` UseCase，
+Agent Executor 会排空内部 Agent/Command Tool Run，然后才把取消传播给 Runtime；因此
+不可中断的同步调用会使 `execute_next` 的实际返回时间超过 Capability timeout，但
+Compensator 不会与同一进程中仍可写入副作用的旧执行并发。
+
 三个 Document Capability 均在 Capability Registry 中声明对应的 Compensator。普通
 Executor 失败和过期执行恢复使用同一个补偿执行入口：数据库先把 `TaskExecution` 标记为
 `compensation_required` 并持久化 error、`retryable` 与 `blocked` disposition；每次真正
@@ -243,7 +249,10 @@ uploaded → processing → processed → chunking → chunked → indexing → 
   `storage/cleaned/{operation_id}/`；正式 URI 作为 Artifact 和 `cleaned_uri` 的持久化
   事实。claim 后失败时 UseCase 保留 staging 与可能只完成部分提升的正式目录；Runtime
   驱动的补偿按当前 owner 清理三类 operation-scoped 目录，全部清理成功后才释放
-  ownership。
+  ownership。Process 的文件生成/提升与补偿清理还共用
+  `document:process:{document_id}` MySQL named-lock 围栏；另一个 Worker 发现 execution
+  过期时可以先持久化失败，但必须等旧执行退出文件副作用区后才能清理和释放 ownership。
+  如果补偿无法取得围栏，则按补偿失败重试并保留 ownership。
 - 文本与 Markdown 按语义父块和长度子块切分；CSV 一条记录对应一个子块。
 - Embedding 使用 DashScope OpenAI-compatible API，向量以 ChildChunk ID 幂等
   upsert 到 Qdrant；Point payload 同时保存本次 `operation_id` 作为外部归属事实。

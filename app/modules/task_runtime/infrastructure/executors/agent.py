@@ -33,6 +33,8 @@ from app.modules.task_runtime.application.schemas import (
     ProcessDocumentTaskOutput,
 )
 
+from ._quiescence import await_side_effect_quiescence
+
 
 DOCUMENT_EXECUTOR_ACTOR_CODE = "document_executor_agent"
 DEFAULT_DOCUMENT_EXECUTOR_MAX_TURNS = 8
@@ -160,12 +162,14 @@ class AgentTaskExecutor:
             ensure_ascii=False,
         )
         try:
-            run_result = await self._runner(
-                self._agent,
-                agent_input,
-                context=agent_context,
-                max_turns=self._max_turns,
-                run_config=self._run_config,
+            run_result = await await_side_effect_quiescence(
+                self._runner(
+                    self._agent,
+                    agent_input,
+                    context=agent_context,
+                    max_turns=self._max_turns,
+                    run_config=self._run_config,
+                )
             )
         except TaskExecutionError:
             raise

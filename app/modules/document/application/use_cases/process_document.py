@@ -125,18 +125,22 @@ def _process_document(
         )
         process_logger.claimed(context)
 
-        phase = "execute"
-        execution_result = _execute_processing(
-            context,
-            ports=ports,
-            settings=settings,
-        )
+        with ports.external_effect_fence.hold(
+            _process_effect_fence_key(document_id)
+        ):
+            _assert_processing_owned(context, ports=ports)
+            phase = "execute"
+            execution_result = _execute_processing(
+                context,
+                ports=ports,
+                settings=settings,
+            )
 
-        phase = "promote"
-        execution_result = _promote_processing_artifacts(
-            execution_result,
-            settings=settings,
-        )
+            phase = "promote"
+            execution_result = _promote_processing_artifacts(
+                execution_result,
+                settings=settings,
+            )
 
         phase = "finalize"
         response = _complete_processing(execution_result, ports=ports)
@@ -301,6 +305,26 @@ def _execute_processing(
         prepared_source=prepared_source,
         cleaned_artifact=cleaned_artifact,
     )
+
+
+def _assert_processing_owned(
+    context: ProcessingContext,
+    *,
+    ports: DocumentApplicationPorts,
+) -> None:
+    """在文件副作用围栏内复核当前 Operation 仍持有处理权。"""
+    with ports.uow_factory() as uow:
+        document = uow.documents.get_by_id_for_update(context.document_id)
+        if (
+            document is None
+            or document.status != DocumentStatus.PROCESSING.value
+            or document.active_operation_id != context.operation_id
+        ):
+            raise ProcessingAbortedError("当前处理 Operation ownership 已失效")
+        if document.lifecycle_status not in PROCESSABLE_LIFECYCLE_STATUSES:
+            raise ProcessingAbortedError("文档处理期间已经失效")
+        if document.storage_status != DocumentStorageStatus.ACTIVE.value:
+            raise ProcessingAbortedError("文档已进入归档流程")
 
 
 def _complete_processing(
@@ -470,48 +494,51 @@ class ProcessDocumentCompensator:
             operation_id=operation_id,
             ports=self._ports,
         )
-        with self._ports.uow_factory() as uow:
-            document = uow.documents.get_by_id_for_update(document_id)
-            owns_operation = (
-                document is not None
-                and document.active_operation_id == operation_id
-                and document.status == DocumentStatus.FAILED.value
-            )
-        if not owns_operation:
-            return failure_result
+        with self._ports.external_effect_fence.hold(
+            _process_effect_fence_key(document_id)
+        ):
+            with self._ports.uow_factory() as uow:
+                document = uow.documents.get_by_id_for_update(document_id)
+                owns_operation = (
+                    document is not None
+                    and document.active_operation_id == operation_id
+                    and document.status == DocumentStatus.FAILED.value
+                )
+            if not owns_operation:
+                return failure_result
 
-        operation_dirs = tuple(
-            dict.fromkeys(
-                (
-                    _processing_operation_dir(
-                        self._settings,
-                        operation_id,
-                    ),
-                    _operation_scoped_dir(
-                        self._settings.cleaned_storage_dir,
-                        operation_id,
-                    ),
-                    _operation_scoped_dir(
-                        self._settings.secondary_text_storage_dir,
-                        operation_id,
-                    ),
+            operation_dirs = tuple(
+                dict.fromkeys(
+                    (
+                        _processing_operation_dir(
+                            self._settings,
+                            operation_id,
+                        ),
+                        _operation_scoped_dir(
+                            self._settings.cleaned_storage_dir,
+                            operation_id,
+                        ),
+                        _operation_scoped_dir(
+                            self._settings.secondary_text_storage_dir,
+                            operation_id,
+                        ),
+                    )
                 )
             )
-        )
-        for operation_dir in operation_dirs:
-            if operation_dir.exists():
-                shutil.rmtree(operation_dir)
+            for operation_dir in operation_dirs:
+                if operation_dir.exists():
+                    shutil.rmtree(operation_dir)
 
-        with self._ports.uow_factory() as uow:
-            document = uow.documents.get_by_id_for_update(document_id)
-            if (
-                document is None
-                or document.active_operation_id != operation_id
-            ):
-                return failure_result
-            document.active_operation_id = None
-            uow.flush()
-            uow.commit()
+            with self._ports.uow_factory() as uow:
+                document = uow.documents.get_by_id_for_update(document_id)
+                if (
+                    document is None
+                    or document.active_operation_id != operation_id
+                ):
+                    return failure_result
+                document.active_operation_id = None
+                uow.flush()
+                uow.commit()
         return failure_result
 
 
@@ -521,6 +548,10 @@ def _processing_operation_dir(
 ) -> Path:
     """返回不能逃逸 staging 根目录的 Operation 产物目录。"""
     return _operation_scoped_dir(settings.staging_storage_dir, operation_id)
+
+
+def _process_effect_fence_key(document_id: int) -> str:
+    return f"document:process:{document_id}"
 
 
 def _operation_scoped_dir(root: Path, operation_id: str) -> Path:

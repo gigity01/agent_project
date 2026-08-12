@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -39,6 +44,8 @@ from app.modules.task_runtime.application.dto import (
 )
 from app.modules.task_runtime.application.errors import TaskExecutionError
 from app.modules.task_runtime.application.ports import (
+    CapabilityDefinition,
+    CapabilityRegistry,
     CompensatorRegistry,
     ExecutorRegistry,
     TaskRuntimePorts,
@@ -47,6 +54,13 @@ from app.modules.task_runtime.application.registry import (
     build_capability_registry,
 )
 from app.modules.task_runtime.application.runtime import TaskRuntimeService
+from app.modules.task_runtime.application.schemas import (
+    ProcessDocumentTaskOutput,
+    ProcessDocumentTaskPayload,
+)
+from app.modules.task_runtime.infrastructure.executors.document import (
+    DeterministicProcessDocumentExecutor,
+)
 from app.modules.task_runtime.infrastructure.persistence.models import (
     TaskExecution,
 )
@@ -84,6 +98,43 @@ class _NoopCompensator:
             self.on_call()
         if self.error is not None:
             raise self.error
+
+
+class _BlockingFilesystemUseCase:
+    def __init__(self, side_effect_path: Path, order: list[str]) -> None:
+        self._side_effect_path = side_effect_path
+        self._order = order
+        self.started = threading.Event()
+        self.allow_side_effect = threading.Event()
+        self.side_effect_completed = threading.Event()
+
+    def execute(self, document_id, *, operation_context):
+        del operation_context
+        self.started.set()
+        if not self.allow_side_effect.wait(timeout=2):
+            raise TimeoutError("test did not release blocking use case")
+        self._side_effect_path.write_text("late side effect", encoding="utf-8")
+        self._order.append("use_case_side_effect")
+        self.side_effect_completed.set()
+        return SimpleNamespace(
+            document_id=document_id,
+            status="processed",
+            cleaned_uri=str(self._side_effect_path),
+        )
+
+
+class _FilesystemCleanupCompensator:
+    def __init__(self, side_effect_path: Path, order: list[str]) -> None:
+        self._side_effect_path = side_effect_path
+        self._order = order
+        self.started = threading.Event()
+
+    async def compensate(self, *, operation_id, payload, context) -> None:
+        del operation_id, payload, context
+        self._order.append("compensation_started")
+        self.started.set()
+        if self._side_effect_path.exists():
+            self._side_effect_path.unlink()
 
 
 class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -321,6 +372,67 @@ class TaskRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(execution.compensation_attempt_count, 1)
             self.assertIsNotNone(execution.compensation_last_attempt_at)
+
+    async def test_timeout_waits_for_sync_executor_before_compensation(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            side_effect_path = Path(temp_dir) / "operation-output.txt"
+            order: list[str] = []
+            use_case = _BlockingFilesystemUseCase(side_effect_path, order)
+            compensator = _FilesystemCleanupCompensator(
+                side_effect_path,
+                order,
+            )
+            definition = CapabilityDefinition.model_construct(
+                capability_code=(
+                    PlanningCapabilityCode.PROCESS_DOCUMENT.value
+                ),
+                input_model=ProcessDocumentTaskPayload,
+                output_model=ProcessDocumentTaskOutput,
+                executor_code="document.process",
+                compensator_code="document.process",
+                max_attempts=3,
+                timeout_seconds=0.02,
+                side_effect=True,
+            )
+            runtime = TaskRuntimeService(
+                ports=self.runtime._ports,
+                capabilities=CapabilityRegistry([definition]),
+                executors=ExecutorRegistry(
+                    {
+                        "document.process": (
+                            DeterministicProcessDocumentExecutor(use_case)
+                        )
+                    }
+                ),
+                compensators=CompensatorRegistry(
+                    {"document.process": compensator}
+                ),
+                retry_delay_seconds=0,
+            )
+
+            execution_task = asyncio.create_task(
+                runtime.execute_next("plan-runtime")
+            )
+            started = await asyncio.to_thread(use_case.started.wait, 1)
+            self.assertTrue(started)
+            await asyncio.sleep(0.08)
+            compensation_started_before_release = compensator.started.is_set()
+
+            use_case.allow_side_effect.set()
+            result = await asyncio.wait_for(execution_task, timeout=1)
+            side_effect_completed = await asyncio.to_thread(
+                use_case.side_effect_completed.wait,
+                1,
+            )
+
+            self.assertFalse(compensation_started_before_release)
+            self.assertTrue(side_effect_completed)
+            self.assertEqual(
+                order,
+                ["use_case_side_effect", "compensation_started"],
+            )
+            self.assertFalse(side_effect_path.exists())
+            self.assertEqual(result.outcome, "retry_scheduled")
 
     async def test_first_successful_compensation_counts_as_attempt_one(
         self,

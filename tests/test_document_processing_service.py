@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tempfile
+import threading
 import types
 import unittest
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,6 +100,23 @@ class _DocumentProcessLogger:
         self.failed_fields = fields
 
 
+class _ExternalEffectFence:
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+        self.second_hold_attempted = threading.Event()
+        self._effect_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+
+    @contextmanager
+    def hold(self, resource_key: str):
+        with self._state_lock:
+            self.keys.append(resource_key)
+            if len(self.keys) >= 2:
+                self.second_hold_attempted.set()
+        with self._effect_lock:
+            yield
+
+
 def _load_service_module():
     replacements = {
         "app.modules.document.application.dto": types.ModuleType(
@@ -166,6 +185,7 @@ def _load_service_module():
                 source_type
             ),
             calculate_file_hash=lambda path: module.calculate_file_hash(path),
+            external_effect_fence=_ExternalEffectFence(),
         )
         module.test_settings = SimpleNamespace(
             cleaned_storage_dir=Path("cleaned"),
@@ -330,6 +350,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.original_uow = self.service.SQLAlchemyUnitOfWork
+        self.service.test_ports.external_effect_fence = _ExternalEffectFence()
 
     def tearDown(self) -> None:
         self.service.SQLAlchemyUnitOfWork = self.original_uow
@@ -468,7 +489,7 @@ class DocumentProcessingServiceTest(unittest.TestCase):
         self.assertEqual(document.status, DocumentStatus.PROCESSING.value)
         self.assertEqual(document.active_operation_id, "operation-test")
         self.assertEqual(document.active_content_hash, "keep-me")
-        self.assertEqual(len(factory.instances), 1)
+        self.assertEqual(len(factory.instances), 2)
         self.assertEqual(factory.instances[0].commit_count, 1)
         self.assertFalse(
             self.service.DocumentProcessLogger.instances[-1].failed_fields[
@@ -563,6 +584,111 @@ class DocumentProcessingServiceTest(unittest.TestCase):
             self.assertFalse(cleaned_operation_dir.exists())
             self.assertFalse(secondary_operation_dir.exists())
             self.assertEqual(document.status, DocumentStatus.FAILED.value)
+            self.assertIsNone(document.active_operation_id)
+
+    def test_compensator_waits_for_processing_filesystem_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            settings = SimpleNamespace(
+                cleaned_storage_dir=temp_path / "cleaned",
+                secondary_text_storage_dir=temp_path / "secondary",
+                staging_storage_dir=temp_path / "staging",
+            )
+            document = _document(source_uri=str(temp_path / "source.txt"))
+            self._use_document(document)
+            use_case = self.service.ProcessDocumentUseCase(
+                ports=self.service.test_ports,
+                settings=settings,
+            )
+            compensator = self.service.ProcessDocumentCompensator(
+                ports=self.service.test_ports,
+                settings=settings,
+            )
+            execution_started = threading.Event()
+            allow_filesystem_effect = threading.Event()
+            compensation_completed = threading.Event()
+            execution_errors: list[Exception] = []
+            compensation_errors: list[Exception] = []
+
+            def execute_processing(context, **_kwargs):
+                execution_started.set()
+                if not allow_filesystem_effect.wait(timeout=2):
+                    raise TimeoutError("test did not release processing")
+                operation_dir = (
+                    settings.staging_storage_dir / context.operation_id
+                )
+                operation_dir.mkdir(parents=True)
+                cleaned_path = operation_dir / "DOC_001.cleaned.txt"
+                cleaned_path.write_text("late side effect", encoding="utf-8")
+                cleaned = _pending_artifact(
+                    self.service,
+                    artifact_type="cleaned_text",
+                    artifact_role="process_output",
+                    artifact_uri=str(cleaned_path),
+                )
+                return self.service.ProcessingExecutionResult(
+                    document_id=context.document_id,
+                    operation_id=context.operation_id,
+                    cleaned_path=cleaned_path,
+                    prepared_source=self.service.PreparedProcessSource(
+                        source_path=context.source_path,
+                        source_type="txt",
+                    ),
+                    cleaned_artifact=cleaned,
+                )
+
+            def run_execution() -> None:
+                try:
+                    use_case.execute(document.id)
+                except Exception as exc:
+                    execution_errors.append(exc)
+
+            def run_compensation() -> None:
+                try:
+                    compensator.compensate(
+                        document_id=document.id,
+                        operation_id="operation-test",
+                    )
+                except Exception as exc:
+                    compensation_errors.append(exc)
+                finally:
+                    compensation_completed.set()
+
+            with mock.patch.object(
+                self.service,
+                "_execute_processing",
+                side_effect=execute_processing,
+            ):
+                execution_thread = threading.Thread(target=run_execution)
+                execution_thread.start()
+                self.assertTrue(execution_started.wait(timeout=1))
+
+                compensation_thread = threading.Thread(target=run_compensation)
+                compensation_thread.start()
+                fence = self.service.test_ports.external_effect_fence
+                self.assertTrue(fence.second_hold_attempted.wait(timeout=1))
+                self.assertFalse(compensation_completed.is_set())
+                self.assertEqual(document.status, DocumentStatus.FAILED.value)
+
+                allow_filesystem_effect.set()
+                execution_thread.join(timeout=1)
+                compensation_thread.join(timeout=1)
+
+            self.assertFalse(execution_thread.is_alive())
+            self.assertFalse(compensation_thread.is_alive())
+            self.assertEqual(compensation_errors, [])
+            self.assertEqual(len(execution_errors), 1)
+            self.assertIsInstance(execution_errors[0], self.service.HTTPException)
+            self.assertEqual(
+                fence.keys,
+                ["document:process:1", "document:process:1"],
+            )
+            self.assertFalse(
+                (settings.staging_storage_dir / "operation-test").exists()
+            )
+            self.assertFalse(
+                (settings.cleaned_storage_dir / "operation-test").exists()
+            )
             self.assertIsNone(document.active_operation_id)
 
     def test_promote_moves_staging_files_to_formal_operation_dirs(self) -> None:
@@ -808,8 +934,8 @@ class DocumentProcessingServiceTest(unittest.TestCase):
             self.assertEqual(document.active_operation_id, "operation-test")
             self.assertTrue(promoted_cleaned_dir.is_dir())
             self.assertTrue(promoted_secondary_dir.is_dir())
-            self.assertEqual(len(factory.instances), 2)
-            completion_uow = factory.instances[1]
+            self.assertEqual(len(factory.instances), 3)
+            completion_uow = factory.instances[2]
             self.assertEqual(
                 completion_uow.document_artifacts.create_calls,
                 [],

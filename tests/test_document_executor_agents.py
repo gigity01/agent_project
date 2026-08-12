@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
@@ -98,6 +102,19 @@ class _StaticRunner:
 
     async def __call__(self, *_args, **_kwargs):
         return SimpleNamespace(final_output=self.final_output)
+
+
+class _ThreadedCommandRunner:
+    async def __call__(self, _agent, _agent_input, **kwargs):
+        return await asyncio.to_thread(self._run_command, kwargs["context"])
+
+    @staticmethod
+    def _run_command(context):
+        output = process_document_handler(
+            RunContextWrapper(context),
+            ProcessDocumentToolInput(document_id=7),
+        )
+        return SimpleNamespace(final_output=output)
 
 
 class DocumentExecutorAgentsTest(unittest.IsolatedAsyncioTestCase):
@@ -279,6 +296,61 @@ class DocumentExecutorAgentsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.error_code, "task_scope_violation")
         self.assertTrue(caught.exception.blocked)
         services.process_document.execute.assert_not_called()
+
+    async def test_cancellation_waits_for_sync_command_tool_to_quiesce(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp_dir:
+            side_effect_path = Path(temp_dir) / "tool-output.txt"
+            started = threading.Event()
+            allow_side_effect = threading.Event()
+            side_effect_completed = threading.Event()
+
+            def execute_use_case(document_id, *, operation_context):
+                del operation_context
+                started.set()
+                if not allow_side_effect.wait(timeout=2):
+                    raise TimeoutError("test did not release command tool")
+                side_effect_path.write_text(
+                    "late tool side effect",
+                    encoding="utf-8",
+                )
+                side_effect_completed.set()
+                return SimpleNamespace(
+                    document_id=document_id,
+                    status="processed",
+                    cleaned_uri=str(side_effect_path),
+                )
+
+            services = _services()
+            services.process_document.execute.side_effect = execute_use_case
+            executor = self._executor(
+                services=services,
+                runner=_ThreadedCommandRunner(),
+            )
+            execution_task = asyncio.create_task(
+                executor.execute(
+                    ProcessDocumentTaskPayload(document_id=7),
+                    _runtime_context(),
+                )
+            )
+            command_started = await asyncio.to_thread(started.wait, 1)
+            self.assertTrue(command_started)
+
+            execution_task.cancel()
+            await asyncio.sleep(0.05)
+            completed_before_release = execution_task.done()
+            allow_side_effect.set()
+
+            with self.assertRaises(asyncio.CancelledError):
+                await execution_task
+            completed = await asyncio.to_thread(
+                side_effect_completed.wait,
+                1,
+            )
+            self.assertFalse(completed_before_release)
+            self.assertTrue(completed)
+            self.assertTrue(side_effect_path.exists())
 
 
 if __name__ == "__main__":

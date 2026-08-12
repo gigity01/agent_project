@@ -22,6 +22,8 @@ from app.modules.task_runtime.application.schemas import (
 )
 from app.shared.observability.correlation import DocumentOperationContext
 
+from ._quiescence import await_side_effect_quiescence
+
 
 def _operation_context(context: TaskRuntimeContext) -> DocumentOperationContext:
     return DocumentOperationContext(
@@ -33,7 +35,7 @@ def _operation_context(context: TaskRuntimeContext) -> DocumentOperationContext:
 
 async def _execute_document_use_case(call):
     try:
-        return await asyncio.to_thread(call)
+        return await await_side_effect_quiescence(asyncio.to_thread(call))
     except DocumentApplicationError as exc:
         raise TaskExecutionError(
             "document_operation_rejected",
