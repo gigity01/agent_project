@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from agents import Agent, ModelSettings
+from agents.items import ToolCallItem, ToolCallOutputItem
 from agents.tool import FunctionTool
 from pydantic import BaseModel, Field
 
@@ -27,26 +29,45 @@ class CollectorRequest(BaseModel):
     operation_ids: list[str] = Field(default_factory=list)
 
 
-class CollectedFact(BaseModel):
-    """可追溯到一次只读 Tool 查询的事实。"""
+CollectorCode = Literal[
+    "document_collector",
+    "context_collector",
+    "operations_collector",
+]
 
-    statement: str = Field(min_length=1)
-    source_tool: str = Field(min_length=1)
+
+class CollectorLLMResult(BaseModel):
+    """Collector LLM 只负责解释和指出信息缺口。"""
+
+    summary: str = Field(min_length=1)
+    gaps: list[str] = Field(default_factory=list)
+
+
+class EvidenceItem(BaseModel):
+    """Collector 内一次只读 Function Tool 调用的真实结果。"""
+
+    tool_name: str = Field(min_length=1)
+    tool_call_id: str = Field(min_length=1)
+    outcome: Literal["succeeded", "rejected", "failed"]
+    result_code: str = Field(min_length=1)
+    message: str
+    retryable: bool
     resource_refs: list[str] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class CollectorResult(BaseModel):
-    """Collector 返回给 Planner 的统一结构化结果。"""
+    """Runtime 与 LLM 结果确定性组合后的 Collector 对外契约。
 
-    collector_code: Literal[
-        "document_collector",
-        "context_collector",
-        "operations_collector",
-    ]
+    ``resource_refs`` 是全部 EvidenceItem 资源引用的稳定去重并集，只表示
+    本次调查涉及这些资源，不证明资源存在或状态正常。
+    """
+
+    collector_code: CollectorCode
     summary: str = Field(min_length=1)
-    facts: list[CollectedFact] = Field(default_factory=list)
-    resource_refs: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
+    resource_refs: list[str] = Field(default_factory=list)
+    evidence_items: list[EvidenceItem] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -60,26 +81,156 @@ class CollectorAgentSet:
 
 
 _COMMON_INSTRUCTIONS = """
-你是只读信息收集 Agent。只能调用当前 Catalog 中提供的查询 Tool，不能执行写操作，
-不能请求或执行 Handoff，不能规划业务 Task，也不能根据缺失信息编造事实。
+你是只读信息收集 Agent。只能调用当前 Catalog 中提供的查询 Tool，
+不能执行写操作，不能请求或执行 Handoff，不能规划业务 Task。
 
-请围绕输入中的 question 和资源范围调用最少且足够的查询 Tool。输出必须符合
-CollectorResult：summary 只总结已验证事实；每个 fact 必须标明 source_tool 和
-resource_refs；无法验证的内容放入 gaps。不得把 Tool 错误包装成已确认事实。
+请围绕输入中的 question 和资源范围调用最少且足够的查询 Tool。
+
+最终结构化输出只负责：
+- summary：简洁总结查询 Tool 已验证的信息；
+- gaps：列出完成当前问题判断仍缺少的信息。
+
+不得编造 Tool 未返回的业务事实，不得把 rejected 或 failed Tool
+结果描述成成功业务状态。
+
+真实 Tool Call、Tool Output、资源引用和业务 Payload 由 Runtime
+独立提取，不需要在 summary 中重复复制完整原始数据。
 """.strip()
 
 
-async def _extract_collector_result(run_result) -> str:
-    """把嵌套 Collector 的结构化输出稳定序列化为 Tool JSON。"""
-    result = CollectorResult.model_validate(run_result.final_output)
-    return result.model_dump_json()
+_COMMON_EVIDENCE_FIELDS = frozenset(
+    {
+        "outcome",
+        "result_code",
+        "message",
+        "retryable",
+        "resource_refs",
+    }
+)
+_REQUIRED_EVIDENCE_FIELDS = _COMMON_EVIDENCE_FIELDS
 
 
-def _instructions(collector_code: str, responsibility: str) -> str:
-    return (
-        f"{_COMMON_INSTRUCTIONS}\n\n"
-        f"你的 collector_code 必须是 {collector_code}。{responsibility}"
-    )
+def _normalize_tool_output(output: Any) -> dict[str, Any]:
+    """把 SDK ToolCallOutputItem.output 规范化为 JSON object。"""
+    if isinstance(output, BaseModel):
+        return output.model_dump(mode="json")
+
+    if isinstance(output, dict):
+        return output
+
+    if isinstance(output, str):
+        parsed = json.loads(output)
+        if not isinstance(parsed, dict):
+            raise ValueError("Collector Tool output 必须是 JSON object")
+        return parsed
+
+    raise TypeError(f"Unsupported Collector Tool output: {type(output)!r}")
+
+
+def _validate_tool_output_envelope(data: dict[str, Any]) -> None:
+    """验证所有 Collector Query Tool 必须提供的公共结果字段。"""
+    missing = _REQUIRED_EVIDENCE_FIELDS - data.keys()
+    if missing:
+        raise ValueError(
+            f"Collector Tool output 缺少公共字段: {sorted(missing)}"
+        )
+
+    if data["outcome"] not in {"succeeded", "rejected", "failed"}:
+        raise ValueError("非法 Tool outcome")
+
+
+def _extract_evidence_items(new_items: list[Any]) -> list[EvidenceItem]:
+    """按 call_id 配对真实 Tool Call 与 Output，并 fail closed。"""
+    calls: dict[str, str] = {}
+    for item in new_items:
+        if not isinstance(item, ToolCallItem):
+            continue
+
+        call_id = item.call_id
+        tool_name = item.tool_name
+        if not call_id or not tool_name:
+            raise ValueError("Collector ToolCall 缺少 call_id 或 tool_name")
+        if call_id in calls:
+            raise ValueError(f"重复 Tool call_id: {call_id}")
+        calls[call_id] = tool_name
+
+    evidence_items: list[EvidenceItem] = []
+    consumed_call_ids: set[str] = set()
+    for item in new_items:
+        if not isinstance(item, ToolCallOutputItem):
+            continue
+
+        call_id = item.call_id
+        if not call_id:
+            raise ValueError("Collector ToolCallOutput 缺少 call_id")
+
+        tool_name = calls.get(call_id)
+        if tool_name is None:
+            raise ValueError(
+                f"找不到 ToolCallOutput 对应的 ToolCall: {call_id}"
+            )
+        if call_id in consumed_call_ids:
+            raise ValueError(f"同一 ToolCall 出现多个 Output: {call_id}")
+
+        data = _normalize_tool_output(item.output)
+        _validate_tool_output_envelope(data)
+        payload = {
+            key: value
+            for key, value in data.items()
+            if key not in _COMMON_EVIDENCE_FIELDS
+        }
+        evidence_items.append(
+            EvidenceItem(
+                tool_name=tool_name,
+                tool_call_id=call_id,
+                outcome=data["outcome"],
+                result_code=data["result_code"],
+                message=data["message"],
+                retryable=data["retryable"],
+                resource_refs=data["resource_refs"],
+                payload=payload,
+            )
+        )
+        consumed_call_ids.add(call_id)
+
+    missing_outputs = set(calls) - consumed_call_ids
+    if missing_outputs:
+        raise ValueError(
+            f"Collector ToolCall 缺少 Output: {sorted(missing_outputs)}"
+        )
+
+    return evidence_items
+
+
+def _build_collector_output_extractor(collector_code: CollectorCode):
+    """为 Collector 创建固定来源代码的确定性输出提取器。"""
+
+    async def extract(run_result) -> str:
+        llm_result = CollectorLLMResult.model_validate(
+            run_result.final_output
+        )
+        evidence_items = _extract_evidence_items(run_result.new_items)
+        resource_refs = list(
+            dict.fromkeys(
+                resource_ref
+                for item in evidence_items
+                for resource_ref in item.resource_refs
+            )
+        )
+        result = CollectorResult(
+            collector_code=collector_code,
+            summary=llm_result.summary,
+            gaps=llm_result.gaps,
+            resource_refs=resource_refs,
+            evidence_items=evidence_items,
+        )
+        return result.model_dump_json()
+
+    return extract
+
+
+def _instructions(responsibility: str) -> str:
+    return f"{_COMMON_INSTRUCTIONS}\n\n{responsibility}"
 
 
 def build_collector_agents(
@@ -94,40 +245,36 @@ def build_collector_agents(
     document_agent = Agent[AgentToolContext](
         name="Document Collector Agent",
         instructions=_instructions(
-            "document_collector",
             "只收集 Document、Artifact、ParentBlock、ChildChunk 和流水线状态。",
         ),
         tools=list(DOCUMENT_COLLECTOR_TOOLS),
         handoffs=[],
         model=model,
         model_settings=collector_settings,
-        output_type=CollectorResult,
+        output_type=CollectorLLMResult,
     )
     context_agent = Agent[AgentToolContext](
         name="Context Collector Agent",
         instructions=_instructions(
-            "context_collector",
             "只收集 Turn、Chain、Node、Resource 和 RouteRecord 的持久化事实。",
         ),
         tools=list(CONTEXT_COLLECTOR_TOOLS),
         handoffs=[],
         model=model,
         model_settings=collector_settings,
-        output_type=CollectorResult,
+        output_type=CollectorLLMResult,
     )
     operations_agent = Agent[AgentToolContext](
         name="Operations Collector Agent",
         instructions=_instructions(
-            "operations_collector",
             "只收集文档业务日志和 Agent Tool 审计事实。",
         ),
         tools=list(OPERATIONS_COLLECTOR_TOOLS),
         handoffs=[],
         model=model,
         model_settings=collector_settings,
-        output_type=CollectorResult,
+        output_type=CollectorLLMResult,
     )
-
     planner_tools = (
         document_agent.as_tool(
             tool_name="collect_document_information",
@@ -135,7 +282,9 @@ def build_collector_agents(
             parameters=CollectorRequest,
             include_input_schema=True,
             max_turns=8,
-            custom_output_extractor=_extract_collector_result,
+            custom_output_extractor=_build_collector_output_extractor(
+                "document_collector"
+            ),
         ),
         context_agent.as_tool(
             tool_name="collect_context_information",
@@ -143,7 +292,9 @@ def build_collector_agents(
             parameters=CollectorRequest,
             include_input_schema=True,
             max_turns=8,
-            custom_output_extractor=_extract_collector_result,
+            custom_output_extractor=_build_collector_output_extractor(
+                "context_collector"
+            ),
         ),
         operations_agent.as_tool(
             tool_name="collect_operation_information",
@@ -151,7 +302,9 @@ def build_collector_agents(
             parameters=CollectorRequest,
             include_input_schema=True,
             max_turns=8,
-            custom_output_extractor=_extract_collector_result,
+            custom_output_extractor=_build_collector_output_extractor(
+                "operations_collector"
+            ),
         ),
     )
     return CollectorAgentSet(

@@ -105,6 +105,20 @@ _PLANNER_COMMIT_INSTRUCTIONS = f"""
 结构化 Tool Output 和取证就绪说明；本阶段不能再次调用 Collector，只能基于这些证据
 提交 Plan、澄清或 unsupported 结果。
 
+Collector Tool Output 中：
+1. evidence_items 是 Runtime 从实际 Query Tool 调用中确定性提取的证据，
+   是规划业务状态时的主要依据。
+2. summary 和 gaps 是 Collector 对证据的解释，仅用于辅助理解；
+   不得使用 summary 覆盖或修改 evidence_items。
+3. outcome=succeeded 只表示 Query Tool 成功执行，
+   不表示 payload 中业务资源的状态为 succeeded。
+4. 业务状态必须读取 succeeded EvidenceItem 的 payload。
+5. rejected / failed EvidenceItem 的 payload 不得作为成功业务事实；
+   应结合 outcome、result_code、message、retryable 判断本次取证是否足够。
+6. resource_refs 只表示本次调查涉及的资源，
+   不证明资源存在或状态正常。
+7. summary 与 evidence_items 冲突时，以 evidence_items 为准。
+
 必须遵守以下约束：
 1. 只使用 Planning Function Tools 创建 Task。每项 Task 的 sequence 从 1 开始、
    唯一且连续，总数必须为 1～10。不要重试已经返回 succeeded 的创建调用。

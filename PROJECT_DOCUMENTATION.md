@@ -136,10 +136,17 @@ Conversation 的路由使用 Redis 短锁串行化；MySQL 保存完整事实，
 Planner 是一个逻辑 Agent，但使用两个物理隔离的执行阶段。Evidence Agent 只能看到
 Document、Context、Operations 三个独立的只读 Collector Agent-as-Tool，开启
 `parallel_tool_calls` 且 `max_function_tool_concurrency=3`，因此最多三路并行取证；
-每个 Collector 内部保持串行，并通过统一 extractor 返回由 `collector_code`、
-`summary`、`facts`、`resource_refs` 和 `gaps` 组成的稳定 JSON
-`CollectorResult`。Evidence Run 的完整 Tool Call/Output 历史通过
-`RunResult.to_input_list()` 交给 Commit Agent。
+每个 Collector 内部保持串行。Collector LLM 的结构化输出只包含 `summary` 和
+`gaps`；Runtime 从 nested Run 的 `new_items` 按 `call_id` 配对实际 Tool Call 与
+Tool Output，每次调用生成一个 `EvidenceItem`，并把公共执行字段与全部 Tool-specific
+`payload` 确定性组合成 `CollectorResult`。缺少调用边界、缺少公共 envelope、重复
+`call_id` 或非法输出时 extractor 会 fail closed，不生成不完整证据。
+
+`CollectorResult.resource_refs` 是全部 EvidenceItem 引用的稳定去重并集，只表示本次
+调查涉及相应资源，不证明资源存在或状态正常。Commit Planner 以 `evidence_items` 为
+业务状态的主要依据，`summary` 和 `gaps` 只能辅助解释，冲突时以前者为准。Evidence
+Run 的完整 Tool Call/Output 历史仍通过 `RunResult.to_input_list()` 交给 Commit Agent；
+当前不持久化 Evidence Graph。
 
 Commit Agent 物理上只看到 Planning Tools 和 Clarification Handoff，关闭
 `parallel_tool_calls` 且 `max_function_tool_concurrency=1`，只能串行创建 Task、

@@ -4,6 +4,7 @@ from app.agents.collectors import (
     CollectorAgentSet,
     CollectorRequest,
     CollectorResult,
+    EvidenceItem,
     build_collector_agents,
 )
 from app.agents.document_executors import (
@@ -21,6 +22,7 @@ __all__ = [
     "CollectorAgentSet",
     "CollectorRequest",
     "CollectorResult",
+    "EvidenceItem",
     "DocumentExecutorAgentSet",
     "ClarificationAgentOutput",
     "ClarificationHandoffInput",
