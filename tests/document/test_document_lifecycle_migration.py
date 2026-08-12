@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from app.modules.document.domain.enums import DocumentStatus
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = (
     ROOT_DIR
     / "alembic"

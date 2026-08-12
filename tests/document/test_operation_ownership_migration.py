@@ -12,7 +12,7 @@ from app.modules.document.infrastructure.persistence.models.document import (
 )
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = (
     ROOT_DIR
     / "alembic"

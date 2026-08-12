@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 STORE_PATH = (
     ROOT_DIR
     / "app"

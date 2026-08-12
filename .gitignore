@@ -57,8 +57,7 @@ logs/
 
 # 编辑器、操作系统和本机工具状态。
 .idea/
-.vscode/*
-!.vscode/settings.json
+.vscode/
 .qwen/
 .agents/
 work/task-state/

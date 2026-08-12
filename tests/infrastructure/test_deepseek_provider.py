@@ -18,7 +18,7 @@ from openai.types.chat import ChatCompletion
 from app.config import environment
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 SETTINGS_PATH = ROOT_DIR / "app" / "config" / "settings.py"
 PROVIDER_PATH = (
     ROOT_DIR

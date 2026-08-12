@@ -307,7 +307,10 @@ uv run --frozen python -m unittest discover -s tests -v
 git diff --check
 ```
 
-`tests/test_document_lifecycle_migration_mysql.py` 只有在显式提供名称以 `_test` 结尾的
+`tests/` 按应用模块和横切职责组织为可递归发现的 Python package；测试文件仍保持
+`test_*.py` 命名，因此上述统一 discovery 命令不变。
+
+`tests/document/test_document_lifecycle_migration_mysql.py` 只有在显式提供名称以 `_test` 结尾的
 空测试库 `TEST_MYSQL_DATABASE_URL` 时才运行。离线测试使用替身，不应为了验证连接
 真实 MySQL、Redis、Qdrant、DashScope、Docling 或 DeepSeek。
 

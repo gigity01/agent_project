@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 MYSQL_TEST_URL_ENV = "TEST_MYSQL_DATABASE_URL"
 PREVIOUS_REVISION = "c5f12a3e9b71"
 MIGRATION_COLUMNS = {

@@ -19,7 +19,7 @@ from app.modules.document.domain.enums import (
 )
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 SERVICE_PATH = (
     ROOT_DIR
     / "app"

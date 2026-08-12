@@ -19,7 +19,7 @@ from app.infrastructure.redis.client import (
 from app.modules.context.domain.models import ContextResourceRef
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 MIGRATION_PATH = (
     ROOT_DIR
     / "alembic"
