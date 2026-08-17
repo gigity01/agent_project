@@ -157,6 +157,12 @@ class AgentToolContext:
     operations_services: OperationsToolServices = field(
         default_factory=OperationsToolServices
     )
+    allowed_context_chain_ids: frozenset[str] = field(
+        default_factory=frozenset
+    )
+    allowed_context_turn_ids: frozenset[str] = field(
+        default_factory=frozenset
+    )
     audit_logger: AgentToolAuditLogger = field(
         default_factory=AgentToolAuditLogger
     )

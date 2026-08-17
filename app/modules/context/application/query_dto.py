@@ -53,7 +53,9 @@ class ContextChainSearchQuery(TimeRangeQuery):
 class ContextChainNodeSearchQuery(TimeRangeQuery):
     conversation_id: str | None = Field(default=None, max_length=100)
     chain_id: str | None = Field(default=None, max_length=100)
+    chain_ids: list[str] = Field(default_factory=list)
     turn_id: str | None = Field(default=None, max_length=100)
+    turn_ids: list[str] = Field(default_factory=list)
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
 
@@ -61,6 +63,7 @@ class ContextChainNodeSearchQuery(TimeRangeQuery):
 class ContextChainResourceSearchQuery(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=100)
     chain_id: str | None = Field(default=None, max_length=100)
+    chain_ids: list[str] = Field(default_factory=list)
     resource_type: str | None = Field(default=None, max_length=100)
     resource_id: str | None = Field(default=None, max_length=400)
     active: bool | None = None

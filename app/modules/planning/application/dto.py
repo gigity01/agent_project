@@ -6,6 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.modules.context.domain.models import ContextChain
 from app.modules.planning.domain.enums import PlanStatus
 
 
@@ -116,6 +117,13 @@ class RunPlanningInput(_PlanningInput):
     revision: int = Field(default=1, ge=1)
     workflow_id: str | None = Field(default=None, min_length=1, max_length=100)
     parent_plan_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class PlannerContextInput(_PlanningInput):
+    """Planner 主输入；当前请求与历史读取集合严格分离。"""
+
+    current_user_input: str = Field(min_length=1)
+    context_chains: list[ContextChain] = Field(default_factory=list)
 
 
 class RunPlanningResult(BaseModel):

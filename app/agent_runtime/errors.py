@@ -15,7 +15,7 @@ class AgentToolPermissionError(PermissionError):
 
 
 class AgentToolScopeError(PermissionError):
-    """Tool 请求超出已授权 Task 的资源范围。"""
+    """Tool 请求超出当前 Agent Run 的授权资源范围。"""
 
 
 class ToolNotAvailableError(LookupError):
@@ -66,7 +66,7 @@ def classify_tool_error(
         return ToolErrorDetails(
             outcome="rejected",
             result_code="task_scope_violation",
-            message="工具请求超出当前 Task 的授权资源范围",
+            message="工具请求超出当前 Agent Run 的授权资源范围",
             retryable=False,
             resource_refs=resource_refs,
         )

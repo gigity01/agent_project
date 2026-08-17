@@ -47,39 +47,22 @@ class SQLAlchemyContextRecordFactory:
         return ContextChainResourceEvent(**values)
 
 
-def get_context_assistant_content(
-    turn: TurnModel,
-) -> str | None:
-    """旧 Turn 优先使用压缩回答，缺少压缩结果时回退完整回答。"""
-    if turn.assistant_compact:
-        return turn.assistant_compact
-    return turn.assistant_content
-
-
 def build_context_chain(
     chain: ContextChainModel,
     *,
     resource_queue: ContextResourceQueue,
-    full_assistant_turn_count: int,
 ) -> ContextChain:
-    """保留全部节点，并按新旧策略选择助手回答内容。"""
-    nodes = list(chain.nodes)
-    full_start = max(0, len(nodes) - full_assistant_turn_count)
+    """忠实保留 Chain 中每个 Turn 的完整字段。"""
     projected_nodes: list[ContextChainNodeContext] = []
 
-    for index, node in enumerate(nodes):
+    for node in chain.nodes:
         turn = node.turn
-        assistant_content = (
-            turn.assistant_content
-            if index >= full_start
-            else get_context_assistant_content(turn)
-        )
         projected_turn = ConversationTurn(
             turn_id=turn.turn_id,
             conversation_id=turn.conversation_id,
             user_input=turn.user_input,
-            assistant_content=assistant_content,
-            assistant_compact=None,
+            assistant_content=turn.assistant_content,
+            assistant_compact=turn.assistant_compact,
             task_ids=list(turn.task_ids or []),
             task_result_summary=turn.task_result_summary,
             status=turn.status,

@@ -13,10 +13,12 @@ from app.agent_runtime.context import AgentToolContext, ContextToolServices
 from app.modules.context.agent_tools.catalog import CONTEXT_COLLECTOR_TOOLS
 from app.modules.context.agent_tools.query_tools import (
     get_conversation_turn_handler,
+    get_context_chain_handler,
     list_context_chains_handler,
 )
 from app.modules.context.agent_tools.schemas import (
     GetConversationTurnToolInput,
+    GetContextChainToolInput,
     ListContextChainsToolInput,
 )
 from app.modules.context.application.query_dto import (
@@ -81,6 +83,8 @@ def _context(*, permissions: frozenset[str]):
         permissions=permissions,
         document_services=mock.Mock(),
         context_services=ContextToolServices(query_service=query_service),
+        allowed_context_chain_ids=frozenset({"chain-1"}),
+        allowed_context_turn_ids=frozenset({"turn-current", "turn-1"}),
         audit_logger=AgentToolAuditLogger(writer),
     )
     return context, query_service, writer
@@ -133,7 +137,22 @@ class ContextAgentToolsTest(unittest.TestCase):
         query = service.list_context_chains.call_args.args[0]
         self.assertEqual(output.chains[0].chain_id, "chain-1")
         self.assertEqual(query.conversation_id, "conversation-1")
+        self.assertEqual(query.chain_ids, ["chain-1"])
         self.assertFalse(query.archived)
+
+    def test_non_selected_chain_is_rejected_without_query(self) -> None:
+        context, service, _writer = _context(
+            permissions=frozenset({"context:read"})
+        )
+
+        output = get_context_chain_handler(
+            RunContextWrapper(context),
+            GetContextChainToolInput(chain_id="chain-other"),
+        )
+
+        self.assertEqual(output.outcome, "rejected")
+        self.assertEqual(output.result_code, "task_scope_violation")
+        service.get_context_chain.assert_not_called()
 
     def test_permission_denial_does_not_query_database(self) -> None:
         context, service, _writer = _context(permissions=frozenset())

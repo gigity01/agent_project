@@ -42,7 +42,7 @@ class AnswerClarificationUseCase:
                 raise RuntimeError("Clarification 关联状态不存在")
             if (
                 answer_turn.conversation_id != conversation_id
-                or answer_turn.status != ContextTurnStatus.ROUTED.value
+                or answer_turn.status != ContextTurnStatus.CONTEXT_READY.value
                 or plan.status != PlanStatus.NEEDS_CLARIFICATION.value
             ):
                 raise RuntimeError("Clarification 当前状态不允许回答")

@@ -15,12 +15,12 @@ from app.modules.conversation.presentation.dependencies import (
     get_send_conversation_message,
 )
 from app.modules.conversation.application.dto import (
-    RoutingMetadata,
+    ContextSelectionMetadata,
     SendConversationMessageCommand,
     SendConversationMessageResult,
 )
 from app.modules.context.application.errors import ContextRoutingError
-from app.modules.context.domain.enums import ContextRouteMode
+from app.modules.context.domain.enums import ContextSelectionMode
 
 
 class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
@@ -52,11 +52,10 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
             plan_id="plan-1",
             status="processing",
             task_ids=["task-1"],
-            routing=RoutingMetadata(
-                route_mode=ContextRouteMode.NEW_CHAIN,
-                selected_chain_ids=[],
-                new_chain_id="chain-1",
-                reason_summary="当前会话没有可关联的已有上下文链。",
+            context_selection=ContextSelectionMetadata(
+                selection_mode=ContextSelectionMode.NO_CONTEXT,
+                relevant_chain_ids=[],
+                reason_summary="当前 Conversation 没有历史上下文。",
             ),
         )
 
@@ -79,12 +78,11 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
                 "status": "processing",
                 "assistant_message": None,
                 "task_ids": ["task-1"],
-                "routing": {
-                    "route_mode": "new_chain",
-                    "selected_chain_ids": [],
-                    "new_chain_id": "chain-1",
+                "context_selection": {
+                    "selection_mode": "no_context",
+                    "relevant_chain_ids": [],
                     "reason_summary": (
-                        "当前会话没有可关联的已有上下文链。"
+                        "当前 Conversation 没有历史上下文。"
                     ),
                 },
             },

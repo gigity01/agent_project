@@ -64,7 +64,7 @@ class AggregationTest(unittest.IsolatedAsyncioTestCase):
                     current_turn_id="turn-aggregate",
                     selected_chain_ids=["chain-1"],
                     create_new_chain=False,
-                    route_mode="single_match",
+                    route_mode="single_context",
                     reason_summary="继续现有链",
                     new_chain_id=None,
                 )

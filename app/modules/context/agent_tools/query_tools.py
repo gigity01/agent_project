@@ -5,6 +5,7 @@ from agents import RunContextWrapper, function_tool
 from app.agent_runtime.audit import execute_audited_tool_call
 from app.agent_runtime.context import AgentToolContext
 from app.agent_runtime.errors import (
+    AgentToolScopeError,
     ToolNotAvailableError,
     safe_tool_error_function,
 )
@@ -25,7 +26,10 @@ from app.modules.context.agent_tools.schemas import (
     ListConversationTurnsToolOutput,
 )
 from app.modules.context.application.query_dto import (
+    ContextChainListResult,
+    ContextChainNodeListResult,
     ContextChainNodeSearchQuery,
+    ContextChainResourceListResult,
     ContextChainResourceSearchQuery,
     ContextChainSearchQuery,
     ContextRouteRecordSearchQuery,
@@ -37,6 +41,48 @@ from app.modules.context.application.query_service import ContextQueryService
 CONTEXT_READ_PERMISSION = "context:read"
 
 
+def _conversation_scope(
+    context: AgentToolContext,
+    requested_conversation_id: str | None,
+) -> str:
+    conversation_id = context.conversation_id
+    if conversation_id is None:
+        raise AgentToolScopeError("Context Tool 缺少 Conversation scope")
+    if (
+        requested_conversation_id is not None
+        and requested_conversation_id != conversation_id
+    ):
+        raise AgentToolScopeError("Context Tool 请求了其他 Conversation")
+    return conversation_id
+
+
+def _allowed_ids(
+    *,
+    requested_ids: list[str],
+    allowed_ids: frozenset[str],
+    resource_name: str,
+) -> list[str]:
+    normalized = list(dict.fromkeys(requested_ids))
+    unknown = set(normalized) - allowed_ids
+    if unknown:
+        raise AgentToolScopeError(
+            f"Context Tool 请求了未授权的 {resource_name}"
+        )
+    return normalized or sorted(allowed_ids)
+
+
+def _require_allowed_id(
+    value: str,
+    *,
+    allowed_ids: frozenset[str],
+    resource_name: str,
+) -> None:
+    if value not in allowed_ids:
+        raise AgentToolScopeError(
+            f"Context Tool 请求了未授权的 {resource_name}"
+        )
+
+
 def _query_service(context: AgentToolContext) -> ContextQueryService:
     service = context.context_services.query_service
     if service is None:
@@ -45,6 +91,11 @@ def _query_service(context: AgentToolContext) -> ContextQueryService:
 
 
 def _get_conversation_turn(context: AgentToolContext, turn_id: str):
+    _require_allowed_id(
+        turn_id,
+        allowed_ids=context.allowed_context_turn_ids,
+        resource_name="Turn",
+    )
     use_case = context.context_services.get_conversation_turn
     if use_case is not None:
         return use_case.execute(turn_id)
@@ -52,6 +103,18 @@ def _get_conversation_turn(context: AgentToolContext, turn_id: str):
 
 
 def _list_conversation_turns(context: AgentToolContext, query):
+    conversation_id = _conversation_scope(context, query.conversation_id)
+    turn_ids = _allowed_ids(
+        requested_ids=list(query.turn_ids),
+        allowed_ids=context.allowed_context_turn_ids,
+        resource_name="Turn",
+    )
+    query = query.model_copy(
+        update={
+            "conversation_id": conversation_id,
+            "turn_ids": turn_ids,
+        }
+    )
     use_case = context.context_services.list_conversation_turns
     if use_case is not None:
         return use_case.execute(query)
@@ -59,6 +122,11 @@ def _list_conversation_turns(context: AgentToolContext, query):
 
 
 def _get_context_chain(context: AgentToolContext, chain_id: str):
+    _require_allowed_id(
+        chain_id,
+        allowed_ids=context.allowed_context_chain_ids,
+        resource_name="Chain",
+    )
     use_case = context.context_services.get_context_chain
     if use_case is not None:
         return use_case.execute(chain_id)
@@ -66,6 +134,22 @@ def _get_context_chain(context: AgentToolContext, chain_id: str):
 
 
 def _list_context_chains(context: AgentToolContext, query):
+    conversation_id = _conversation_scope(context, query.conversation_id)
+    chain_ids = _allowed_ids(
+        requested_ids=list(query.chain_ids),
+        allowed_ids=context.allowed_context_chain_ids,
+        resource_name="Chain",
+    )
+    if not chain_ids:
+        return ContextChainListResult(
+            items=[], total=0, limit=query.limit, offset=query.offset
+        )
+    query = query.model_copy(
+        update={
+            "conversation_id": conversation_id,
+            "chain_ids": chain_ids,
+        }
+    )
     use_case = context.context_services.list_context_chains
     if use_case is not None:
         return use_case.execute(query)
@@ -73,6 +157,41 @@ def _list_context_chains(context: AgentToolContext, query):
 
 
 def _list_context_chain_nodes(context: AgentToolContext, query):
+    conversation_id = _conversation_scope(context, query.conversation_id)
+    requested_chain_ids = list(query.chain_ids)
+    if query.chain_id is not None:
+        requested_chain_ids.append(query.chain_id)
+    chain_ids = _allowed_ids(
+        requested_ids=requested_chain_ids,
+        allowed_ids=context.allowed_context_chain_ids,
+        resource_name="Chain",
+    )
+    historical_turn_ids = frozenset(
+        turn_id
+        for turn_id in context.allowed_context_turn_ids
+        if turn_id != context.turn_id
+    )
+    requested_turn_ids = list(query.turn_ids)
+    if query.turn_id is not None:
+        requested_turn_ids.append(query.turn_id)
+    turn_ids = _allowed_ids(
+        requested_ids=requested_turn_ids,
+        allowed_ids=historical_turn_ids,
+        resource_name="historical Turn",
+    )
+    if not chain_ids or not turn_ids:
+        return ContextChainNodeListResult(
+            items=[], total=0, limit=query.limit, offset=query.offset
+        )
+    query = query.model_copy(
+        update={
+            "conversation_id": conversation_id,
+            "chain_id": None,
+            "chain_ids": chain_ids,
+            "turn_id": None,
+            "turn_ids": turn_ids,
+        }
+    )
     use_case = context.context_services.list_context_chain_nodes
     if use_case is not None:
         return use_case.execute(query)
@@ -80,6 +199,26 @@ def _list_context_chain_nodes(context: AgentToolContext, query):
 
 
 def _list_context_chain_resources(context: AgentToolContext, query):
+    conversation_id = _conversation_scope(context, query.conversation_id)
+    requested_chain_ids = list(query.chain_ids)
+    if query.chain_id is not None:
+        requested_chain_ids.append(query.chain_id)
+    chain_ids = _allowed_ids(
+        requested_ids=requested_chain_ids,
+        allowed_ids=context.allowed_context_chain_ids,
+        resource_name="Chain",
+    )
+    if not chain_ids:
+        return ContextChainResourceListResult(
+            items=[], total=0, limit=query.limit, offset=query.offset
+        )
+    query = query.model_copy(
+        update={
+            "conversation_id": conversation_id,
+            "chain_id": None,
+            "chain_ids": chain_ids,
+        }
+    )
     use_case = context.context_services.list_context_chain_resources
     if use_case is not None:
         return use_case.execute(query)
@@ -87,6 +226,19 @@ def _list_context_chain_resources(context: AgentToolContext, query):
 
 
 def _list_context_route_records(context: AgentToolContext, query):
+    conversation_id = _conversation_scope(context, query.conversation_id)
+    if context.turn_id is None:
+        raise AgentToolScopeError("Context Tool 缺少 Turn scope")
+    if query.turn_id is not None and query.turn_id != context.turn_id:
+        raise AgentToolScopeError(
+            "Context Tool 请求了其他 Turn 的 Selection"
+        )
+    query = query.model_copy(
+        update={
+            "conversation_id": conversation_id,
+            "turn_id": context.turn_id,
+        }
+    )
     use_case = context.context_services.list_context_route_records
     if use_case is not None:
         return use_case.execute(query)

@@ -5,9 +5,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from app.modules.context.application.dto import RouteContextResult
-from app.modules.context.domain.enums import ContextRouteMode
-from app.modules.context.domain.models import ContextRouteDecision
+from app.modules.context.application.dto import ContextSelectionResult
+from app.modules.context.domain.models import ContextSelectionDecision
 from app.modules.conversation.application.dto import (
     SendConversationMessageCommand,
 )
@@ -18,18 +17,15 @@ from app.modules.planning.application.dto import RunPlanningResult
 from app.modules.planning.domain.enums import PlanStatus
 
 
-def _routed() -> RouteContextResult:
-    return RouteContextResult(
+def _selection() -> ContextSelectionResult:
+    return ContextSelectionResult(
         conversation_id="conversation-1",
         turn_id="turn-1",
         message="处理文档 7",
-        selected_chains=[],
-        new_chain_id="chain-1",
-        decision=ContextRouteDecision(
-            selected_chain_ids=[],
-            create_new_chain=True,
-            route_mode=ContextRouteMode.NEW_CHAIN,
-            reason_summary="新业务链",
+        context_chains=[],
+        decision=ContextSelectionDecision(
+            relevant_chain_ids=[],
+            reason_summary="不需要历史上下文",
         ),
     )
 
@@ -37,7 +33,7 @@ def _routed() -> RouteContextResult:
 class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.context = mock.Mock()
-        self.context.send_message = mock.AsyncMock(return_value=_routed())
+        self.context.send_message = mock.AsyncMock(return_value=_selection())
         self.context.complete_turn = mock.AsyncMock()
         self.planning = mock.Mock()
         self.planning.execute = mock.AsyncMock()

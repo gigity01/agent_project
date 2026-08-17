@@ -24,8 +24,8 @@ from app.modules.context.presentation.dependencies import (
 from app.modules.context.presentation.schemas import (
     CompleteContextTurnRequest,
     CompleteContextTurnResponse,
-    ContextRouteRequest,
-    RoutedContextPackage,
+    ContextSelectionRequest,
+    SelectedContextPackage,
 )
 
 
@@ -81,14 +81,14 @@ def _to_complete_turn_command(
 
 @legacy_router.post(
     "/route",
-    response_model=RoutedContextPackage,
+    response_model=SelectedContextPackage,
     deprecated=True,
 )
-async def route_context(
-    request: ContextRouteRequest,
+async def select_context(
+    request: ContextSelectionRequest,
     service: ContextService = Depends(get_context_routing_service),
-) -> RoutedContextPackage:
-    """兼容旧 Context Route API；新调用方应发送 Conversation Message。"""
+) -> SelectedContextPackage:
+    """兼容旧路径；执行历史 Context Selection，不决定 Turn 归属。"""
     try:
         result = await service.send_message(
             SendMessageCommand(
@@ -99,12 +99,11 @@ async def route_context(
     except ContextApplicationError as exc:
         raise _to_http_exception(exc) from exc
 
-    return RoutedContextPackage(
+    return SelectedContextPackage(
         current_turn_id=result.turn_id,
         current_user_input=result.message,
-        selected_chains=result.selected_chains,
-        new_chain_id=result.new_chain_id,
-        route_decision=result.decision,
+        context_chains=result.context_chains,
+        selection_decision=result.decision,
     )
 
 
@@ -117,7 +116,7 @@ async def complete_context_turn(
     request: CompleteContextTurnRequest,
     service: ContextService = Depends(get_context_service),
 ) -> CompleteContextTurnResponse:
-    """完成已保存路由决定的 Context Turn。"""
+    """完成已保存 Context Selection 对应的 Turn。"""
     try:
         result = await service.complete_turn(
             turn_id,

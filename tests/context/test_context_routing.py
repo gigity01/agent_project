@@ -1,4 +1,4 @@
-"""Context 路由、完成回写和确定性校验的离线测试。"""
+"""Context Selection、完成回写和确定性校验的离线测试。"""
 
 from __future__ import annotations
 
@@ -50,14 +50,14 @@ with (
     from app.modules.context.infrastructure.persistence.models.conversation_turn import (
         ConversationTurn as ConversationTurnModel,
     )
-    from app.modules.context.domain.enums import ContextRouteMode
     from app.modules.context.domain.models import (
         ContextChain,
         ContextResourceQueue,
-        ContextRouteDecision,
+        ContextSelectionDecision,
     )
-    from app.modules.context.domain.route_policy import (
-        validate_route_decision,
+    from app.modules.context.domain.selection_policy import (
+        derive_context_selection_mode,
+        validate_context_selection,
     )
     from app.modules.context.presentation.schemas import (
         CompleteContextTurnRequest,
@@ -73,7 +73,7 @@ with (
 
 
 class _AgentRouter:
-    def __init__(self, decision: ContextRouteDecision) -> None:
+    def __init__(self, decision: ContextSelectionDecision) -> None:
         self.decision = decision
         self.inputs = []
 
@@ -195,8 +195,8 @@ def _context_chain(
     )
 
 
-class ContextRouteValidationTest(unittest.TestCase):
-    def test_fallback_latest_is_normalized_by_code(self) -> None:
+class ContextSelectionValidationTest(unittest.TestCase):
+    def test_duplicate_ids_are_deduplicated_preserving_order(self) -> None:
         now = datetime.now()
         chains = [
             _context_chain("chain-old", last_active_at=now),
@@ -205,39 +205,41 @@ class ContextRouteValidationTest(unittest.TestCase):
                 last_active_at=now + timedelta(seconds=1),
             ),
         ]
-        raw_decision = ContextRouteDecision(
-            selected_chain_ids=["chain-old"],
-            create_new_chain=True,
-            route_mode=ContextRouteMode.FALLBACK_LATEST,
-            reason_summary="指代存在关联但无法确定具体链。",
+        raw_decision = ContextSelectionDecision(
+            relevant_chain_ids=["chain-new", "chain-old", "chain-new"],
+            reason_summary="Planner 需要两条历史链。",
         )
 
-        decision = validate_route_decision(
+        decision = validate_context_selection(
             raw_decision,
             chains,
             conversation_id="conversation-1",
         )
 
-        self.assertEqual(decision.selected_chain_ids, ["chain-new"])
-        self.assertFalse(decision.create_new_chain)
+        self.assertEqual(
+            decision.relevant_chain_ids,
+            ["chain-new", "chain-old"],
+        )
+        self.assertEqual(
+            derive_context_selection_mode(decision.relevant_chain_ids).value,
+            "multi_context",
+        )
 
-    def test_existing_and_new_requires_both_parts(self) -> None:
+    def test_unknown_chain_is_rejected(self) -> None:
         chain = _context_chain(
             "chain-a",
             last_active_at=datetime.now(),
         )
-        decision = ContextRouteDecision(
-            selected_chain_ids=[],
-            create_new_chain=True,
-            route_mode=ContextRouteMode.EXISTING_AND_NEW,
-            reason_summary="包含已有内容和新内容。",
+        decision = ContextSelectionDecision(
+            relevant_chain_ids=["chain-unknown"],
+            reason_summary="选择未知链。",
         )
 
         with self.assertRaisesRegex(
             ValueError,
-            "existing_and_new requires",
+            "selected unknown chain",
         ):
-            validate_route_decision(
+            validate_context_selection(
                 decision,
                 [chain],
                 conversation_id="conversation-1",
@@ -277,11 +279,9 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             record_factory=self.record_factory,
         )
         self.agent_router = _AgentRouter(
-            ContextRouteDecision(
-                selected_chain_ids=[],
-                create_new_chain=True,
-                route_mode=ContextRouteMode.NEW_CHAIN,
-                reason_summary="当前没有相关已有链。",
+            ContextSelectionDecision(
+                relevant_chain_ids=[],
+                reason_summary="当前请求不需要历史上下文。",
             )
         )
         self.service = ContextService(
@@ -320,7 +320,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
     async def _send(
         self,
         message: str,
-        decision: ContextRouteDecision,
+        decision: ContextSelectionDecision,
     ):
         self.agent_router.decision = decision
         return await self.service.send_message(
@@ -329,6 +329,17 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 message=message,
             )
         )
+
+    def _legacy_new_chain_id(self, turn_id: str) -> str:
+        """第一阶段 write-side 兼容层预建的 Chain ID。"""
+        with self.session_factory() as session:
+            record = (
+                session.query(ContextRouteRecord)
+                .filter(ContextRouteRecord.current_turn_id == turn_id)
+                .one()
+            )
+            self.assertIsNotNone(record.new_chain_id)
+            return record.new_chain_id
 
     async def test_route_and_complete_create_one_turn_and_one_new_chain(
         self,
@@ -340,8 +351,8 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertEqual(package.selected_chains, [])
-        self.assertIsNotNone(package.new_chain_id)
+        self.assertEqual(package.context_chains, [])
+        new_chain_id = self._legacy_new_chain_id(package.turn_id)
         self.assertEqual(len(self.agent_router.inputs), 1)
         self.assertEqual(self.agent_router.inputs[0].chains, [])
 
@@ -353,19 +364,19 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             routed_turn.status,
-            ContextTurnStatus.ROUTED.value,
+            ContextTurnStatus.CONTEXT_READY.value,
         )
         self.assertIsNone(routed_turn.assistant_content)
         self.assertIsNone(routed_turn.assistant_compact)
         self.assertEqual(routed_turn.task_ids, [])
         self.assertIsNone(routed_turn.task_result_summary)
-        self.assertEqual(routed_chain.chain_id, package.new_chain_id)
-        self.assertEqual(placeholder.chain_id, package.new_chain_id)
+        self.assertEqual(routed_chain.chain_id, new_chain_id)
+        self.assertEqual(placeholder.chain_id, new_chain_id)
         self.assertEqual(placeholder.turn_id, package.turn_id)
         self.assertEqual(placeholder.sequence, 0)
         self.assertEqual(placeholder.related_task_ids, [])
         self.assertEqual(placeholder.related_resource_refs, [])
-        self.assertEqual(route_record.new_chain_id, package.new_chain_id)
+        self.assertEqual(route_record.new_chain_id, new_chain_id)
 
         response = await self.service.complete_turn(
             package.turn_id,
@@ -375,7 +386,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 task_result_summary="设计完成。",
                 chain_updates=[
                     ContextChainTurnUpdate(
-                        chain_id=package.new_chain_id,
+                        chain_id=new_chain_id,
                         related_task_ids=["task-1"],
                         related_resources=[
                             ContextResourceInput(
@@ -392,7 +403,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             response.linked_chain_ids,
-            [package.new_chain_id],
+            [new_chain_id],
         )
         self.assertEqual(
             response.turn.status,
@@ -423,7 +434,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resources[0].use_count, 1)
         self.assertTrue(resources[0].active)
         self.assertEqual(events[0].action, "seen")
-        queue_key = ("conversation-1", package.new_chain_id)
+        queue_key = ("conversation-1", new_chain_id)
         self.assertEqual(
             [
                 item.resource_key
@@ -444,12 +455,11 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 message="创建第一条上下文。",
             )
         )
+        first_chain_id = self._legacy_new_chain_id(first.turn_id)
         second = await self._send(
             "继续第一条上下文。",
-            ContextRouteDecision(
-                selected_chain_ids=[first.new_chain_id],
-                create_new_chain=False,
-                route_mode=ContextRouteMode.SINGLE_MATCH,
+            ContextSelectionDecision(
+                relevant_chain_ids=[first_chain_id],
                 reason_summary="继续第一条上下文。",
             ),
         )
@@ -458,19 +468,19 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         second_input = self.agent_router.inputs[1]
         self.assertEqual(
             [chain.chain_id for chain in second_input.chains],
-            [first.new_chain_id],
+            [first_chain_id],
         )
         self.assertEqual(
             [node.turn_id for node in second_input.chains[0].nodes],
             [first.turn_id],
         )
-        self.assertEqual(second.selected_chain_ids, [first.new_chain_id])
+        self.assertEqual(second.context_chain_ids, [first_chain_id])
 
         with self.session_factory() as session:
             nodes = (
                 session.query(ContextChainNodeModel)
                 .filter(
-                    ContextChainNodeModel.chain_id == first.new_chain_id
+                    ContextChainNodeModel.chain_id == first_chain_id
                 )
                 .order_by(ContextChainNodeModel.sequence)
                 .all()
@@ -489,10 +499,8 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
 
         package = await self._send(
             "同时关联 A 和 B。",
-            ContextRouteDecision(
-                selected_chain_ids=["chain-a", "chain-b"],
-                create_new_chain=False,
-                route_mode=ContextRouteMode.MULTI_MATCH,
+            ContextSelectionDecision(
+                relevant_chain_ids=["chain-a", "chain-b"],
                 reason_summary="消息同时关联两条链。",
             ),
         )
@@ -510,16 +518,14 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             [("chain-a", 0), ("chain-b", 0)],
         )
 
-    async def test_existing_and_new_creates_both_placeholders(self) -> None:
+    async def test_single_context_does_not_create_an_extra_chain(self) -> None:
         self._insert_chain("chain-existing")
 
         package = await self._send(
             "继续已有内容并加入新主题。",
-            ContextRouteDecision(
-                selected_chain_ids=["chain-existing"],
-                create_new_chain=True,
-                route_mode=ContextRouteMode.EXISTING_AND_NEW,
-                reason_summary="同时包含已有上下文和新上下文。",
+            ContextSelectionDecision(
+                relevant_chain_ids=["chain-existing"],
+                reason_summary="Planner 只需要已有上下文。",
             ),
         )
 
@@ -532,14 +538,11 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 .all()
             )
 
-        self.assertEqual(len(chains), 2)
-        self.assertEqual(
-            {node.chain_id for node in nodes},
-            {"chain-existing", package.new_chain_id},
-        )
+        self.assertEqual(len(chains), 1)
+        self.assertEqual({node.chain_id for node in nodes}, {"chain-existing"})
         self.assertTrue(all(node.sequence == 0 for node in nodes))
 
-    async def test_fallback_latest_creates_latest_chain_placeholder(
+    async def test_no_context_does_not_force_latest_chain(
         self,
     ) -> None:
         now = datetime.now()
@@ -551,11 +554,9 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
 
         package = await self._send(
             "继续刚才那个。",
-            ContextRouteDecision(
-                selected_chain_ids=["chain-old"],
-                create_new_chain=True,
-                route_mode=ContextRouteMode.FALLBACK_LATEST,
-                reason_summary="存在关联但无法判断具体归属。",
+            ContextSelectionDecision(
+                relevant_chain_ids=[],
+                reason_summary="Planner 不需要历史上下文。",
             ),
         )
 
@@ -566,10 +567,11 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 .all()
             )
 
-        self.assertEqual(package.decision.selected_chain_ids, ["chain-new"])
-        self.assertFalse(package.decision.create_new_chain)
-        self.assertIsNone(package.new_chain_id)
-        self.assertEqual([node.chain_id for node in nodes], ["chain-new"])
+        self.assertEqual(package.decision.relevant_chain_ids, [])
+        self.assertNotIn(
+            nodes[0].chain_id,
+            {"chain-old", "chain-new"},
+        )
 
     async def test_complete_turn_rejects_missing_placeholder(self) -> None:
         package = await self.service.send_message(
@@ -596,7 +598,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             turn = session.query(ConversationTurnModel).one()
             node_count = session.query(ContextChainNodeModel).count()
 
-        self.assertEqual(turn.status, ContextTurnStatus.ROUTED.value)
+        self.assertEqual(turn.status, ContextTurnStatus.CONTEXT_READY.value)
         self.assertEqual(node_count, 0)
 
     async def test_repeated_complete_turn_is_idempotent(self) -> None:
@@ -606,11 +608,12 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 message="创建可幂等完成的上下文。",
             )
         )
+        new_chain_id = self._legacy_new_chain_id(package.turn_id)
         command = CompleteContextTurnRequest(
             assistant_content="完成。",
             chain_updates=[
                 ContextChainTurnUpdate(
-                    chain_id=package.new_chain_id,
+                    chain_id=new_chain_id,
                     related_resources=[
                         ContextResourceInput(
                             resource_type="document",
@@ -631,7 +634,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.turn.status, ContextTurnStatus.COMPLETED.value)
         self.assertEqual(second.turn.status, ContextTurnStatus.COMPLETED.value)
-        self.assertEqual(second.linked_chain_ids, [package.new_chain_id])
+        self.assertEqual(second.linked_chain_ids, [new_chain_id])
         self.assertEqual(node_count, 1)
         self.assertEqual(resource.use_count, 1)
         self.assertEqual(event_count, 1)
@@ -645,12 +648,11 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 message="第一条消息。",
             )
         )
+        first_chain_id = self._legacy_new_chain_id(first.turn_id)
         second = await self._send(
             "第二条消息。",
-            ContextRouteDecision(
-                selected_chain_ids=[first.new_chain_id],
-                create_new_chain=False,
-                route_mode=ContextRouteMode.SINGLE_MATCH,
+            ContextSelectionDecision(
+                relevant_chain_ids=[first_chain_id],
                 reason_summary="第二条消息继续第一条链。",
             ),
         )
@@ -736,6 +738,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 message="创建资源事实。",
             )
         )
+        new_chain_id = self._legacy_new_chain_id(package.turn_id)
         self.queue_repository.fail_refresh = True
 
         response = await self.service.complete_turn(
@@ -743,7 +746,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             CompleteContextTurnRequest(
                 chain_updates=[
                     ContextChainTurnUpdate(
-                        chain_id=package.new_chain_id,
+                        chain_id=new_chain_id,
                         related_resources=[
                             ContextResourceInput(
                                 resource_type="document",
@@ -769,7 +772,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chain.resource_version, 1)
         self.assertEqual(
             self.queue_repository.invalidated,
-            [("conversation-1", package.new_chain_id)],
+            [("conversation-1", new_chain_id)],
         )
 
     async def test_refreshes_and_removes_resources_without_losing_history(
@@ -781,12 +784,13 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
                 message="处理文档 A 和 B。",
             )
         )
+        first_chain_id = self._legacy_new_chain_id(first_package.turn_id)
         await self.service.complete_turn(
             first_package.turn_id,
             CompleteContextTurnRequest(
                 chain_updates=[
                     ContextChainTurnUpdate(
-                        chain_id=first_package.new_chain_id,
+                        chain_id=first_chain_id,
                         related_resources=[
                             ContextResourceInput(
                                 resource_type="document",
@@ -803,13 +807,11 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.queue_repository.invalidate(
             conversation_id="conversation-1",
-            chain_id=first_package.new_chain_id,
+            chain_id=first_chain_id,
         )
 
-        self.agent_router.decision = ContextRouteDecision(
-            selected_chain_ids=[first_package.new_chain_id],
-            create_new_chain=False,
-            route_mode=ContextRouteMode.SINGLE_MATCH,
+        self.agent_router.decision = ContextSelectionDecision(
+            relevant_chain_ids=[first_chain_id],
             reason_summary="继续已有文档链。",
         )
         second_package = await self.service.send_message(
@@ -821,7 +823,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [
                 item.resource_key
-                for item in second_package.selected_chains[
+                for item in second_package.context_chains[
                     0
                 ].resource_queue.items
             ],
@@ -833,7 +835,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             CompleteContextTurnRequest(
                 chain_updates=[
                     ContextChainTurnUpdate(
-                        chain_id=first_package.new_chain_id,
+                        chain_id=first_chain_id,
                         related_resources=[
                             ContextResourceInput(
                                 resource_type="document",
@@ -865,7 +867,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             sorted(event.action for event in events),
             ["refreshed", "removed", "seen", "seen"],
         )
-        queue_key = ("conversation-1", first_package.new_chain_id)
+        queue_key = ("conversation-1", first_chain_id)
         self.assertEqual(
             [
                 item.resource_key

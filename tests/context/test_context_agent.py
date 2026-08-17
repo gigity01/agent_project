@@ -9,15 +9,14 @@ from types import SimpleNamespace
 from unittest import mock
 
 from app.modules.context.infrastructure.llm.deepseek_router import (
-    CONTEXT_ROUTE_TOOL_NAME,
+    CONTEXT_SELECTION_TOOL_NAME,
     DeepSeekContextRouter,
 )
 from app.modules.context.infrastructure.llm.strict_schema_adapter import (
     ContextAgentOutputError,
-    build_context_route_tool_schema,
+    build_context_selection_tool_schema,
 )
 from app.modules.context.application.dto import ContextAgentInput
-from app.modules.context.domain.enums import ContextRouteMode
 from app.modules.context.domain.models import (
     ContextChain,
     ContextResourceQueue,
@@ -55,7 +54,7 @@ def _tool_response(arguments: dict[str, object]):
                     tool_calls=[
                         SimpleNamespace(
                             function=SimpleNamespace(
-                                name=CONTEXT_ROUTE_TOOL_NAME,
+                                name=CONTEXT_SELECTION_TOOL_NAME,
                                 arguments=json.dumps(
                                     arguments,
                                     ensure_ascii=False,
@@ -90,51 +89,42 @@ def _provider(create: mock.AsyncMock):
     )
 
 
-class ContextRouteToolSchemaTest(unittest.TestCase):
+class ContextSelectionToolSchemaTest(unittest.TestCase):
     def test_schema_is_generated_from_pydantic_without_local_refs(self) -> None:
-        schema = build_context_route_tool_schema()
+        schema = build_context_selection_tool_schema()
 
         self.assertEqual(schema["type"], "object")
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(
             set(schema["required"]),
-            {
-                "selected_chain_ids",
-                "create_new_chain",
-                "route_mode",
-                "reason_summary",
-            },
+            {"relevant_chain_ids", "reason_summary"},
         )
         serialized = json.dumps(schema)
         self.assertNotIn("$defs", schema)
         self.assertNotIn("$ref", serialized)
         self.assertNotIn("minLength", serialized)
         self.assertNotIn("maxLength", serialized)
-        self.assertEqual(
-            schema["properties"]["route_mode"]["enum"],
-            [mode.value for mode in ContextRouteMode],
-        )
 
 
 class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
-    async def test_without_existing_chains_returns_new_chain_without_llm(self) -> None:
+    async def test_without_existing_chains_returns_empty_selection_without_llm(self) -> None:
         create = mock.AsyncMock()
         router = ContextAgentRouter(_provider(create))
 
         decision = await router.route(_agent_input(with_chain=False))
 
-        self.assertEqual(decision.route_mode, ContextRouteMode.NEW_CHAIN)
-        self.assertTrue(decision.create_new_chain)
-        self.assertEqual(decision.selected_chain_ids, [])
+        self.assertEqual(decision.relevant_chain_ids, [])
+        self.assertEqual(
+            decision.reason_summary,
+            "当前 Conversation 没有历史上下文。",
+        )
         create.assert_not_awaited()
 
     async def test_forces_one_strict_tool_and_parses_arguments(self) -> None:
         create = mock.AsyncMock(
             return_value=_tool_response(
                 {
-                    "selected_chain_ids": ["chain-1"],
-                    "create_new_chain": False,
-                    "route_mode": "single_match",
+                    "relevant_chain_ids": ["chain-1"],
                     "reason_summary": "当前输入延续已有文档方案。",
                 }
             )
@@ -143,13 +133,12 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
 
         decision = await router.route(_agent_input())
 
-        self.assertEqual(decision.route_mode, ContextRouteMode.SINGLE_MATCH)
-        self.assertEqual(decision.selected_chain_ids, ["chain-1"])
+        self.assertEqual(decision.relevant_chain_ids, ["chain-1"])
         request = create.await_args.kwargs
         self.assertEqual(request["model"], "deepseek-v4-flash")
         self.assertEqual(
             request["tool_choice"]["function"]["name"],
-            CONTEXT_ROUTE_TOOL_NAME,
+            CONTEXT_SELECTION_TOOL_NAME,
         )
         self.assertFalse(request["parallel_tool_calls"])
         self.assertEqual(request["temperature"], 0)
@@ -164,9 +153,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
                 _invalid_response(),
                 _tool_response(
                     {
-                        "selected_chain_ids": ["chain-1"],
-                        "create_new_chain": False,
-                        "route_mode": "single_match",
+                        "relevant_chain_ids": ["chain-1"],
                         "reason_summary": "第二次返回合法路由。",
                     }
                 ),
@@ -179,7 +166,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
 
         decision = await router.route(_agent_input())
 
-        self.assertEqual(decision.selected_chain_ids, ["chain-1"])
+        self.assertEqual(decision.relevant_chain_ids, ["chain-1"])
         self.assertEqual(create.await_count, 2)
         second_request = create.await_args_list[1].kwargs
         self.assertIn(
@@ -208,9 +195,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         create = mock.AsyncMock(
             return_value=_tool_response(
                 {
-                    "selected_chain_ids": ["chain-1"],
-                    "create_new_chain": False,
-                    "route_mode": "single_match",
+                    "relevant_chain_ids": ["chain-1"],
                     "reason_summary": "已有链。",
                     "unexpected": "not allowed",
                 }

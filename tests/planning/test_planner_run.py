@@ -1,4 +1,4 @@
-"""Planner 从 routed Turn 到 ready Plan 的单条闭环测试。"""
+"""Planner 从 context_ready Turn 到 ready Plan 的单条闭环测试。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,13 @@ from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn,
 )
+from app.modules.context.infrastructure.persistence.mapper import (
+    build_context_chain,
+)
+from app.modules.context.infrastructure.persistence.models.context_route_record import (
+    ContextRouteRecord,
+)
+from app.modules.context.domain.models import ContextResourceQueue
 from app.modules.planning.agent_tools.planning_tools import (
     create_build_chunks_task_handler,
     create_index_vectors_task_handler,
@@ -38,7 +45,10 @@ from app.modules.planning.agent_tools.schemas import (
     CreateProcessDocumentTaskToolInput,
     FinalizePlanToolInput,
 )
-from app.modules.planning.application.dto import RunPlanningInput
+from app.modules.planning.application.dto import (
+    PlannerContextInput,
+    RunPlanningInput,
+)
 from app.modules.planning.application.ports import PlanningApplicationPorts
 from app.modules.planning.application.run_planning import RunPlanningUseCase
 from app.modules.planning.application.use_cases import (
@@ -77,10 +87,10 @@ class _ClosedLoopPlannerRunner:
     def __init__(self) -> None:
         self.active_collectors = 0
         self.max_active_collectors = 0
-        self.user_input: str | None = None
+        self.planner_input: PlannerContextInput | None = None
 
-    async def run(self, *, user_input: str, context) -> str:
-        self.user_input = user_input
+    async def run(self, *, planner_input: PlannerContextInput, context) -> str:
+        self.planner_input = planner_input
 
         async def collect() -> None:
             self.active_collectors += 1
@@ -143,6 +153,7 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         )
         self.tables = [
             ConversationTurn.__table__,
+            ContextRouteRecord.__table__,
             Plan.__table__,
             Task.__table__,
             TaskDependency.__table__,
@@ -157,7 +168,19 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
                     conversation_id="conversation-1",
                     user_input="处理、切块并索引文档 7",
                     task_ids=[],
-                    status="routed",
+                    status="context_ready",
+                )
+            )
+            session.add(
+                ContextRouteRecord(
+                    route_id="selection-planner-1",
+                    conversation_id="conversation-1",
+                    current_turn_id="turn-planner-1",
+                    selected_chain_ids=[],
+                    create_new_chain=True,
+                    route_mode="no_context",
+                    reason_summary="当前请求不需要历史上下文",
+                    new_chain_id="chain-placeholder",
                 )
             )
             session.commit()
@@ -278,7 +301,10 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             new=mock.AsyncMock(side_effect=[evidence_result, commit_result]),
         ) as run:
             result = await configured_runner.run(
-                user_input="处理文档 7",
+                planner_input=PlannerContextInput(
+                    current_user_input="处理文档 7",
+                    context_chains=[],
+                ),
                 context=context,
             )
 
@@ -286,7 +312,11 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.await_count, 2)
         evidence_call, commit_call = run.await_args_list
         self.assertIs(evidence_call.args[0], configured_runner.evidence_agent)
-        self.assertEqual(evidence_call.args[1], "处理文档 7")
+        self.assertIn(
+            '"current_user_input": "处理文档 7"',
+            evidence_call.args[1],
+        )
+        self.assertIn('"context_chains": []', evidence_call.args[1])
         self.assertIs(commit_call.args[0], configured_runner.commit_agent)
         self.assertIs(commit_call.args[1], evidence_history)
         self.assertIs(
@@ -308,12 +338,19 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         )
         planning_use_cases = build_planning_use_cases(ports)
         closed_loop_runner = _ClosedLoopPlannerRunner()
+        resource_service = mock.Mock()
+        resource_service.empty_queue.return_value = ContextResourceQueue(
+            capacity=16,
+            items=[],
+        )
         run_planning = RunPlanningUseCase(
             ports=ports,
             planning_use_cases=planning_use_cases,
             planner_runner=closed_loop_runner,
             document_services=_mock_document_services(),
             context_services=ContextToolServices(),
+            context_resource_service=resource_service,
+            context_chain_mapper=build_context_chain,
             operations_services=OperationsToolServices(),
             audit_logger_factory=lambda: AgentToolAuditLogger(_AuditWriter()),
         )
@@ -327,9 +364,10 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(closed_loop_runner.max_active_collectors, 3)
         self.assertEqual(
-            closed_loop_runner.user_input,
+            closed_loop_runner.planner_input.current_user_input,
             "处理、切块并索引文档 7",
         )
+        self.assertEqual(closed_loop_runner.planner_input.context_chains, [])
         self.assertEqual(result.status.value, "ready")
         self.assertEqual(len(result.task_ids), 3)
         self.assertIsNone(result.failure_reason)

@@ -1,4 +1,4 @@
-"""Context 路由与完成回写的业务编排。"""
+"""Context Selection 与完成回写的业务编排。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.modules.context.application.dto import (
     CompleteTurnCommand,
     CompleteTurnResult,
     ContextAgentInput,
-    RouteContextResult,
+    ContextSelectionResult,
     SendMessageCommand,
 )
 from app.modules.context.application.errors import (
@@ -38,15 +38,13 @@ from app.modules.context.application.resource_service import (
 from app.modules.context.domain.enums import ContextTurnStatus
 from app.modules.context.domain.models import (
     ContextChain,
-    ContextRouteDecision,
+    ContextSelectionDecision,
     ConversationTurn,
 )
-from app.modules.context.domain.route_policy import (
-    validate_route_decision,
+from app.modules.context.domain.selection_policy import (
+    derive_context_selection_mode,
+    validate_context_selection,
 )
-
-
-DEFAULT_FULL_ASSISTANT_TURN_COUNT = 5
 
 
 @dataclass(frozen=True)
@@ -66,7 +64,7 @@ def _new_id(prefix: str) -> str:
 
 
 class ContextService:
-    """保持 Conversation 路由串行，并划分短数据库事务。"""
+    """保持 Conversation Context 变更串行，并划分短数据库事务。"""
 
     def __init__(
         self,
@@ -77,23 +75,19 @@ class ContextService:
         uow_factory: UnitOfWorkFactory,
         record_factory: ContextRecordFactoryPort,
         chain_mapper: ContextChainMapperPort,
-        full_assistant_turn_count: int = DEFAULT_FULL_ASSISTANT_TURN_COUNT,
     ) -> None:
-        if full_assistant_turn_count < 0:
-            raise ValueError("full_assistant_turn_count cannot be negative")
         self._agent_router = agent_router
         self._route_lock_manager = route_lock_manager
         self._resource_service = resource_service
         self._uow_factory = uow_factory
         self._record_factory = record_factory
         self._chain_mapper = chain_mapper
-        self._full_assistant_turn_count = full_assistant_turn_count
 
     async def send_message(
         self,
         command: SendMessageCommand,
-    ) -> RouteContextResult:
-        """创建唯一 Turn，并返回完整用户输入和全部命中链。"""
+    ) -> ContextSelectionResult:
+        """创建唯一 Turn，并持久化 Planner 所需的历史读取集合。"""
         if self._agent_router is None:
             raise RuntimeError("Context Agent Router 未配置")
 
@@ -137,23 +131,25 @@ class ContextService:
                     ) from exc
 
                 try:
-                    decision = validate_route_decision(
+                    decision = validate_context_selection(
                         raw_decision,
                         chains,
                         conversation_id=command.conversation_id,
                     )
                 except ValueError as exc:
                     raise ContextRoutingError(
-                        f"Context Agent 返回了非法路由结果: {exc}"
+                        f"Context Agent 返回了非法 Selection: {exc}"
                     ) from exc
 
+                # 第一阶段仍由旧 write-side 为完成流程保留目标链；第二阶段会把
+                # Chain/Node 创建整体移入 Complete transaction。
                 new_chain_id = (
                     _new_id("chain")
-                    if decision.create_new_chain
+                    if not decision.relevant_chain_ids
                     else None
                 )
                 await run_in_threadpool(
-                    self._persist_routing_result,
+                    self._persist_context_selection,
                     turn_id,
                     command.conversation_id,
                     decision,
@@ -161,15 +157,14 @@ class ContextService:
                 )
 
                 chain_map = {chain.chain_id: chain for chain in chains}
-                return RouteContextResult(
+                return ContextSelectionResult(
                     conversation_id=command.conversation_id,
                     turn_id=turn_id,
                     message=command.message,
-                    selected_chains=[
+                    context_chains=[
                         chain_map[chain_id]
-                        for chain_id in decision.selected_chain_ids
+                        for chain_id in decision.relevant_chain_ids
                     ],
-                    new_chain_id=new_chain_id,
                     decision=decision,
                 )
         except ConversationLockUnavailable:
@@ -232,9 +227,6 @@ class ContextService:
                     chain=self._chain_mapper(
                         chain,
                         resource_queue=self._resource_service.empty_queue(),
-                        full_assistant_turn_count=(
-                            self._full_assistant_turn_count
-                        ),
                     ),
                     resource_version=chain.resource_version,
                 )
@@ -243,29 +235,29 @@ class ContextService:
             uow.commit()
         return chains
 
-    def _persist_routing_result(
+    def _persist_context_selection(
         self,
         turn_id: str,
         conversation_id: str,
-        decision: ContextRouteDecision,
+        decision: ContextSelectionDecision,
         new_chain_id: str | None,
     ) -> None:
         with self._uow_factory() as uow:
             turn = uow.context.get_turn_for_update(turn_id)
             if turn is None:
-                raise RuntimeError("Context Turn disappeared before routing")
+                raise RuntimeError("Context Turn disappeared before selection")
             if turn.conversation_id != conversation_id:
                 raise RuntimeError("Context Turn conversation changed")
             if turn.status != ContextTurnStatus.ROUTING.value:
-                raise RuntimeError("Context Turn is not awaiting routing")
+                raise RuntimeError("Context Turn is not awaiting selection")
 
             selected_chains = uow.context.get_chains_by_ids_for_update(
-                decision.selected_chain_ids
+                decision.relevant_chain_ids
             )
             selected_map = {
                 chain.chain_id: chain for chain in selected_chains
             }
-            for chain_id in decision.selected_chain_ids:
+            for chain_id in decision.relevant_chain_ids:
                 chain = selected_map.get(chain_id)
                 if chain is None:
                     raise RuntimeError(
@@ -280,12 +272,13 @@ class ContextService:
                         f"Selected Context Chain was archived: {chain_id}"
                     )
 
-            target_chain_ids = list(decision.selected_chain_ids)
+            target_chain_ids = list(decision.relevant_chain_ids)
             now = datetime.now()
-            if decision.create_new_chain:
+            create_new_chain = not target_chain_ids
+            if create_new_chain:
                 if new_chain_id is None:
                     raise RuntimeError(
-                        "Context routing decision is missing new chain ID"
+                        "Context selection fallback is missing new chain ID"
                     )
                 if uow.context.get_chain_for_update(new_chain_id) is not None:
                     raise RuntimeError(
@@ -308,11 +301,11 @@ class ContextService:
                     route_id=_new_id("route"),
                     conversation_id=conversation_id,
                     current_turn_id=turn_id,
-                    selected_chain_ids=list(
-                        decision.selected_chain_ids
-                    ),
-                    create_new_chain=decision.create_new_chain,
-                    route_mode=decision.route_mode.value,
+                    selected_chain_ids=list(decision.relevant_chain_ids),
+                    create_new_chain=create_new_chain,
+                    route_mode=derive_context_selection_mode(
+                        decision.relevant_chain_ids
+                    ).value,
                     reason_summary=decision.reason_summary,
                     new_chain_id=new_chain_id,
                 )
@@ -330,7 +323,7 @@ class ContextService:
                 )
             uow.context.set_turn_status(
                 turn,
-                ContextTurnStatus.ROUTED.value,
+                ContextTurnStatus.CONTEXT_READY.value,
             )
             uow.commit()
 
@@ -377,7 +370,7 @@ class ContextService:
                     resource_refreshes=[],
                 )
             if turn.status not in {
-                ContextTurnStatus.ROUTED.value,
+                ContextTurnStatus.CONTEXT_READY.value,
                 ContextTurnStatus.PROCESSING.value,
             }:
                 raise ContextConflictError(

@@ -6,9 +6,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.modules.context.domain.enums import ContextRouteMode
-
-
 class ContextResourceRef(BaseModel):
     """数据库与 Redis 热队列共享的紧凑资源引用。"""
 
@@ -76,12 +73,10 @@ class ContextChain(BaseModel):
     archived: bool = False
 
 
-class ContextRouteDecision(BaseModel):
-    """Context Agent 唯一允许返回的结构化结果。"""
+class ContextSelectionDecision(BaseModel):
+    """Context Agent 唯一允许返回的历史读取集合。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    selected_chain_ids: list[str]
-    create_new_chain: bool
-    route_mode: ContextRouteMode
+    relevant_chain_ids: list[str]
     reason_summary: str = Field(min_length=1, max_length=1000)

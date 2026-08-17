@@ -11,7 +11,7 @@ from app.modules.context.domain.models import (
     ContextChain,
     ContextResourceQueue,
     ContextResourceRef,
-    ContextRouteDecision,
+    ContextSelectionDecision,
 )
 
 
@@ -19,8 +19,8 @@ class ContextRouterPort(Protocol):
     async def route(
         self,
         agent_input: ContextAgentInput,
-    ) -> ContextRouteDecision:
-        """返回当前消息的 Context 路由决定。"""
+    ) -> ContextSelectionDecision:
+        """返回 Planner 理解当前消息所需的历史读取集合。"""
 
 
 class ConversationLockPort(Protocol):
@@ -101,9 +101,8 @@ class ContextChainMapperPort(Protocol):
         chain: Any,
         *,
         resource_queue: ContextResourceQueue,
-        full_assistant_turn_count: int,
     ) -> ContextChain:
-        """将持久化 Chain 投影为领域模型。"""
+        """将持久化 Chain 完整映射为领域模型。"""
 
 
 class ContextRecordFactoryPort(Protocol):

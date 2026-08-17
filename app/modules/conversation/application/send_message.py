@@ -8,8 +8,11 @@ from app.modules.context.application.dto import (
     CompleteTurnCommand,
     SendMessageCommand,
 )
+from app.modules.context.domain.selection_policy import (
+    derive_context_selection_mode,
+)
 from app.modules.conversation.application.dto import (
-    RoutingMetadata,
+    ContextSelectionMetadata,
     SendConversationMessageCommand,
     SendConversationMessageResult,
 )
@@ -33,52 +36,55 @@ class SendConversationMessageUseCase:
         self,
         command: SendConversationMessageCommand,
     ) -> SendConversationMessageResult:
-        routed = await self._context_service.send_message(
+        selection = await self._context_service.send_message(
             SendMessageCommand(
                 conversation_id=command.conversation_id,
                 message=command.message,
             )
         )
-        routing = RoutingMetadata(
-            route_mode=routed.decision.route_mode,
-            selected_chain_ids=list(routed.decision.selected_chain_ids),
-            new_chain_id=routed.new_chain_id,
-            reason_summary=routed.decision.reason_summary,
+        selection_metadata = ContextSelectionMetadata(
+            selection_mode=derive_context_selection_mode(
+                selection.decision.relevant_chain_ids
+            ),
+            relevant_chain_ids=list(
+                selection.decision.relevant_chain_ids
+            ),
+            reason_summary=selection.decision.reason_summary,
         )
         clarification_plan_id = await asyncio.to_thread(
             self._answer_clarification.execute,
             conversation_id=command.conversation_id,
-            answer_turn_id=routed.turn_id,
+            answer_turn_id=selection.turn_id,
         )
         if clarification_plan_id is not None:
             return SendConversationMessageResult(
                 conversation_id=command.conversation_id,
-                turn_id=routed.turn_id,
+                turn_id=selection.turn_id,
                 plan_id=clarification_plan_id,
                 status="retry_pending",
-                routing=routing,
+                context_selection=selection_metadata,
             )
 
         planning = await self._run_planning.execute(
             RunPlanningInput(
-                conversation_id=routed.conversation_id,
-                turn_id=routed.turn_id,
+                conversation_id=selection.conversation_id,
+                turn_id=selection.turn_id,
                 revision=1,
             )
         )
         if planning.status == PlanStatus.READY:
             return SendConversationMessageResult(
-                conversation_id=routed.conversation_id,
-                turn_id=routed.turn_id,
+                conversation_id=selection.conversation_id,
+                turn_id=selection.turn_id,
                 plan_id=planning.plan_id,
                 status="processing",
                 task_ids=planning.task_ids,
-                routing=routing,
+                context_selection=selection_metadata,
             )
         if planning.status == PlanStatus.UNSUPPORTED:
             message = planning.failure_reason or "当前业务暂不支持该请求。"
             await self._context_service.complete_turn(
-                routed.turn_id,
+                selection.turn_id,
                 CompleteTurnCommand(
                     assistant_content=message,
                     assistant_compact=message,
@@ -87,19 +93,19 @@ class SendConversationMessageUseCase:
                 ),
             )
             return SendConversationMessageResult(
-                conversation_id=routed.conversation_id,
-                turn_id=routed.turn_id,
+                conversation_id=selection.conversation_id,
+                turn_id=selection.turn_id,
                 plan_id=planning.plan_id,
                 status="unsupported",
                 assistant_message=message,
-                routing=routing,
+                context_selection=selection_metadata,
             )
         if planning.status == PlanStatus.NEEDS_CLARIFICATION:
             question = planning.clarification_question
             if not question:
                 raise RuntimeError("Clarification Agent 未生成问题")
             await self._context_service.complete_turn(
-                routed.turn_id,
+                selection.turn_id,
                 CompleteTurnCommand(
                     assistant_content=question,
                     assistant_compact=question,
@@ -108,26 +114,26 @@ class SendConversationMessageUseCase:
                 ),
             )
             return SendConversationMessageResult(
-                conversation_id=routed.conversation_id,
-                turn_id=routed.turn_id,
+                conversation_id=selection.conversation_id,
+                turn_id=selection.turn_id,
                 plan_id=planning.plan_id,
                 status="needs_clarification",
                 assistant_message=question,
-                routing=routing,
+                context_selection=selection_metadata,
             )
         if planning.status == PlanStatus.RETRY_PENDING:
             return SendConversationMessageResult(
-                conversation_id=routed.conversation_id,
-                turn_id=routed.turn_id,
+                conversation_id=selection.conversation_id,
+                turn_id=selection.turn_id,
                 plan_id=planning.plan_id,
                 status="retry_pending",
-                routing=routing,
+                context_selection=selection_metadata,
             )
         return SendConversationMessageResult(
-            conversation_id=routed.conversation_id,
-            turn_id=routed.turn_id,
+            conversation_id=selection.conversation_id,
+            turn_id=selection.turn_id,
             plan_id=planning.plan_id,
             status="failed",
             assistant_message=planning.failure_reason,
-            routing=routing,
+            context_selection=selection_metadata,
         )

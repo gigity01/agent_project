@@ -23,6 +23,7 @@ from app.agents.collectors import CollectorAgentSet
 from app.modules.planning.agent_tools.catalog import PLANNER_TOOLS
 from app.modules.planning.application.dto import (
     MarkPlanNeedsClarificationInput,
+    PlannerContextInput,
 )
 
 
@@ -59,12 +60,12 @@ class PlannerAgentRunner:
     async def run(
         self,
         *,
-        user_input: str,
+        planner_input: PlannerContextInput,
         context: AgentToolContext,
     ) -> Any:
         evidence_result = await Runner.run(
             self.evidence_agent,
-            user_input,
+            planner_input.model_dump_json(indent=2),
             context=context,
             max_turns=self.max_turns,
             run_config=self.evidence_run_config,
@@ -79,7 +80,9 @@ class PlannerAgentRunner:
 
 
 _PLANNER_BASE_INSTRUCTIONS = """
-你是业务 Planner。当前完整用户输入已经完成 Context 路由；你的职责是只基于可验证
+你是业务 Planner。输入中的 current_user_input 是当前请求，context_chains 只包含
+Context Selection 授权读取的完整历史 Chain；当前 Turn 不属于这些历史 Chain。
+你的职责是只基于可验证
 事实创建一个可执行 Plan，不执行 Task，也不把最终文本当作业务事实。Planner 决定
 WHAT，Task Runtime 和受限 Executor 决定 HOW。
 """.strip()

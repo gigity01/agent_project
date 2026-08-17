@@ -96,7 +96,7 @@ class PlanningUseCasesTest(unittest.TestCase):
                     conversation_id="conversation-1",
                     user_input="处理并索引文档 7",
                     task_ids=[],
-                    status="routed",
+                    status="context_ready",
                 )
             )
             session.commit()

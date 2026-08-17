@@ -497,6 +497,8 @@ async def build_container() -> AppContainer:
                     ),
                     list_context_route_records=list_context_route_records,
                 ),
+                context_resource_service=resource_service,
+                context_chain_mapper=build_context_chain,
                 operations_services=OperationsToolServices(
                     query_service=operations_query_service,
                     query_document_log_events=query_document_log_events,

@@ -153,6 +153,26 @@ class ContextRepository:
             .all()
         )
 
+    def get_chains_by_ids(
+        self,
+        chain_ids: Iterable[str],
+    ) -> list[ContextChain]:
+        """按 ID 加载完整 Chain，不改变业务活跃时间。"""
+        ordered_ids = sorted(set(chain_ids))
+        if not ordered_ids:
+            return []
+        return (
+            self.db.query(ContextChain)
+            .options(
+                selectinload(ContextChain.nodes).selectinload(
+                    ContextChainNode.turn
+                )
+            )
+            .filter(ContextChain.chain_id.in_(ordered_ids))
+            .order_by(ContextChain.chain_id.asc())
+            .all()
+        )
+
     def get_chain(self, chain_id: str) -> ContextChain | None:
         return (
             self.db.query(ContextChain)
@@ -226,6 +246,13 @@ class ContextRepository:
             .first()
         )
 
+    def get_route_record(self, turn_id: str) -> ContextRouteRecord | None:
+        return (
+            self.db.query(ContextRouteRecord)
+            .filter(ContextRouteRecord.current_turn_id == turn_id)
+            .first()
+        )
+
     def get_node(
         self,
         chain_id: str,
@@ -270,8 +297,16 @@ class ContextRepository:
             )
         if filters.chain_id is not None:
             query = query.filter(ContextChainNode.chain_id == filters.chain_id)
+        if filters.chain_ids:
+            query = query.filter(
+                ContextChainNode.chain_id.in_(filters.chain_ids)
+            )
         if filters.turn_id is not None:
             query = query.filter(ContextChainNode.turn_id == filters.turn_id)
+        if filters.turn_ids:
+            query = query.filter(
+                ContextChainNode.turn_id.in_(filters.turn_ids)
+            )
         if filters.created_from is not None:
             query = query.filter(
                 ContextChainNode.created_at >= filters.created_from
@@ -473,6 +508,10 @@ class ContextRepository:
         if filters.chain_id is not None:
             query = query.filter(
                 ContextChainResource.chain_id == filters.chain_id
+            )
+        if filters.chain_ids:
+            query = query.filter(
+                ContextChainResource.chain_id.in_(filters.chain_ids)
             )
         if filters.resource_type is not None:
             query = query.filter(

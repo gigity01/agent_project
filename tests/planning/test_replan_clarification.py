@@ -92,7 +92,7 @@ class ReplanClarificationTest(unittest.IsolatedAsyncioTestCase):
                         conversation_id="conversation-1",
                         user_input="文档 7",
                         task_ids=[],
-                        status="routed",
+                        status="context_ready",
                     ),
                 ]
             )

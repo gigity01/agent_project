@@ -57,10 +57,9 @@ with (
     from app.modules.context.application.resource_service import (
         ContextResourceService,
     )
-    from app.modules.context.domain.enums import ContextRouteMode
     from app.modules.context.domain.models import (
         ContextResourceQueue,
-        ContextRouteDecision,
+        ContextSelectionDecision,
     )
     from app.modules.context.infrastructure.persistence.mapper import (
         SQLAlchemyContextRecordFactory,
@@ -166,11 +165,9 @@ class _RouteLockManager:
 
 class _ContextRouter:
     async def route(self, _agent_input):
-        return ContextRouteDecision(
-            selected_chain_ids=[],
-            create_new_chain=True,
-            route_mode=ContextRouteMode.NEW_CHAIN,
-            reason_summary="端到端测试创建新链。",
+        return ContextSelectionDecision(
+            relevant_chain_ids=[],
+            reason_summary="端到端测试不需要历史上下文。",
         )
 
 
@@ -324,8 +321,8 @@ class _PlannerRunner:
     def __init__(self, capability_codes: tuple[str, ...]) -> None:
         self._capability_codes = capability_codes
 
-    async def run(self, *, user_input: str, context):
-        del user_input
+    async def run(self, *, planner_input, context):
+        del planner_input
         services = context.planning_services
         if services is None or context.plan_id is None or context.turn_id is None:
             raise AssertionError("Planner 测试上下文不完整")
@@ -520,6 +517,8 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
             planner_runner=_PlannerRunner(capability_codes),
             document_services=_unused_document_tool_services(),
             context_services=ContextToolServices(),
+            context_resource_service=resource_service,
+            context_chain_mapper=build_context_chain,
             operations_services=OperationsToolServices(),
             audit_logger_factory=lambda: AgentToolAuditLogger(_AuditWriter()),
         )

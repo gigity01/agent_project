@@ -5,11 +5,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from app.modules.context.domain.models import ContextRouteDecision
+from app.modules.context.domain.models import ContextSelectionDecision
 
 
 class ContextAgentOutputError(RuntimeError):
-    """DeepSeek 未按约定提交唯一且合法的 Context 路由结果。"""
+    """DeepSeek 未按约定提交唯一且合法的 Context Selection。"""
 
 
 def resolve_local_schema_refs(
@@ -31,7 +31,7 @@ def resolve_local_schema_refs(
         definition = definitions.get(definition_name)
         if definition is None:
             raise ContextAgentOutputError(
-                f"Context 路由 Schema 引用了未知定义: {definition_name}"
+                f"Context Selection Schema 引用了未知定义: {definition_name}"
             )
         merged = deepcopy(definition)
         merged.update(
@@ -78,12 +78,12 @@ def normalize_strict_tool_schema(value: Any) -> Any:
     return normalized
 
 
-def build_context_route_tool_schema() -> dict[str, Any]:
+def build_context_selection_tool_schema() -> dict[str, Any]:
     """从 Pydantic 契约生成 DeepSeek strict tool 参数 Schema。"""
-    raw_schema = ContextRouteDecision.model_json_schema()
+    raw_schema = ContextSelectionDecision.model_json_schema()
     definitions = raw_schema.get("$defs", {})
     resolved = resolve_local_schema_refs(raw_schema, definitions)
     normalized = normalize_strict_tool_schema(resolved)
     if not isinstance(normalized, dict):
-        raise ContextAgentOutputError("Context 路由 Schema 不是 JSON 对象")
+        raise ContextAgentOutputError("Context Selection Schema 不是 JSON 对象")
     return normalized

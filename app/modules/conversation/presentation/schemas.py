@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.modules.conversation.application.dto import RoutingMetadata
+from app.modules.conversation.application.dto import ContextSelectionMetadata
 
 
 class SendMessageRequest(BaseModel):
@@ -25,7 +25,7 @@ class SendMessageResponse(BaseModel):
     ]
     assistant_message: str | None = None
     task_ids: list[str] = Field(default_factory=list)
-    routing: RoutingMetadata | None = None
+    context_selection: ContextSelectionMetadata | None = None
 
 
 class TurnStatusResponse(BaseModel):

@@ -1,4 +1,4 @@
-"""基于 DeepSeek strict Tool 的 Context Router。"""
+"""基于 DeepSeek strict Tool 的 Context Selector。"""
 
 from __future__ import annotations
 
@@ -8,63 +8,53 @@ from pydantic import ValidationError
 
 from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
 from app.modules.context.application.dto import ContextAgentInput
-from app.modules.context.domain.enums import ContextRouteMode
-from app.modules.context.domain.models import ContextRouteDecision
+from app.modules.context.domain.models import ContextSelectionDecision
 from app.modules.context.infrastructure.llm.strict_schema_adapter import (
     ContextAgentOutputError,
-    build_context_route_tool_schema,
+    build_context_selection_tool_schema,
 )
 
 
-CONTEXT_ROUTE_TOOL_NAME = "submit_context_route"
+CONTEXT_SELECTION_TOOL_NAME = "submit_context_selection"
 DEFAULT_CONTEXT_AGENT_OUTPUT_ATTEMPTS = 2
 
 CONTEXT_AGENT_INSTRUCTIONS = """
-你是上下文管理和消息路由 Agent。
+你是 Context Selection Agent。
 
-你的唯一职责是判断当前完整用户输入与哪些已有上下文链相关，
-以及是否包含与所有已有链都无关的新上下文。
+你的唯一职责是选择 Planner 为正确理解并处理当前用户请求所需要读取的历史
+ContextChain。选择的是 Planner 所需的历史信息，不是“当前消息最像哪条 Chain”。
 
 规则：
 
-1. 用户输入可以同时关联一条或多条已有链。
-2. 不得拆分、改写或摘要当前用户输入。
-3. 明确关联多条链时，返回全部相关 chain_id。
-4. 与所有已有链无关时，创建新链。
-5. 同时包含已有上下文和新上下文时，返回已有 chain_id，
-   并标记需要创建新链。
-6. 存在关联但无法判断具体归属时，选择 last_active_at 最新的链。
-7. 不得生成计划、任务、操作、权限或执行建议。
-8. 不得修改链内容、资源或时间戳。
-9. 必须且只能调用 submit_context_route 提交结构化路由结果，
+1. relevant_chain_ids 是 Context Read Set，可以选择 0、1 或多条已有 Chain。
+2. 不需要已有历史信息时返回空列表。
+3. 当前请求涉及多个历史背景时必须返回所有必要 Chain。
+4. 不要因为存在一条“主要 Chain”就排除其他必要 Chain。
+5. 不得拆分、改写或摘要当前用户输入。
+6. ResourceQueue 是关联证据，但不是当前 Turn 最终归属的依据；资源只出现在某条
+   Chain 中，也不能仅凭这一事实强制选择该 Chain。
+7. 不得创建 Chain，也不得决定当前 Turn 最终归属。
+8. 不得生成计划、任务、操作、权限或执行建议。
+9. 不得修改链内容、资源、归档状态或时间戳。
+10. 必须且只能调用 submit_context_selection 提交结构化选择结果，
    不得输出普通文本。
-10. resource_queue 按从旧到新排列，越靠近队尾表示最近越活跃；
+11. resource_queue 按从旧到新排列，越靠近队尾表示最近越活跃；
     队列只用于判断上下文关联，不得据此生成业务操作。
-
-route_mode 与字段必须满足：
-
-- single_match：恰好选择一条已有链，不创建新链。
-- multi_match：选择至少两条已有链，不创建新链。
-- new_chain：不选择已有链，创建新链。
-- existing_and_new：选择至少一条已有链，同时创建新链。
-- fallback_latest：恰好选择 last_active_at 最新的一条已有链，不创建新链。
 
 reason_summary 只能简要说明上下文关联依据，不得包含后续业务计划或执行建议。
 """.strip()
 
 
-def _new_chain_decision_without_model() -> ContextRouteDecision:
-    """没有候选链时直接返回确定性结果，避免无意义模型调用。"""
-    return ContextRouteDecision(
-        selected_chain_ids=[],
-        create_new_chain=True,
-        route_mode=ContextRouteMode.NEW_CHAIN,
-        reason_summary="当前会话没有可关联的已有上下文链。",
+def _empty_selection_without_model() -> ContextSelectionDecision:
+    """没有历史 Chain 时直接返回空读取集合，避免无意义模型调用。"""
+    return ContextSelectionDecision(
+        relevant_chain_ids=[],
+        reason_summary="当前 Conversation 没有历史上下文。",
     )
 
 
 class DeepSeekContextRouter:
-    """通过 DeepSeek strict tool call 返回结构化路由决定。"""
+    """通过 DeepSeek strict tool call 返回结构化历史读取集合。"""
 
     def __init__(
         self,
@@ -76,16 +66,16 @@ class DeepSeekContextRouter:
             raise ValueError("max_output_attempts must be at least 1")
         self._client = provider.strict_tool_client
         self._model_name = provider.model_name
-        self._tool_schema = build_context_route_tool_schema()
+        self._tool_schema = build_context_selection_tool_schema()
         self._max_output_attempts = max_output_attempts
 
     async def route(
         self,
         agent_input: ContextAgentInput,
-    ) -> ContextRouteDecision:
-        """返回结构化路由结果；没有候选链时不调用模型。"""
+    ) -> ContextSelectionDecision:
+        """返回结构化选择结果；没有历史 Chain 时不调用模型。"""
         if not agent_input.chains:
-            return _new_chain_decision_without_model()
+            return _empty_selection_without_model()
 
         last_error: ContextAgentOutputError | None = None
         for attempt in range(self._max_output_attempts):
@@ -99,8 +89,8 @@ class DeepSeekContextRouter:
                     {
                         "type": "function",
                         "function": {
-                            "name": CONTEXT_ROUTE_TOOL_NAME,
-                            "description": "提交唯一的 Context 路由决定。",
+                            "name": CONTEXT_SELECTION_TOOL_NAME,
+                            "description": "提交唯一的 Context 历史读取集合。",
                             "strict": True,
                             "parameters": self._tool_schema,
                         },
@@ -109,7 +99,7 @@ class DeepSeekContextRouter:
                 tool_choice={
                     "type": "function",
                     "function": {
-                        "name": CONTEXT_ROUTE_TOOL_NAME,
+                        "name": CONTEXT_SELECTION_TOOL_NAME,
                     },
                 },
                 parallel_tool_calls=False,
@@ -140,7 +130,7 @@ class DeepSeekContextRouter:
         user_content = agent_input.model_dump_json(indent=2)
         if retry:
             user_content = (
-                "上一次响应未形成唯一且合法的 submit_context_route "
+                "上一次响应未形成唯一且合法的 submit_context_selection "
                 "调用。请重新判断，并且只能调用该工具。\n\n"
                 f"{user_content}"
             )
@@ -156,7 +146,7 @@ class DeepSeekContextRouter:
         ]
 
     @staticmethod
-    def _parse_response(response: Any) -> ContextRouteDecision:
+    def _parse_response(response: Any) -> ContextSelectionDecision:
         choices = getattr(response, "choices", None)
         if not choices:
             raise ContextAgentOutputError("Context Agent 没有返回 choice")
@@ -177,7 +167,7 @@ class DeepSeekContextRouter:
             raise ContextAgentOutputError(
                 "Context Agent Tool Call 缺少 function"
             )
-        if function.name != CONTEXT_ROUTE_TOOL_NAME:
+        if function.name != CONTEXT_SELECTION_TOOL_NAME:
             raise ContextAgentOutputError(
                 "Context Agent 返回了非预期 Tool: "
                 f"{function.name}"
@@ -190,8 +180,8 @@ class DeepSeekContextRouter:
             )
 
         try:
-            return ContextRouteDecision.model_validate_json(arguments)
+            return ContextSelectionDecision.model_validate_json(arguments)
         except ValidationError as exc:
             raise ContextAgentOutputError(
-                "Context Agent Tool 参数不符合路由契约"
+                "Context Agent Tool 参数不符合 Selection 契约"
             ) from exc

@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.modules.context.domain.enums import ContextRouteMode
+from app.modules.context.domain.enums import ContextSelectionMode
 
 
 class SendConversationMessageCommand(BaseModel):
@@ -14,10 +14,9 @@ class SendConversationMessageCommand(BaseModel):
     message: str = Field(min_length=1)
 
 
-class RoutingMetadata(BaseModel):
-    route_mode: ContextRouteMode
-    selected_chain_ids: list[str]
-    new_chain_id: str | None
+class ContextSelectionMetadata(BaseModel):
+    selection_mode: ContextSelectionMode
+    relevant_chain_ids: list[str]
     reason_summary: str
 
 
@@ -35,7 +34,7 @@ class SendConversationMessageResult(BaseModel):
     ]
     assistant_message: str | None = None
     task_ids: list[str] = Field(default_factory=list)
-    routing: RoutingMetadata | None = None
+    context_selection: ContextSelectionMetadata | None = None
 
 
 class TurnStatusResult(BaseModel):

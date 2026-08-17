@@ -94,7 +94,7 @@ class ContextQueryServiceTest(unittest.TestCase):
                         assistant_compact=None,
                         task_ids=[],
                         task_result_summary=None,
-                        status="routed",
+                        status="context_ready",
                         created_at=NOW,
                         completed_at=None,
                     ),
@@ -129,7 +129,7 @@ class ContextQueryServiceTest(unittest.TestCase):
                     current_turn_id="turn-1",
                     selected_chain_ids=["chain-active"],
                     create_new_chain=False,
-                    route_mode="single_match",
+                    route_mode="single_context",
                     reason_summary="关联已有链",
                     new_chain_id=None,
                     created_at=NOW - timedelta(minutes=2),
@@ -208,7 +208,7 @@ class ContextQueryServiceTest(unittest.TestCase):
         routes = self.service.list_context_route_records(
             ContextRouteRecordSearchQuery(
                 conversation_id="conversation-1",
-                route_modes=["single_match"],
+                route_modes=["single_context"],
             )
         )
 

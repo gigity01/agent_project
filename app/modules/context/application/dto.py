@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.modules.context.domain.models import (
     ContextChain,
-    ContextRouteDecision,
+    ContextSelectionDecision,
     ConversationTurn,
 )
 
@@ -31,34 +31,18 @@ class SendMessageCommand:
 
 
 @dataclass(frozen=True)
-class RouteContextResult:
-    """消息完成 Context 路由后的应用结果。"""
+class ContextSelectionResult:
+    """消息完成历史 Context Selection 后的应用结果。"""
 
     conversation_id: str
     turn_id: str
     message: str
-    selected_chains: list[ContextChain]
-    new_chain_id: str | None
-    decision: ContextRouteDecision
+    context_chains: list[ContextChain]
+    decision: ContextSelectionDecision
 
     @property
-    def selected_chain_ids(self) -> list[str]:
-        return [chain.chain_id for chain in self.selected_chains]
-
-    @property
-    def current_turn_id(self) -> str:
-        """兼容旧内部调用使用的字段名。"""
-        return self.turn_id
-
-    @property
-    def current_user_input(self) -> str:
-        """兼容旧内部调用使用的字段名。"""
-        return self.message
-
-    @property
-    def route_decision(self) -> ContextRouteDecision:
-        """兼容旧内部调用使用的字段名。"""
-        return self.decision
+    def context_chain_ids(self) -> list[str]:
+        return [chain.chain_id for chain in self.context_chains]
 
 
 @dataclass(frozen=True)

@@ -4,26 +4,25 @@ from pydantic import BaseModel, Field
 
 from app.modules.context.domain.models import (
     ContextChain,
-    ContextRouteDecision,
+    ContextSelectionDecision,
     ConversationTurn,
 )
 
 
-class ContextRouteRequest(BaseModel):
-    """旧 Context Route 兼容请求。"""
+class ContextSelectionRequest(BaseModel):
+    """旧路径上的 Context Selection 兼容请求。"""
 
     conversation_id: str = Field(min_length=1, max_length=100)
     user_input: str = Field(min_length=1)
 
 
-class RoutedContextPackage(BaseModel):
-    """旧 Context Route 兼容响应。"""
+class SelectedContextPackage(BaseModel):
+    """旧路径上的 Context Selection 兼容响应。"""
 
     current_turn_id: str
     current_user_input: str
-    selected_chains: list[ContextChain]
-    new_chain_id: str | None = None
-    route_decision: ContextRouteDecision
+    context_chains: list[ContextChain]
+    selection_decision: ContextSelectionDecision
 
 
 class ContextResourceInput(BaseModel):

@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 
 class PlannerRunnerPort(Protocol):
-    async def run(self, *, user_input: str, context: Any) -> Any:
+    async def run(self, *, planner_input: Any, context: Any) -> Any:
         """运行 Planner；最终业务结果由 Application 重新读取数据库。"""
 
 

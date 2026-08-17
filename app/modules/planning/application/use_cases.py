@@ -302,7 +302,7 @@ class FinalizePlanUseCase:
             if turn is None:
                 raise _turn_not_found()
             if turn.status not in {
-                ContextTurnStatus.ROUTED.value,
+                ContextTurnStatus.CONTEXT_READY.value,
                 ContextTurnStatus.PROCESSING.value,
             }:
                 raise PlanningApplicationError(
