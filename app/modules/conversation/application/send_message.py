@@ -8,6 +8,9 @@ from app.modules.context.application.dto import (
     CompleteTurnCommand,
     SendMessageCommand,
 )
+from app.modules.context.application.attribution_policy import (
+    build_read_set_fallback_attribution,
+)
 from app.modules.context.domain.selection_policy import (
     derive_context_selection_mode,
 )
@@ -51,6 +54,9 @@ class SendConversationMessageUseCase:
             ),
             reason_summary=selection.decision.reason_summary,
         )
+        fallback_attribution = build_read_set_fallback_attribution(
+            selection.decision.relevant_chain_ids
+        )
         clarification_plan_id = await asyncio.to_thread(
             self._answer_clarification.execute,
             conversation_id=command.conversation_id,
@@ -90,6 +96,7 @@ class SendConversationMessageUseCase:
                     assistant_compact=message,
                     task_ids=[],
                     task_result_summary=message,
+                    attribution=fallback_attribution,
                 ),
             )
             return SendConversationMessageResult(
@@ -111,6 +118,7 @@ class SendConversationMessageUseCase:
                     assistant_compact=question,
                     task_ids=[],
                     task_result_summary="等待用户补充信息",
+                    attribution=fallback_attribution,
                 ),
             )
             return SendConversationMessageResult(

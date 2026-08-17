@@ -25,7 +25,7 @@ def validate_context_selection(
     *,
     conversation_id: str,
 ) -> ContextSelectionDecision:
-    """校验并规范化模型选择，保证每个 Chain ID 真实且可路由。"""
+    """校验并规范化模型选择，保证每个 Chain ID 真实且可读取。"""
     chain_map: dict[str, ContextChain] = {}
     for chain in chains:
         if chain.conversation_id != conversation_id:

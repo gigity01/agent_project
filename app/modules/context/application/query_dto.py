@@ -83,10 +83,10 @@ class ContextChainResourceSearchQuery(BaseModel):
         return self
 
 
-class ContextRouteRecordSearchQuery(TimeRangeQuery):
+class ContextSelectionRecordSearchQuery(TimeRangeQuery):
     conversation_id: str | None = Field(default=None, max_length=100)
     turn_id: str | None = Field(default=None, max_length=100)
-    route_modes: list[str] = Field(default_factory=list)
+    selection_modes: list[str] = Field(default_factory=list)
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
 
@@ -148,15 +148,13 @@ class ContextChainResourceQueryResult(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class ContextRouteRecordQueryResult(BaseModel):
-    route_id: str
+class ContextSelectionRecordQueryResult(BaseModel):
+    selection_id: str
     conversation_id: str
     current_turn_id: str
-    selected_chain_ids: list[str]
-    create_new_chain: bool
-    route_mode: str
+    relevant_chain_ids: list[str]
+    selection_mode: str
     reason_summary: str
-    new_chain_id: str | None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -190,8 +188,8 @@ class ContextChainResourceListResult(BaseModel):
     offset: int
 
 
-class ContextRouteRecordListResult(BaseModel):
-    items: list[ContextRouteRecordQueryResult]
+class ContextSelectionRecordListResult(BaseModel):
+    items: list[ContextSelectionRecordQueryResult]
     total: int
     limit: int
     offset: int

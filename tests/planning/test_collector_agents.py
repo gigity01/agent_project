@@ -99,7 +99,7 @@ class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
                 "list_context_chains",
                 "list_context_chain_nodes",
                 "list_context_chain_resources",
-                "list_context_route_records",
+                "list_context_selection_records",
             },
         )
         self.assertIn("query_document_log_events", operations_tools)

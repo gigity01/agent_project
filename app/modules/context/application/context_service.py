@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic_ns
+from typing import Any
 from uuid import uuid4
 
 from starlette.concurrency import run_in_threadpool
@@ -75,6 +77,7 @@ class ContextService:
         uow_factory: UnitOfWorkFactory,
         record_factory: ContextRecordFactoryPort,
         chain_mapper: ContextChainMapperPort,
+        event_logger: Any | None = None,
     ) -> None:
         self._agent_router = agent_router
         self._route_lock_manager = route_lock_manager
@@ -82,6 +85,7 @@ class ContextService:
         self._uow_factory = uow_factory
         self._record_factory = record_factory
         self._chain_mapper = chain_mapper
+        self._event_logger = event_logger
 
     async def send_message(
         self,
@@ -93,6 +97,11 @@ class ContextService:
 
         turn_id = _new_id("turn")
         turn_created = False
+        started_at = monotonic_ns()
+        llm_duration_ms = 0.0
+        chain_count = 0
+        selected_count = 0
+        invalid_output_count = 0
 
         try:
             async with self._route_lock_manager.hold(
@@ -104,6 +113,7 @@ class ContextService:
                     command,
                 )
                 turn_created = True
+                chain_count = len(loaded_chains)
                 chains: list[ContextChain] = []
                 for loaded in loaded_chains:
                     resource_queue = await self._resource_service.get_queue(
@@ -124,11 +134,14 @@ class ContextService:
                     chains=chains,
                 )
                 try:
+                    llm_started_at = monotonic_ns()
                     raw_decision = await self._agent_router.route(agent_input)
                 except Exception as exc:
                     raise ContextRoutingError(
-                        "Context Agent 路由失败"
+                        "Context Agent Selection 失败"
                     ) from exc
+                finally:
+                    llm_duration_ms = self._elapsed_ms(llm_started_at)
 
                 try:
                     decision = validate_context_selection(
@@ -137,26 +150,39 @@ class ContextService:
                         conversation_id=command.conversation_id,
                     )
                 except ValueError as exc:
+                    invalid_output_count = 1
                     raise ContextRoutingError(
                         f"Context Agent 返回了非法 Selection: {exc}"
                     ) from exc
 
-                # 第一阶段仍由旧 write-side 为完成流程保留目标链；第二阶段会把
-                # Chain/Node 创建整体移入 Complete transaction。
-                new_chain_id = (
-                    _new_id("chain")
-                    if not decision.relevant_chain_ids
-                    else None
-                )
                 await run_in_threadpool(
                     self._persist_context_selection,
                     turn_id,
                     command.conversation_id,
                     decision,
-                    new_chain_id,
                 )
+                selected_count = len(decision.relevant_chain_ids)
 
                 chain_map = {chain.chain_id: chain for chain in chains}
+                self._observe(
+                    "context_selection_completed",
+                    conversation_id=command.conversation_id,
+                    turn_id=turn_id,
+                    context_selection_total_duration=self._elapsed_ms(
+                        started_at
+                    ),
+                    context_selection_llm_duration=llm_duration_ms,
+                    context_selection_chain_count=chain_count,
+                    context_selection_selected_count=selected_count,
+                    context_selection_no_context_count=int(
+                        selected_count == 0
+                    ),
+                    context_selection_multi_context_count=int(
+                        selected_count > 1
+                    ),
+                    context_selection_invalid_output_count=0,
+                    duration_unit="milliseconds",
+                )
                 return ContextSelectionResult(
                     conversation_id=command.conversation_id,
                     turn_id=turn_id,
@@ -169,7 +195,26 @@ class ContextService:
                 )
         except ConversationLockUnavailable:
             raise
-        except Exception:
+        except Exception as exc:
+            self._observe(
+                "context_selection_failed",
+                level="error",
+                conversation_id=command.conversation_id,
+                turn_id=turn_id,
+                context_selection_total_duration=self._elapsed_ms(
+                    started_at
+                ),
+                context_selection_llm_duration=llm_duration_ms,
+                context_selection_chain_count=chain_count,
+                context_selection_selected_count=selected_count,
+                context_selection_no_context_count=0,
+                context_selection_multi_context_count=0,
+                context_selection_invalid_output_count=(
+                    invalid_output_count
+                ),
+                error_type=type(exc).__name__,
+                duration_unit="milliseconds",
+            )
             if turn_created:
                 try:
                     await run_in_threadpool(self._mark_turn_failed, turn_id)
@@ -177,12 +222,24 @@ class ContextService:
                     pass
             raise
 
+    @staticmethod
+    def _elapsed_ms(started_at: int) -> float:
+        return round((monotonic_ns() - started_at) / 1_000_000, 3)
+
+    def _observe(self, event: str, **fields: Any) -> None:
+        if self._event_logger is None:
+            return
+        try:
+            self._event_logger.write(event, **fields)
+        except Exception:
+            return
+
     async def complete_turn(
         self,
         turn_id: str,
         command: CompleteTurnCommand,
     ) -> CompleteTurnResult:
-        """按已保存路由决定关联 Turn，不接受下游扩张链路范围。"""
+        """按完成方提交的 Attribution 原子关联 Turn 与最终 Chain。"""
         conversation_id = await run_in_threadpool(
             self._get_turn_conversation_id,
             turn_id,
@@ -240,7 +297,6 @@ class ContextService:
         turn_id: str,
         conversation_id: str,
         decision: ContextSelectionDecision,
-        new_chain_id: str | None,
     ) -> None:
         with self._uow_factory() as uow:
             turn = uow.context.get_turn_for_update(turn_id)
@@ -272,55 +328,18 @@ class ContextService:
                         f"Selected Context Chain was archived: {chain_id}"
                     )
 
-            target_chain_ids = list(decision.relevant_chain_ids)
-            now = datetime.now()
-            create_new_chain = not target_chain_ids
-            if create_new_chain:
-                if new_chain_id is None:
-                    raise RuntimeError(
-                        "Context selection fallback is missing new chain ID"
-                    )
-                if uow.context.get_chain_for_update(new_chain_id) is not None:
-                    raise RuntimeError(
-                        "Preallocated Context Chain ID already exists"
-                    )
-                uow.context.create_chain(
-                    self._record_factory.context_chain(
-                        chain_id=new_chain_id,
-                        conversation_id=conversation_id,
-                        resources={},
-                        resource_version=0,
-                        last_active_at=now,
-                        archived=False,
-                    )
-                )
-                target_chain_ids.append(new_chain_id)
-
-            uow.context.create_route_record(
-                self._record_factory.context_route_record(
-                    route_id=_new_id("route"),
+            uow.context.create_selection_record(
+                self._record_factory.context_selection_record(
+                    selection_id=_new_id("selection"),
                     conversation_id=conversation_id,
                     current_turn_id=turn_id,
-                    selected_chain_ids=list(decision.relevant_chain_ids),
-                    create_new_chain=create_new_chain,
-                    route_mode=derive_context_selection_mode(
+                    relevant_chain_ids=list(decision.relevant_chain_ids),
+                    selection_mode=derive_context_selection_mode(
                         decision.relevant_chain_ids
                     ).value,
                     reason_summary=decision.reason_summary,
-                    new_chain_id=new_chain_id,
                 )
             )
-            for chain_id in target_chain_ids:
-                uow.context.create_node(
-                    self._record_factory.context_chain_node(
-                        node_id=_new_id("node"),
-                        chain_id=chain_id,
-                        turn_id=turn_id,
-                        sequence=uow.context.get_next_sequence(chain_id),
-                        related_task_ids=[],
-                        related_resource_refs=[],
-                    )
-                )
             uow.context.set_turn_status(
                 turn,
                 ContextTurnStatus.CONTEXT_READY.value,
@@ -360,12 +379,15 @@ class ContextService:
                     "Context Turn 会话归属已变化"
                 )
             if turn.status == ContextTurnStatus.COMPLETED.value:
+                linked_chain_ids = uow.context.list_linked_chain_ids(turn_id)
+                if not linked_chain_ids:
+                    raise ContextConflictError(
+                        "已完成的 Context Turn 缺少 Chain Attribution"
+                    )
                 return _CompleteTurnTransactionResult(
                     response=CompleteTurnResult(
                         turn=ConversationTurn.model_validate(turn),
-                        linked_chain_ids=(
-                            uow.context.list_linked_chain_ids(turn_id)
-                        ),
+                        linked_chain_ids=linked_chain_ids,
                     ),
                     resource_refreshes=[],
                 )
@@ -377,36 +399,53 @@ class ContextService:
                     "Context Turn 当前状态不允许完成"
                 )
 
-            route_record = uow.context.get_route_record_for_update(turn_id)
-            if route_record is None:
+            selection = uow.context.get_selection_record_for_update(turn_id)
+            if selection is None:
                 raise ContextConflictError(
-                    "Context Turn 缺少已校验路由决定"
+                    "Context Turn 缺少已校验的 Context Selection"
                 )
-            if route_record.conversation_id != conversation_id:
+            if selection.conversation_id != conversation_id:
                 raise ContextConflictError(
-                    "Context 路由决定会话归属不一致"
+                    "Context Selection 会话归属不一致"
                 )
 
-            target_chain_ids = list(route_record.selected_chain_ids or [])
-            if route_record.create_new_chain:
-                if not route_record.new_chain_id:
-                    raise ContextConflictError(
-                        "Context 路由决定缺少新链 ID"
+            target_chain_ids = list(
+                dict.fromkeys(command.attribution.existing_chain_ids)
+            )
+            create_new_chain = command.attribution.create_new_chain
+            new_chain_id = command.attribution.new_chain_id
+            if new_chain_id is not None and not create_new_chain:
+                raise ContextValidationError(
+                    "未请求创建新 Chain 时不能指定 new_chain_id"
+                )
+            if not target_chain_ids and not create_new_chain:
+                create_new_chain = True
+            if create_new_chain:
+                new_chain_id = new_chain_id or _new_id("chain")
+                if new_chain_id in target_chain_ids:
+                    raise ContextValidationError(
+                        "新 Chain ID 不能同时作为 existing attribution"
                     )
-                target_chain_ids.append(route_record.new_chain_id)
+                if uow.context.get_chain_for_update(new_chain_id) is not None:
+                    raise ContextConflictError(
+                        f"Context Chain 已存在，不能重复创建: {new_chain_id}"
+                    )
+                target_chain_ids.append(new_chain_id)
 
             update_map = self._validate_chain_updates(
                 command.chain_updates,
                 target_chain_ids=target_chain_ids,
                 turn_task_ids=command.task_ids,
             )
-            target_chains = uow.context.get_chains_by_ids_for_update(
-                target_chain_ids
+            existing_chains = uow.context.get_chains_by_ids_for_update(
+                command.attribution.existing_chain_ids
             )
             chain_map = {
-                chain.chain_id: chain for chain in target_chains
+                chain.chain_id: chain for chain in existing_chains
             }
-            for chain_id in target_chain_ids:
+            for chain_id in dict.fromkeys(
+                command.attribution.existing_chain_ids
+            ):
                 chain = chain_map.get(chain_id)
                 if chain is None:
                     raise ContextConflictError(
@@ -416,19 +455,26 @@ class ContextService:
                     raise ContextConflictError(
                         f"Context Chain 会话归属不一致: {chain_id}"
                     )
+                if chain.archived:
+                    raise ContextConflictError(
+                        f"Context Chain 已归档: {chain_id}"
+                    )
 
             now = datetime.now()
-            normalized_task_ids = list(dict.fromkeys(command.task_ids))
-            uow.context.complete_turn(
-                turn,
-                assistant_content=command.assistant_content,
-                assistant_compact=command.assistant_compact,
-                task_ids=normalized_task_ids,
-                task_result_summary=command.task_result_summary,
-                completed_at=now,
-                status=ContextTurnStatus.COMPLETED.value,
-            )
+            if create_new_chain:
+                assert new_chain_id is not None
+                new_chain = self._record_factory.context_chain(
+                    chain_id=new_chain_id,
+                    conversation_id=conversation_id,
+                    resources={},
+                    resource_version=0,
+                    last_active_at=now,
+                    archived=False,
+                )
+                uow.context.create_chain(new_chain)
+                chain_map[new_chain_id] = new_chain
 
+            normalized_task_ids = list(dict.fromkeys(command.task_ids))
             resource_refreshes: list[ContextResourceQueueRefresh] = []
             for chain_id in target_chain_ids:
                 chain = chain_map[chain_id]
@@ -446,23 +492,19 @@ class ContextService:
                     if update is not None
                     else []
                 )
-                node = uow.context.get_node_for_update(
-                    chain_id=chain_id,
-                    turn_id=turn_id,
-                )
-                if node is None:
-                    raise ContextConflictError(
-                        "Context Chain 缺少路由阶段占位节点: "
-                        f"{chain_id}"
+                uow.context.create_node(
+                    self._record_factory.context_chain_node(
+                        node_id=_new_id("node"),
+                        chain_id=chain_id,
+                        turn_id=turn_id,
+                        sequence=uow.context.get_next_sequence(chain_id),
+                        related_task_ids=(
+                            list(dict.fromkeys(update.related_task_ids))
+                            if update is not None
+                            else []
+                        ),
+                        related_resource_refs=related_resource_refs,
                     )
-                uow.context.update_node_relations(
-                    node,
-                    related_task_ids=(
-                        list(dict.fromkeys(update.related_task_ids))
-                        if update is not None
-                        else []
-                    ),
-                    related_resource_refs=related_resource_refs,
                 )
                 resource_refresh = (
                     self._resource_service.apply_in_transaction(
@@ -480,6 +522,15 @@ class ContextService:
                     last_active_at=now,
                 )
 
+            uow.context.complete_turn(
+                turn,
+                assistant_content=command.assistant_content,
+                assistant_compact=command.assistant_compact,
+                task_ids=normalized_task_ids,
+                task_result_summary=command.task_result_summary,
+                completed_at=now,
+                status=ContextTurnStatus.COMPLETED.value,
+            )
             uow.commit()
             return _CompleteTurnTransactionResult(
                 response=CompleteTurnResult(
@@ -507,7 +558,8 @@ class ContextService:
                 )
             if update.chain_id not in target_set:
                 raise ContextValidationError(
-                    f"Context Chain 不在已路由范围内: {update.chain_id}"
+                    f"Context Chain 不在本轮 Attribution 范围内: "
+                    f"{update.chain_id}"
                 )
             unknown_task_ids = (
                 set(update.related_task_ids) - turn_task_set

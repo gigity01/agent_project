@@ -8,8 +8,8 @@ from app.modules.context.application.query_dto import (
     ContextChainResourceListResult,
     ContextChainResourceSearchQuery,
     ContextChainSearchQuery,
-    ContextRouteRecordListResult,
-    ContextRouteRecordSearchQuery,
+    ContextSelectionRecordListResult,
+    ContextSelectionRecordSearchQuery,
     ConversationTurnListResult,
     ConversationTurnQueryResult,
     ConversationTurnSearchQuery,
@@ -77,12 +77,12 @@ class ListContextChainResourcesUseCase:
         return self._query_service.list_context_chain_resources(query)
 
 
-class ListContextRouteRecordsUseCase:
+class ListContextSelectionRecordsUseCase:
     def __init__(self, query_service: ContextQueryService) -> None:
         self._query_service = query_service
 
     def execute(
         self,
-        query: ContextRouteRecordSearchQuery,
-    ) -> ContextRouteRecordListResult:
-        return self._query_service.list_context_route_records(query)
+        query: ContextSelectionRecordSearchQuery,
+    ) -> ContextSelectionRecordListResult:
+        return self._query_service.list_context_selection_records(query)

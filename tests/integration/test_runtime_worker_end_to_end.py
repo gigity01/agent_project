@@ -80,8 +80,8 @@ with (
     from app.modules.context.infrastructure.persistence.models.context_resource_event import (
         ContextChainResourceEvent,
     )
-    from app.modules.context.infrastructure.persistence.models.context_route_record import (
-        ContextRouteRecord,
+    from app.modules.context.infrastructure.persistence.models.context_selection_record import (
+        ContextSelectionRecord,
     )
     from app.modules.conversation.application.send_message import (
         SendConversationMessageUseCase,
@@ -461,7 +461,7 @@ class RuntimeWorkerEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.tables = [
             ConversationTurn.__table__,
             ContextChain.__table__,
-            ContextRouteRecord.__table__,
+            ContextSelectionRecord.__table__,
             ContextChainNode.__table__,
             ContextChainResource.__table__,
             ContextChainResourceEvent.__table__,

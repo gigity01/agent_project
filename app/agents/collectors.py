@@ -298,7 +298,7 @@ def build_collector_agents(
     context_agent = Agent[AgentToolContext](
         name="Context Collector Agent",
         instructions=_instructions(
-            "只收集 Turn、Chain、Node、Resource 和 RouteRecord 的持久化事实。",
+            "只收集 Turn、Chain、Node、Resource 和 SelectionRecord 的持久化事实。",
         ),
         tools=list(CONTEXT_COLLECTOR_TOOLS),
         handoffs=[],

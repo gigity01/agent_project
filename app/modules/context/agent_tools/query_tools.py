@@ -20,8 +20,8 @@ from app.modules.context.agent_tools.schemas import (
     ListContextChainResourcesToolOutput,
     ListContextChainsToolInput,
     ListContextChainsToolOutput,
-    ListContextRouteRecordsToolInput,
-    ListContextRouteRecordsToolOutput,
+    ListContextSelectionRecordsToolInput,
+    ListContextSelectionRecordsToolOutput,
     ListConversationTurnsToolInput,
     ListConversationTurnsToolOutput,
 )
@@ -32,7 +32,7 @@ from app.modules.context.application.query_dto import (
     ContextChainResourceListResult,
     ContextChainResourceSearchQuery,
     ContextChainSearchQuery,
-    ContextRouteRecordSearchQuery,
+    ContextSelectionRecordSearchQuery,
     ConversationTurnSearchQuery,
 )
 from app.modules.context.application.query_service import ContextQueryService
@@ -225,7 +225,7 @@ def _list_context_chain_resources(context: AgentToolContext, query):
     return _query_service(context).list_context_chain_resources(query)
 
 
-def _list_context_route_records(context: AgentToolContext, query):
+def _list_context_selection_records(context: AgentToolContext, query):
     conversation_id = _conversation_scope(context, query.conversation_id)
     if context.turn_id is None:
         raise AgentToolScopeError("Context Tool 缺少 Turn scope")
@@ -239,10 +239,10 @@ def _list_context_route_records(context: AgentToolContext, query):
             "turn_id": context.turn_id,
         }
     )
-    use_case = context.context_services.list_context_route_records
+    use_case = context.context_services.list_context_selection_records
     if use_case is not None:
         return use_case.execute(query)
-    return _query_service(context).list_context_route_records(query)
+    return _query_service(context).list_context_selection_records(query)
 
 
 def get_conversation_turn_handler(
@@ -508,49 +508,49 @@ list_context_chain_resources = function_tool(
 )(list_context_chain_resources_handler)
 
 
-def list_context_route_records_handler(
+def list_context_selection_records_handler(
     ctx: RunContextWrapper[AgentToolContext],
-    tool_input: ListContextRouteRecordsToolInput,
-) -> ListContextRouteRecordsToolOutput:
+    tool_input: ListContextSelectionRecordsToolInput,
+) -> ListContextSelectionRecordsToolOutput:
     resource_refs = (
         [f"conversation:{tool_input.conversation_id}"]
         if tool_input.conversation_id
-        else ["context_route_record:*"]
+        else ["context_selection_record:*"]
     )
-    query = ContextRouteRecordSearchQuery.model_validate(
+    query = ContextSelectionRecordSearchQuery.model_validate(
         tool_input.model_dump()
     )
     execution = execute_audited_tool_call(
         context=ctx.context,
-        tool_name="list_context_route_records",
+        tool_name="list_context_selection_records",
         required_permissions=(CONTEXT_READ_PERMISSION,),
         resource_refs=resource_refs,
-        success_result_code="context_route_records_listed",
-        operation=lambda: _list_context_route_records(ctx.context, query),
+        success_result_code="context_selection_records_listed",
+        operation=lambda: _list_context_selection_records(ctx.context, query),
     )
     if execution.error is not None:
-        return ListContextRouteRecordsToolOutput(
+        return ListContextSelectionRecordsToolOutput(
             **execution.error.__dict__,
             limit=tool_input.limit,
             offset=tool_input.offset,
         )
     result = execution.value
     assert result is not None
-    return ListContextRouteRecordsToolOutput(
+    return ListContextSelectionRecordsToolOutput(
         outcome="succeeded",
-        result_code="context_route_records_listed",
-        message="Context RouteRecord 查询成功",
+        result_code="context_selection_records_listed",
+        message="Context SelectionRecord 查询成功",
         retryable=False,
         resource_refs=resource_refs,
-        route_records=result.items,
+        selection_records=result.items,
         total=result.total,
         limit=result.limit,
         offset=result.offset,
     )
 
 
-list_context_route_records = function_tool(
-    name_override="list_context_route_records",
-    description_override="按 Conversation、Turn、route_mode 和时间查询路由记录。",
+list_context_selection_records = function_tool(
+    name_override="list_context_selection_records",
+    description_override="按 Conversation、Turn、selection_mode 和时间查询选择记录。",
     failure_error_function=safe_tool_error_function,
-)(list_context_route_records_handler)
+)(list_context_selection_records_handler)

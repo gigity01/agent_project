@@ -14,7 +14,7 @@ from app.modules.context.application.query_dto import (
     ContextChainNodeSearchQuery,
     ContextChainResourceSearchQuery,
     ContextChainSearchQuery,
-    ContextRouteRecordSearchQuery,
+    ContextSelectionRecordSearchQuery,
     ConversationTurnSearchQuery,
 )
 from app.modules.context.application.query_service import ContextQueryService
@@ -24,7 +24,7 @@ from app.modules.context.application.use_cases import (
     ListContextChainNodesUseCase,
     ListContextChainResourcesUseCase,
     ListContextChainsUseCase,
-    ListContextRouteRecordsUseCase,
+    ListContextSelectionRecordsUseCase,
     ListConversationTurnsUseCase,
 )
 from app.modules.context.infrastructure.persistence.models.context_chain import (
@@ -36,8 +36,8 @@ from app.modules.context.infrastructure.persistence.models.context_chain_node im
 from app.modules.context.infrastructure.persistence.models.context_resource import (
     ContextChainResource,
 )
-from app.modules.context.infrastructure.persistence.models.context_route_record import (
-    ContextRouteRecord,
+from app.modules.context.infrastructure.persistence.models.context_selection_record import (
+    ContextSelectionRecord,
 )
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn,
@@ -55,7 +55,7 @@ class ContextQueryServiceTest(unittest.TestCase):
             tables=[
                 ConversationTurn.__table__,
                 ContextChain.__table__,
-                ContextRouteRecord.__table__,
+                ContextSelectionRecord.__table__,
                 ContextChainNode.__table__,
                 ContextChainResource.__table__,
             ],
@@ -123,15 +123,13 @@ class ContextQueryServiceTest(unittest.TestCase):
                 ]
             )
             session.add(
-                ContextRouteRecord(
-                    route_id="route-1",
+                ContextSelectionRecord(
+                    selection_id="selection-1",
                     conversation_id="conversation-1",
                     current_turn_id="turn-1",
-                    selected_chain_ids=["chain-active"],
-                    create_new_chain=False,
-                    route_mode="single_context",
+                    relevant_chain_ids=["chain-active"],
+                    selection_mode="single_context",
                     reason_summary="关联已有链",
-                    new_chain_id=None,
                     created_at=NOW - timedelta(minutes=2),
                 )
             )
@@ -190,7 +188,7 @@ class ContextQueryServiceTest(unittest.TestCase):
         self.assertEqual(chain.resource_version, 1)
         self.assertEqual([item.chain_id for item in result.items], ["chain-active"])
 
-    def test_node_resource_and_route_queries_map_persisted_facts(self) -> None:
+    def test_node_resource_and_selection_queries_map_facts(self) -> None:
         nodes = self.service.list_context_chain_nodes(
             ContextChainNodeSearchQuery(
                 conversation_id="conversation-1",
@@ -205,16 +203,19 @@ class ContextQueryServiceTest(unittest.TestCase):
                 active=True,
             )
         )
-        routes = self.service.list_context_route_records(
-            ContextRouteRecordSearchQuery(
+        selections = self.service.list_context_selection_records(
+            ContextSelectionRecordSearchQuery(
                 conversation_id="conversation-1",
-                route_modes=["single_context"],
+                selection_modes=["single_context"],
             )
         )
 
         self.assertEqual(nodes.items[0].related_task_ids, ["task-1"])
         self.assertEqual(resources.items[0].resource_key, "document:7")
-        self.assertEqual(routes.items[0].selected_chain_ids, ["chain-active"])
+        self.assertEqual(
+            selections.items[0].relevant_chain_ids,
+            ["chain-active"],
+        )
 
     def test_seven_named_query_use_cases_delegate_without_writes(self) -> None:
         turns = ListConversationTurnsUseCase(self.service).execute(
@@ -229,8 +230,8 @@ class ContextQueryServiceTest(unittest.TestCase):
         resources = ListContextChainResourcesUseCase(self.service).execute(
             ContextChainResourceSearchQuery(chain_id="chain-active")
         )
-        routes = ListContextRouteRecordsUseCase(self.service).execute(
-            ContextRouteRecordSearchQuery(
+        selections = ListContextSelectionRecordsUseCase(self.service).execute(
+            ContextSelectionRecordSearchQuery(
                 conversation_id="conversation-1"
             )
         )
@@ -251,7 +252,7 @@ class ContextQueryServiceTest(unittest.TestCase):
         self.assertEqual(chains.total, 2)
         self.assertEqual(nodes.total, 1)
         self.assertEqual(resources.total, 1)
-        self.assertEqual(routes.total, 1)
+        self.assertEqual(selections.total, 1)
 
 
 if __name__ == "__main__":

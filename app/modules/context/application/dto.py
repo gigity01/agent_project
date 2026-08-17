@@ -61,7 +61,7 @@ class ContextResourceInput:
 
 @dataclass(frozen=True)
 class ChainTurnUpdate:
-    """下游对一条已路由 Chain 的本轮更新。"""
+    """下游对一条最终归属 Chain 的本轮更新。"""
 
     chain_id: str
     related_task_ids: list[str] = field(default_factory=list)
@@ -72,6 +72,16 @@ class ChainTurnUpdate:
 
 
 @dataclass(frozen=True)
+class TurnAttribution:
+    """当前 Turn 的最终 Chain 写入集合。"""
+
+    existing_chain_ids: list[str] = field(default_factory=list)
+    create_new_chain: bool = False
+    # 完成方可预分配新 Chain ID，以便同一事务内提交该 Chain 的资源更新。
+    new_chain_id: str | None = None
+
+
+@dataclass(frozen=True)
 class CompleteTurnCommand:
     """完成 Context Turn 的应用命令。"""
 
@@ -79,6 +89,7 @@ class CompleteTurnCommand:
     assistant_compact: str | None = None
     task_ids: list[str] = field(default_factory=list)
     task_result_summary: str | None = None
+    attribution: TurnAttribution = field(default_factory=TurnAttribution)
     chain_updates: list[ChainTurnUpdate] = field(default_factory=list)
 
 

@@ -26,7 +26,7 @@ from app.modules.context.application.use_cases import (
     ListContextChainNodesUseCase,
     ListContextChainResourcesUseCase,
     ListContextChainsUseCase,
-    ListContextRouteRecordsUseCase,
+    ListContextSelectionRecordsUseCase,
     ListConversationTurnsUseCase,
 )
 from app.modules.document.application.use_cases.build_chunks import (
@@ -120,7 +120,7 @@ class AppContainer:
     list_context_chains: ListContextChainsUseCase
     list_context_chain_nodes: ListContextChainNodesUseCase
     list_context_chain_resources: ListContextChainResourcesUseCase
-    list_context_route_records: ListContextRouteRecordsUseCase
+    list_context_selection_records: ListContextSelectionRecordsUseCase
     operations_query_service: OperationsQueryService
     query_document_log_events: QueryDocumentLogEventsUseCase
     get_document_operation_timeline: GetDocumentOperationTimelineUseCase

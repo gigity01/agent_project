@@ -109,7 +109,7 @@ class ContextRecordFactoryPort(Protocol):
     def conversation_turn(self, **values: Any) -> Any:
         ...
 
-    def context_route_record(self, **values: Any) -> Any:
+    def context_selection_record(self, **values: Any) -> Any:
         ...
 
     def context_chain(self, **values: Any) -> Any:

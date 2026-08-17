@@ -6,7 +6,7 @@ from app.modules.context.application.use_cases.queries import (
     ListContextChainNodesUseCase,
     ListContextChainResourcesUseCase,
     ListContextChainsUseCase,
-    ListContextRouteRecordsUseCase,
+    ListContextSelectionRecordsUseCase,
     ListConversationTurnsUseCase,
 )
 
@@ -16,6 +16,6 @@ __all__ = [
     "ListContextChainNodesUseCase",
     "ListContextChainResourcesUseCase",
     "ListContextChainsUseCase",
-    "ListContextRouteRecordsUseCase",
+    "ListContextSelectionRecordsUseCase",
     "ListConversationTurnsUseCase",
 ]

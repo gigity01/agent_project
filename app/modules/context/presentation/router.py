@@ -8,6 +8,7 @@ from app.modules.context.application.dto import (
     CompleteTurnCommand,
     ContextResourceInput,
     SendMessageCommand,
+    TurnAttribution,
 )
 from app.modules.context.application.errors import (
     ContextApplicationError,
@@ -57,6 +58,13 @@ def _to_complete_turn_command(
         assistant_compact=request.assistant_compact,
         task_ids=list(request.task_ids),
         task_result_summary=request.task_result_summary,
+        attribution=TurnAttribution(
+            existing_chain_ids=list(
+                request.attribution.existing_chain_ids
+            ),
+            create_new_chain=request.attribution.create_new_chain,
+            new_chain_id=request.attribution.new_chain_id,
+        ),
         chain_updates=[
             ChainTurnUpdate(
                 chain_id=update.chain_id,

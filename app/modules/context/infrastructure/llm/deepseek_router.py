@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import monotonic_ns
 from typing import Any
 
 from pydantic import ValidationError
@@ -61,6 +62,7 @@ class DeepSeekContextRouter:
         provider: DeepSeekModelProvider,
         *,
         max_output_attempts: int = DEFAULT_CONTEXT_AGENT_OUTPUT_ATTEMPTS,
+        event_logger: Any | None = None,
     ) -> None:
         if max_output_attempts < 1:
             raise ValueError("max_output_attempts must be at least 1")
@@ -68,6 +70,7 @@ class DeepSeekContextRouter:
         self._model_name = provider.model_name
         self._tool_schema = build_context_selection_tool_schema()
         self._max_output_attempts = max_output_attempts
+        self._event_logger = event_logger
 
     async def route(
         self,
@@ -75,51 +78,127 @@ class DeepSeekContextRouter:
     ) -> ContextSelectionDecision:
         """返回结构化选择结果；没有历史 Chain 时不调用模型。"""
         if not agent_input.chains:
+            self._observe(
+                "context_selection_llm_skipped",
+                conversation_id=agent_input.conversation_id,
+                turn_id=agent_input.current_turn_id,
+                context_selection_llm_duration=0.0,
+                context_selection_retry_count=0,
+                duration_unit="milliseconds",
+            )
             return _empty_selection_without_model()
 
+        started_at = monotonic_ns()
         last_error: ContextAgentOutputError | None = None
         for attempt in range(self._max_output_attempts):
-            response = await self._client.chat.completions.create(
-                model=self._model_name,
-                messages=self._build_messages(
-                    agent_input,
-                    retry=attempt > 0,
-                ),
-                tools=[
-                    {
+            try:
+                response = await self._client.chat.completions.create(
+                    model=self._model_name,
+                    messages=self._build_messages(
+                        agent_input,
+                        retry=attempt > 0,
+                    ),
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": CONTEXT_SELECTION_TOOL_NAME,
+                                "description": (
+                                    "提交唯一的 Context 历史读取集合。"
+                                ),
+                                "strict": True,
+                                "parameters": self._tool_schema,
+                            },
+                        }
+                    ],
+                    tool_choice={
                         "type": "function",
                         "function": {
                             "name": CONTEXT_SELECTION_TOOL_NAME,
-                            "description": "提交唯一的 Context 历史读取集合。",
-                            "strict": True,
-                            "parameters": self._tool_schema,
                         },
-                    }
-                ],
-                tool_choice={
-                    "type": "function",
-                    "function": {
-                        "name": CONTEXT_SELECTION_TOOL_NAME,
                     },
-                },
-                parallel_tool_calls=False,
-                temperature=0,
-                max_tokens=512,
-                extra_body={
-                    "thinking": {
-                        "type": "disabled",
-                    }
-                },
-            )
+                    parallel_tool_calls=False,
+                    temperature=0,
+                    max_tokens=512,
+                    extra_body={
+                        "thinking": {
+                            "type": "disabled",
+                        }
+                    },
+                )
+            except Exception as exc:
+                self._observe(
+                    "context_selection_llm_failed",
+                    level="error",
+                    conversation_id=agent_input.conversation_id,
+                    turn_id=agent_input.current_turn_id,
+                    context_selection_llm_duration=self._elapsed_ms(
+                        started_at
+                    ),
+                    context_selection_retry_count=attempt,
+                    error_type=type(exc).__name__,
+                    duration_unit="milliseconds",
+                )
+                raise
 
             try:
-                return self._parse_response(response)
+                decision = self._parse_response(response)
             except ContextAgentOutputError as exc:
                 last_error = exc
+                self._observe(
+                    "context_selection_invalid_output",
+                    level="warning",
+                    conversation_id=agent_input.conversation_id,
+                    turn_id=agent_input.current_turn_id,
+                    attempt=attempt + 1,
+                    context_selection_llm_duration=self._elapsed_ms(
+                        started_at
+                    ),
+                    context_selection_invalid_output_count=1,
+                    context_selection_will_retry=(
+                        attempt + 1 < self._max_output_attempts
+                    ),
+                    duration_unit="milliseconds",
+                )
+                continue
 
+            self._observe(
+                "context_selection_llm_completed",
+                conversation_id=agent_input.conversation_id,
+                turn_id=agent_input.current_turn_id,
+                context_selection_llm_duration=self._elapsed_ms(started_at),
+                context_selection_retry_count=attempt,
+                duration_unit="milliseconds",
+            )
+            return decision
+
+        self._observe(
+            "context_selection_llm_failed",
+            level="error",
+            conversation_id=agent_input.conversation_id,
+            turn_id=agent_input.current_turn_id,
+            context_selection_llm_duration=self._elapsed_ms(started_at),
+            context_selection_retry_count=(
+                self._max_output_attempts - 1
+            ),
+            error_type="ContextAgentOutputError",
+            duration_unit="milliseconds",
+        )
         raise ContextAgentOutputError(
             "Context Agent 连续返回非法 strict tool 响应"
         ) from last_error
+
+    @staticmethod
+    def _elapsed_ms(started_at: int) -> float:
+        return round((monotonic_ns() - started_at) / 1_000_000, 3)
+
+    def _observe(self, event: str, **fields: Any) -> None:
+        if self._event_logger is None:
+            return
+        try:
+            self._event_logger.write(event, **fields)
+        except Exception:
+            return
 
     @staticmethod
     def _build_messages(

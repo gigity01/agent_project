@@ -223,7 +223,7 @@ class RunPlanningUseCase:
                     "Conversation Turn 尚未完成 Context Selection",
                     result_code="turn_state_conflict",
                 )
-            selection = uow.context.get_route_record(command.turn_id)
+            selection = uow.context.get_selection_record(command.turn_id)
             if selection is None:
                 raise PlanningApplicationError(
                     409,
@@ -237,7 +237,7 @@ class RunPlanningUseCase:
                     result_code="context_selection_conflict",
                 )
 
-            chain_ids = list(selection.selected_chain_ids or [])
+            chain_ids = list(selection.relevant_chain_ids or [])
             chain_models = uow.context.get_chains_by_ids(chain_ids)
             chain_map = {chain.chain_id: chain for chain in chain_models}
             chains: list[_PlanningChainSnapshot] = []

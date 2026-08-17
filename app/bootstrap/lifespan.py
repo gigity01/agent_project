@@ -75,7 +75,7 @@ from app.modules.context.application.use_cases import (
     ListContextChainNodesUseCase,
     ListContextChainResourcesUseCase,
     ListContextChainsUseCase,
-    ListContextRouteRecordsUseCase,
+    ListContextSelectionRecordsUseCase,
     ListConversationTurnsUseCase,
 )
 from app.modules.document.application.ports import (
@@ -238,6 +238,7 @@ from app.modules.conversation.application.send_message import (
     SendConversationMessageUseCase,
 )
 from app.modules.planning.application.replan import ReplanUseCase
+from app.shared.observability.context_logger import ContextEventLogger
 
 
 async def build_container() -> AppContainer:
@@ -255,12 +256,14 @@ async def build_container() -> AppContainer:
         if not await ping_redis_client(redis_client):
             raise RuntimeError("Redis PING 未返回成功")
 
+        context_event_logger = ContextEventLogger()
         route_lock_manager = ConversationRouteLockManager(
             redis_client,
             lock_timeout_seconds=CONTEXT_ROUTE_LOCK_TIMEOUT_SECONDS,
             blocking_timeout_seconds=(
                 CONTEXT_ROUTE_LOCK_BLOCKING_TIMEOUT_SECONDS
             ),
+            event_logger=context_event_logger,
         )
         queue_repository = ContextResourceQueueRepository(
             redis_client,
@@ -278,7 +281,10 @@ async def build_container() -> AppContainer:
             else None
         )
         agent_router = (
-            DeepSeekContextRouter(deepseek_provider)
+            DeepSeekContextRouter(
+                deepseek_provider,
+                event_logger=context_event_logger,
+            )
             if deepseek_provider is not None
             else None
         )
@@ -289,6 +295,7 @@ async def build_container() -> AppContainer:
             uow_factory=SQLAlchemyUnitOfWork,
             record_factory=record_factory,
             chain_mapper=build_context_chain,
+            event_logger=context_event_logger,
         )
         context_query_service = ContextQueryService(
             uow_factory=SQLAlchemyUnitOfWork
@@ -344,7 +351,7 @@ async def build_container() -> AppContainer:
         list_context_chain_resources = ListContextChainResourcesUseCase(
             context_query_service
         )
-        list_context_route_records = ListContextRouteRecordsUseCase(
+        list_context_selection_records = ListContextSelectionRecordsUseCase(
             context_query_service
         )
         query_document_log_events = QueryDocumentLogEventsUseCase(
@@ -495,7 +502,9 @@ async def build_container() -> AppContainer:
                     list_context_chain_resources=(
                         list_context_chain_resources
                     ),
-                    list_context_route_records=list_context_route_records,
+                    list_context_selection_records=(
+                        list_context_selection_records
+                    ),
                 ),
                 context_resource_service=resource_service,
                 context_chain_mapper=build_context_chain,
@@ -658,7 +667,7 @@ async def build_container() -> AppContainer:
             list_context_chains=list_context_chains,
             list_context_chain_nodes=list_context_chain_nodes,
             list_context_chain_resources=list_context_chain_resources,
-            list_context_route_records=list_context_route_records,
+            list_context_selection_records=list_context_selection_records,
             operations_query_service=operations_query_service,
             query_document_log_events=query_document_log_events,
             get_document_operation_timeline=(

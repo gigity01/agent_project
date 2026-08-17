@@ -17,14 +17,17 @@ from app.modules.planning.application.dto import RunPlanningResult
 from app.modules.planning.domain.enums import PlanStatus
 
 
-def _selection() -> ContextSelectionResult:
+def _selection(
+    relevant_chain_ids: list[str] | None = None,
+) -> ContextSelectionResult:
+    relevant_chain_ids = relevant_chain_ids or []
     return ContextSelectionResult(
         conversation_id="conversation-1",
         turn_id="turn-1",
         message="处理文档 7",
         context_chains=[],
         decision=ContextSelectionDecision(
-            relevant_chain_ids=[],
+            relevant_chain_ids=relevant_chain_ids,
             reason_summary="不需要历史上下文",
         ),
     )
@@ -64,6 +67,7 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
         self.context.complete_turn.assert_not_awaited()
 
     async def test_unsupported_completes_current_turn(self) -> None:
+        self.context.send_message.return_value = _selection(["chain-a"])
         self.planning.execute.return_value = RunPlanningResult(
             plan_id="plan-unsupported",
             turn_id="turn-1",
@@ -80,6 +84,11 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "unsupported")
         command = self.context.complete_turn.await_args.args[1]
         self.assertEqual(command.assistant_content, "当前能力不支持")
+        self.assertEqual(
+            command.attribution.existing_chain_ids,
+            ["chain-a"],
+        )
+        self.assertFalse(command.attribution.create_new_chain)
 
     async def test_clarification_question_completes_source_turn(self) -> None:
         self.planning.execute.return_value = RunPlanningResult(
@@ -103,6 +112,8 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
         )
         command = self.context.complete_turn.await_args.args[1]
         self.assertEqual(command.task_ids, [])
+        self.assertEqual(command.attribution.existing_chain_ids, [])
+        self.assertTrue(command.attribution.create_new_chain)
 
 
 if __name__ == "__main__":

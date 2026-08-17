@@ -11,8 +11,8 @@ from app.modules.context.application.query_dto import (
     ContextChainResourceQueryResult,
     ContextChainResourceSearchQuery,
     ContextChainSearchQuery,
-    ContextRouteRecordQueryResult,
-    ContextRouteRecordSearchQuery,
+    ContextSelectionRecordQueryResult,
+    ContextSelectionRecordSearchQuery,
     ConversationTurnQueryResult,
     ConversationTurnSearchQuery,
 )
@@ -42,8 +42,8 @@ class ListContextChainResourcesToolInput(ContextChainResourceSearchQuery):
     """Context Chain Resource 查询输入。"""
 
 
-class ListContextRouteRecordsToolInput(ContextRouteRecordSearchQuery):
-    """Context RouteRecord 查询输入。"""
+class ListContextSelectionRecordsToolInput(ContextSelectionRecordSearchQuery):
+    """Context SelectionRecord 查询输入。"""
 
 
 class ContextToolResult(BaseModel):
@@ -92,8 +92,8 @@ class ListContextChainResourcesToolOutput(ContextToolResult):
     offset: int = 0
 
 
-class ListContextRouteRecordsToolOutput(ContextToolResult):
-    route_records: list[ContextRouteRecordQueryResult] = Field(
+class ListContextSelectionRecordsToolOutput(ContextToolResult):
+    selection_records: list[ContextSelectionRecordQueryResult] = Field(
         default_factory=list
     )
     total: int = 0

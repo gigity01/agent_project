@@ -33,8 +33,8 @@ class ConversationTurn(Base):
     )
 
     nodes = relationship("ContextChainNode", back_populates="turn")
-    route_decision = relationship(
-        "ContextRouteRecord",
+    context_selection = relationship(
+        "ContextSelectionRecord",
         back_populates="turn",
         uselist=False,
     )

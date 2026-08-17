@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 
+from app.modules.context.application.attribution_policy import (
+    build_read_set_fallback_attribution,
+)
 from app.modules.context.application.dto import (
     ChainTurnUpdate,
     CompleteTurnCommand,
@@ -19,7 +23,7 @@ from app.modules.task_runtime.domain.enums import TaskExecutionStatus
 class _AggregationSnapshot:
     turn_id: str
     task_ids: list[str]
-    chain_ids: list[str]
+    relevant_chain_ids: list[str]
     summaries: list[str]
     resource_refs: list[str]
 
@@ -37,6 +41,19 @@ class AggregatePlanUseCase:
             self._resource(resource_ref)
             for resource_ref in snapshot.resource_refs
         ]
+        new_chain_id = (
+            None
+            if snapshot.relevant_chain_ids
+            else f"chain_{uuid4().hex}"
+        )
+        attribution = build_read_set_fallback_attribution(
+            snapshot.relevant_chain_ids,
+            new_chain_id=new_chain_id,
+        )
+        target_chain_ids = list(attribution.existing_chain_ids)
+        if attribution.create_new_chain:
+            assert attribution.new_chain_id is not None
+            target_chain_ids.append(attribution.new_chain_id)
         result = await self._context_service.complete_turn(
             snapshot.turn_id,
             CompleteTurnCommand(
@@ -44,13 +61,14 @@ class AggregatePlanUseCase:
                 assistant_compact=assistant_content,
                 task_ids=snapshot.task_ids,
                 task_result_summary=summary,
+                attribution=attribution,
                 chain_updates=[
                     ChainTurnUpdate(
                         chain_id=chain_id,
                         related_task_ids=snapshot.task_ids,
                         related_resources=resources,
                     )
-                    for chain_id in snapshot.chain_ids
+                    for chain_id in target_chain_ids
                 ],
             ),
         )
@@ -77,12 +95,11 @@ class AggregatePlanUseCase:
                 latest_by_task[execution.task_id] = execution
             if set(latest_by_task) != {task.task_id for task in tasks}:
                 raise ValueError("Task 成功执行记录不完整")
-            route = uow.context.get_route_record_for_update(plan.turn_id)
-            if route is None:
-                raise ValueError("Turn 缺少 Context 路由记录")
-            chain_ids = list(route.selected_chain_ids or [])
-            if route.create_new_chain and route.new_chain_id:
-                chain_ids.append(route.new_chain_id)
+            selection = uow.context.get_selection_record_for_update(
+                plan.turn_id
+            )
+            if selection is None:
+                raise ValueError("Turn 缺少 Context Selection 记录")
             resource_refs = list(
                 dict.fromkeys(
                     resource_ref
@@ -97,7 +114,9 @@ class AggregatePlanUseCase:
             return _AggregationSnapshot(
                 turn_id=plan.turn_id,
                 task_ids=[task.task_id for task in tasks],
-                chain_ids=chain_ids,
+                relevant_chain_ids=list(
+                    selection.relevant_chain_ids or []
+                ),
                 summaries=summaries,
                 resource_refs=resource_refs,
             )

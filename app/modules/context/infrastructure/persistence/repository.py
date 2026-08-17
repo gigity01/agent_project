@@ -10,7 +10,7 @@ from app.modules.context.application.query_dto import (
     ContextChainNodeSearchQuery,
     ContextChainResourceSearchQuery,
     ContextChainSearchQuery,
-    ContextRouteRecordSearchQuery,
+    ContextSelectionRecordSearchQuery,
     ConversationTurnSearchQuery,
 )
 from app.modules.context.infrastructure.persistence.models.context_chain import (
@@ -25,8 +25,8 @@ from app.modules.context.infrastructure.persistence.models.context_resource impo
 from app.modules.context.infrastructure.persistence.models.context_resource_event import (
     ContextChainResourceEvent,
 )
-from app.modules.context.infrastructure.persistence.models.context_route_record import (
-    ContextRouteRecord,
+from app.modules.context.infrastructure.persistence.models.context_selection_record import (
+    ContextSelectionRecord,
 )
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn,
@@ -34,7 +34,7 @@ from app.modules.context.infrastructure.persistence.models.conversation_turn imp
 
 
 class ContextRepository:
-    """集中处理 Turn、Chain、Node 和路由决策的持久化。"""
+    """集中处理 Turn、Chain、Node 和 Context Selection 的持久化。"""
 
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -227,29 +227,32 @@ class ContextRepository:
         self.db.flush()
         return chain
 
-    def create_route_record(
+    def create_selection_record(
         self,
-        route_record: ContextRouteRecord,
-    ) -> ContextRouteRecord:
-        self.db.add(route_record)
+        selection_record: ContextSelectionRecord,
+    ) -> ContextSelectionRecord:
+        self.db.add(selection_record)
         self.db.flush()
-        return route_record
+        return selection_record
 
-    def get_route_record_for_update(
+    def get_selection_record_for_update(
         self,
         turn_id: str,
-    ) -> ContextRouteRecord | None:
+    ) -> ContextSelectionRecord | None:
         return (
-            self.db.query(ContextRouteRecord)
-            .filter(ContextRouteRecord.current_turn_id == turn_id)
+            self.db.query(ContextSelectionRecord)
+            .filter(ContextSelectionRecord.current_turn_id == turn_id)
             .with_for_update()
             .first()
         )
 
-    def get_route_record(self, turn_id: str) -> ContextRouteRecord | None:
+    def get_selection_record(
+        self,
+        turn_id: str,
+    ) -> ContextSelectionRecord | None:
         return (
-            self.db.query(ContextRouteRecord)
-            .filter(ContextRouteRecord.current_turn_id == turn_id)
+            self.db.query(ContextSelectionRecord)
+            .filter(ContextSelectionRecord.current_turn_id == turn_id)
             .first()
         )
 
@@ -317,22 +320,6 @@ class ContextRepository:
             )
         return query
 
-    def get_node_for_update(
-        self,
-        chain_id: str,
-        turn_id: str,
-    ) -> ContextChainNode | None:
-        """锁定路由阶段创建的占位 Node，供完成流程回填。"""
-        return (
-            self.db.query(ContextChainNode)
-            .filter(
-                ContextChainNode.chain_id == chain_id,
-                ContextChainNode.turn_id == turn_id,
-            )
-            .with_for_update()
-            .first()
-        )
-
     def get_next_sequence(self, chain_id: str) -> int:
         current = (
             self.db.query(func.max(ContextChainNode.sequence))
@@ -343,19 +330,6 @@ class ContextRepository:
 
     def create_node(self, node: ContextChainNode) -> ContextChainNode:
         self.db.add(node)
-        self.db.flush()
-        return node
-
-    def update_node_relations(
-        self,
-        node: ContextChainNode,
-        *,
-        related_task_ids: list[str],
-        related_resource_refs: list[str],
-    ) -> ContextChainNode:
-        """回填占位 Node 的 Task 与资源关联，不改变其顺序。"""
-        node.related_task_ids = related_task_ids
-        node.related_resource_refs = related_resource_refs
         self.db.flush()
         return node
 
@@ -535,52 +509,54 @@ class ContextRepository:
             )
         return query
 
-    def search_route_records(
+    def search_selection_records(
         self,
-        filters: ContextRouteRecordSearchQuery,
-    ) -> list[ContextRouteRecord]:
+        filters: ContextSelectionRecordSearchQuery,
+    ) -> list[ContextSelectionRecord]:
         return (
-            self._route_record_search_query(filters)
+            self._selection_record_search_query(filters)
             .order_by(
-                ContextRouteRecord.created_at.desc(),
-                ContextRouteRecord.route_id.desc(),
+                ContextSelectionRecord.created_at.desc(),
+                ContextSelectionRecord.selection_id.desc(),
             )
             .offset(filters.offset)
             .limit(filters.limit)
             .all()
         )
 
-    def count_route_records(
+    def count_selection_records(
         self,
-        filters: ContextRouteRecordSearchQuery,
+        filters: ContextSelectionRecordSearchQuery,
     ) -> int:
-        return self._route_record_search_query(filters).count()
+        return self._selection_record_search_query(filters).count()
 
-    def _route_record_search_query(
+    def _selection_record_search_query(
         self,
-        filters: ContextRouteRecordSearchQuery,
+        filters: ContextSelectionRecordSearchQuery,
     ):
-        query = self.db.query(ContextRouteRecord)
+        query = self.db.query(ContextSelectionRecord)
         if filters.conversation_id is not None:
             query = query.filter(
-                ContextRouteRecord.conversation_id
+                ContextSelectionRecord.conversation_id
                 == filters.conversation_id
             )
         if filters.turn_id is not None:
             query = query.filter(
-                ContextRouteRecord.current_turn_id == filters.turn_id
+                ContextSelectionRecord.current_turn_id == filters.turn_id
             )
-        if filters.route_modes:
+        if filters.selection_modes:
             query = query.filter(
-                ContextRouteRecord.route_mode.in_(filters.route_modes)
+                ContextSelectionRecord.selection_mode.in_(
+                    filters.selection_modes
+                )
             )
         if filters.created_from is not None:
             query = query.filter(
-                ContextRouteRecord.created_at >= filters.created_from
+                ContextSelectionRecord.created_at >= filters.created_from
             )
         if filters.created_to is not None:
             query = query.filter(
-                ContextRouteRecord.created_at <= filters.created_to
+                ContextSelectionRecord.created_at <= filters.created_to
             )
         return query
 

@@ -5,7 +5,7 @@
 本项目是知识库文档入库、向量索引和 Conversation Agent 任务编排服务。当前提供：
 
 - 文档上传、格式转换、清洗、父子切块、Embedding 和 Qdrant 入库。
-- Context Chain 路由、Turn 完成回写及 Redis 热资源队列。
+- Planner 历史 Context Selection、Turn Attribution 完成回写及 Redis 热资源队列。
 - 基于可验证事实的 Planner、Plan/Task DAG 持久化和澄清流程。
 - 独立 Task Runtime Worker、可靠事件投递、失败重试和 Replan。
 - Task 全部成功后的确定性结果聚合及 Context Turn 回写。
@@ -23,7 +23,7 @@ Client
   │ POST /api/conversations/{conversation_id}/messages
   ▼
 FastAPI
-  ├─ Context Agent：路由完整用户输入并创建唯一 Turn
+  ├─ Context Agent：为当前 Turn 选择 Planner 历史 Read Set
   ├─ Planner Evidence：最多三路并行收集只读事实
   ├─ Planner Commit：串行创建 Task、发布 Plan 或澄清
   ├─ MySQL：原子发布 Plan、Task DAG 和 Outbox Event
@@ -56,9 +56,9 @@ app/
 ├── bootstrap/                    # 应用工厂、容器和 lifespan 装配
 ├── config/                       # 环境变量与应用配置
 ├── infrastructure/              # 数据库、DeepSeek Provider、Redis 客户端
-├── shared/observability/         # 文档生命周期与 Agent Tool JSONL 日志
+├── shared/observability/         # 文档、Context 与 Agent Tool JSONL 日志
 └── modules/
-    ├── context/                  # Context 路由、Chain、Turn 与资源队列
+    ├── context/                  # Context Selection、Attribution、Chain 与资源队列
     ├── conversation/             # 面向用户的消息编排与状态查询
     ├── document/                 # 文档入库、处理、切块和索引
     ├── planning/                 # Plan/Task/DAG 与 Planner Tools
@@ -90,9 +90,9 @@ Application、Presentation 和跨模块 Infrastructure 的导入边界。
 | POST | `/api/admin/documents/{document_id}/process` | 转换或清洗文档 |
 | POST | `/api/admin/documents/{document_id}/build-chunks` | 构建父块和子块 |
 | POST | `/api/admin/documents/{document_id}/index-vectors` | 生成并写入向量 |
-| POST | `/api/conversations/{conversation_id}/messages` | Context 路由并运行 Planner |
+| POST | `/api/conversations/{conversation_id}/messages` | Context Selection 并运行 Planner |
 | GET | `/api/conversations/{conversation_id}/turns/{turn_id}` | 查询 Turn、最新 Plan 和任务状态 |
-| POST | `/api/context/route` | 兼容 Context 路由接口，已标记 deprecated |
+| POST | `/api/context/route` | 兼容 Context Selection 接口，已标记 deprecated |
 | POST | `/api/context/turns/{turn_id}/complete` | 兼容下游手工完成 Turn 接口 |
 
 Document 模块还提供文档、产物、父块、子块、流水线状态与知识库统计等只读接口。
@@ -109,6 +109,8 @@ OpenAPI 文档由运行中的 FastAPI 提供。
 ```
 
 `ContextAgentInput`、Chain、Plan、Task 和资源队列均为后端内部契约，不由前端构造。
+Conversation Message 响应通过 `context_selection` 返回 `selection_mode`、
+`relevant_chain_ids` 和 `reason_summary`；Selection 阶段不会返回或预分配新 Chain。
 响应中的主要状态如下：
 
 | 状态 | HTTP | 含义 |
@@ -124,12 +126,29 @@ OpenAPI 文档由运行中的 FastAPI 提供。
 
 ## Conversation 任务闭环
 
-### 1. Context 路由
+### 1. Context Selection
 
-一次完整输入只创建一个 `ConversationTurn`。Context Agent 只判断输入与哪些历史
-Context Chain 相关，不拆分任务、不选择 Executor，也不生成业务回答。同一
-Conversation 的路由使用 Redis 短锁串行化；MySQL 保存完整事实，Redis 保存有版本的
-热资源队列。
+一次完整输入只创建一个 `ConversationTurn`。Context Agent 选择的是 Planner 为正确
+理解当前请求所需的历史 Context Read Set，而不是当前 Turn 的最终 Chain 归属。它可
+返回 0、1 或多条已有 Chain，不创建 Chain、不拆分任务、不选择 Executor，也不生成
+业务回答；系统按数量派生 `no_context`、`single_context` 或 `multi_context`。没有历史
+Chain 时直接持久化空集合，不调用 Context LLM，也不存在强制选择最新链的 fallback。
+
+Selection 输入把 `current_user_input` 与当前 Conversation 的全部未归档历史 Chain
+分开。每条 Chain 忠实保留 Turn 的 `user_input`、`assistant_content`、
+`assistant_compact`、`task_result_summary`、Node relations 和 ResourceQueue；刚创建的
+当前 Turn 没有 Node，因此不会混入 historical context。经确定性校验后，Read Set 写入
+`context_selection_records`，Turn 从 `routing` 进入 `context_ready`。该事务不创建
+Chain 或 Node。
+
+Planner 仅凭 `turn_id` 重新加载持久化 Selection，并接收
+`PlannerContextInput(current_user_input, context_chains)`。其 Context Tools 把 Read Set
+作为硬权限边界：只能读取当前 Turn，以及 Read Set 中 Chain 引用的历史 Turn、Node 和
+资源；宽泛 list 查询会被改写到允许范围，越权 ID 会被拒绝，不能重新枚举整个
+Conversation。
+
+同一 Conversation 的 Selection 和完成写回都使用 Redis 短锁串行化；MySQL 保存完整
+事实，Redis 保存有版本的热资源队列。
 
 ### 2. Planner 与澄清
 
@@ -248,6 +267,19 @@ Plan 的全部 Task 成功后，Runtime 写入聚合事件。Aggregation 从数�
 Task 与 TaskExecution，生成确定性执行摘要，收集去重后的资源引用，随后完成原始
 Context Turn、建立 Chain Node 并刷新热资源队列。它不会调用检索或生成通用问答。
 
+Context Read Set 与最终 Turn Attribution Write Set 是两个独立事实。完成方通过
+`TurnAttribution(existing_chain_ids, create_new_chain, new_chain_id)` 指定最终目标，
+Attribution 可与 Selection 不同。Context Service 在一个事务内锁定 Turn 与 Selection、
+校验并锁定已有目标 Chain、必要时创建新 Chain、创建带最终 Task/Resource relations 的
+Node、更新资源和 `last_active_at`，最后把 Turn 推进到 `completed`。任何一步失败都会
+回滚整个完成事务；Selection 阶段不再创建 placeholder Node。每个 `completed` Turn
+必须至少关联一条 Chain，空 Attribution 会自动创建新 Chain。
+
+当前成功 Aggregation、unsupported 和 clarification 使用同一确定性后备策略：Read Set
+非空时把 Turn 归入其全部 Chain；Read Set 为空时创建新 Chain。Aggregation 会在调用
+完成事务前预分配新 Chain ID，以便新 Chain 的 Node 与 Task 资源关系一次提交。更精细
+的成功执行 Attribution 生产者尚未拆成额外 LLM Agent。
+
 ## 文档处理流水线
 
 文档四个步骤仍可通过管理 API 独立调用，且必须按顺序执行：
@@ -295,6 +327,10 @@ uploaded → processing → processed → chunking → chunked → indexing → 
 Agent 链路需要 DeepSeek。Redis 在应用和 Worker 启动时都会执行 `PING`，不可用则启动
 失败。
 
+`logs/context/` 按日期保存 Context JSONL 事件，可聚合 Selection LLM/总耗时、候选与
+选中 Chain 数、空/多 Chain 选择、非法输出/重试，以及 Conversation 锁等待、持有和
+过期字段。观测写入尽力而为，不反向阻断业务，也不记录输入正文、密钥或连接串。
+
 先执行数据库迁移：
 
 ```bash
@@ -312,7 +348,11 @@ uv run --frozen python -m app.workers.runtime_main
 ```
 
 存储路径是相对路径，应从项目根目录启动。当前 Alembic 迁移头为
-`d8f2a4c6e9b1`。
+`f4a7c9e2b6d8`。该迁移把 `context_route_decisions` 正式改为
+`context_selection_records`，迁移 `routed` Turn 状态，并清理未完成 Turn 的旧
+placeholder Node 和无正式事实的预建空 Chain。由于新的 Read Set 与 Attribution
+Write Set 无法无损还原为旧路由记录，该语义迁移的 downgrade 会 fail closed；回退
+旧应用前必须恢复升级前的数据库备份。
 
 ## 验证
 

@@ -53,6 +53,14 @@ class ContextChainTurnUpdate(BaseModel):
     removed_resource_keys: list[str] = Field(default_factory=list)
 
 
+class ContextTurnAttribution(BaseModel):
+    """完成阶段提交的最终 Chain 写入集合。"""
+
+    existing_chain_ids: list[str] = Field(default_factory=list)
+    create_new_chain: bool = False
+    new_chain_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
 class CompleteContextTurnRequest(BaseModel):
     """下游完成处理后补全唯一 Turn 并正式关联全部目标链。"""
 
@@ -60,6 +68,9 @@ class CompleteContextTurnRequest(BaseModel):
     assistant_compact: str | None = None
     task_ids: list[str] = Field(default_factory=list)
     task_result_summary: str | None = None
+    attribution: ContextTurnAttribution = Field(
+        default_factory=ContextTurnAttribution
+    )
     chain_updates: list[ContextChainTurnUpdate] = Field(default_factory=list)
 
 

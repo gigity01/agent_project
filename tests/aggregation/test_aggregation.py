@@ -15,8 +15,8 @@ from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
 from app.modules.aggregation.application.aggregate_plan import (
     AggregatePlanUseCase,
 )
-from app.modules.context.infrastructure.persistence.models.context_route_record import (
-    ContextRouteRecord,
+from app.modules.context.infrastructure.persistence.models.context_selection_record import (
+    ContextSelectionRecord,
 )
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn,
@@ -41,7 +41,7 @@ class AggregationTest(unittest.IsolatedAsyncioTestCase):
         )
         self.tables = [
             ConversationTurn.__table__,
-            ContextRouteRecord.__table__,
+            ContextSelectionRecord.__table__,
             Plan.__table__,
             Task.__table__,
             TaskExecution.__table__,
@@ -58,15 +58,13 @@ class AggregationTest(unittest.IsolatedAsyncioTestCase):
                 )
             )
             session.add(
-                ContextRouteRecord(
-                    route_id="route-aggregate",
+                ContextSelectionRecord(
+                    selection_id="selection-aggregate",
                     conversation_id="conversation-1",
                     current_turn_id="turn-aggregate",
-                    selected_chain_ids=["chain-1"],
-                    create_new_chain=False,
-                    route_mode="single_context",
+                    relevant_chain_ids=["chain-1"],
+                    selection_mode="single_context",
                     reason_summary="继续现有链",
-                    new_chain_id=None,
                 )
             )
             session.add(
@@ -134,6 +132,11 @@ class AggregationTest(unittest.IsolatedAsyncioTestCase):
         turn_id, command = context_service.complete_turn.await_args.args
         self.assertEqual(turn_id, "turn-aggregate")
         self.assertEqual(command.task_ids, ["task-aggregate"])
+        self.assertEqual(
+            command.attribution.existing_chain_ids,
+            ["chain-1"],
+        )
+        self.assertFalse(command.attribution.create_new_chain)
         self.assertEqual(command.chain_updates[0].chain_id, "chain-1")
         self.assertEqual(
             command.chain_updates[0].related_resources[0].resource_key,

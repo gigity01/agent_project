@@ -89,6 +89,20 @@ def _provider(create: mock.AsyncMock):
     )
 
 
+class _EventLogger:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def write(self, event: str, **fields) -> bool:
+        self.events.append({"event": event, **fields})
+        return True
+
+
+class _FailingEventLogger:
+    def write(self, event: str, **fields) -> bool:
+        raise OSError("metrics unavailable")
+
+
 class ContextSelectionToolSchemaTest(unittest.TestCase):
     def test_schema_is_generated_from_pydantic_without_local_refs(self) -> None:
         schema = build_context_selection_tool_schema()
@@ -147,6 +161,24 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(function["parameters"]["type"], "object")
         self.assertFalse(function["parameters"]["additionalProperties"])
 
+    async def test_observability_failure_does_not_change_selection(self) -> None:
+        create = mock.AsyncMock(
+            return_value=_tool_response(
+                {
+                    "relevant_chain_ids": ["chain-1"],
+                    "reason_summary": "延续已有上下文。",
+                }
+            )
+        )
+        router = ContextAgentRouter(
+            _provider(create),
+            event_logger=_FailingEventLogger(),
+        )
+
+        decision = await router.route(_agent_input())
+
+        self.assertEqual(decision.relevant_chain_ids, ["chain-1"])
+
     async def test_retries_once_after_invalid_tool_response(self) -> None:
         create = mock.AsyncMock(
             side_effect=[
@@ -159,9 +191,11 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ]
         )
+        event_logger = _EventLogger()
         router = ContextAgentRouter(
             _provider(create),
             max_output_attempts=2,
+            event_logger=event_logger,
         )
 
         decision = await router.route(_agent_input())
@@ -172,6 +206,23 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "上一次响应未形成唯一且合法",
             second_request["messages"][1]["content"],
+        )
+        self.assertEqual(
+            [event["event"] for event in event_logger.events],
+            [
+                "context_selection_invalid_output",
+                "context_selection_llm_completed",
+            ],
+        )
+        self.assertEqual(
+            event_logger.events[0][
+                "context_selection_invalid_output_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            event_logger.events[1]["context_selection_retry_count"],
+            1,
         )
 
     async def test_raises_after_output_attempts_are_exhausted(self) -> None:

@@ -13,7 +13,7 @@ from app.modules.context.application.use_cases import (
     ListContextChainNodesUseCase,
     ListContextChainResourcesUseCase,
     ListContextChainsUseCase,
-    ListContextRouteRecordsUseCase,
+    ListContextSelectionRecordsUseCase,
     ListConversationTurnsUseCase,
 )
 from app.modules.operations.application.query_service import OperationsQueryService
@@ -104,7 +104,9 @@ class ContextToolServices:
     list_context_chains: ListContextChainsUseCase | None = None
     list_context_chain_nodes: ListContextChainNodesUseCase | None = None
     list_context_chain_resources: ListContextChainResourcesUseCase | None = None
-    list_context_route_records: ListContextRouteRecordsUseCase | None = None
+    list_context_selection_records: (
+        ListContextSelectionRecordsUseCase | None
+    ) = None
 
 
 @dataclass(frozen=True)

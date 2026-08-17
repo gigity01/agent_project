@@ -15,16 +15,19 @@ from app.modules.context.agent_tools.query_tools import (
     get_conversation_turn_handler,
     get_context_chain_handler,
     list_context_chains_handler,
+    list_conversation_turns_handler,
 )
 from app.modules.context.agent_tools.schemas import (
     GetConversationTurnToolInput,
     GetContextChainToolInput,
     ListContextChainsToolInput,
+    ListConversationTurnsToolInput,
 )
 from app.modules.context.application.query_dto import (
     ContextChainListResult,
     ContextChainQueryResult,
     ConversationTurnQueryResult,
+    ConversationTurnListResult,
 )
 
 
@@ -72,6 +75,14 @@ def _context(*, permissions: frozenset[str]):
         limit=20,
         offset=0,
     )
+    query_service.list_conversation_turns.return_value = (
+        ConversationTurnListResult(
+            items=[query_service.get_conversation_turn.return_value],
+            total=1,
+            limit=20,
+            offset=0,
+        )
+    )
     context = AgentToolContext(
         trace_id="trace-1",
         agent_run_id="run-1",
@@ -101,7 +112,7 @@ class ContextAgentToolsTest(unittest.TestCase):
                 "list_context_chains",
                 "list_context_chain_nodes",
                 "list_context_chain_resources",
-                "list_context_route_records",
+                "list_context_selection_records",
             },
         )
 
@@ -153,6 +164,43 @@ class ContextAgentToolsTest(unittest.TestCase):
         self.assertEqual(output.outcome, "rejected")
         self.assertEqual(output.result_code, "task_scope_violation")
         service.get_context_chain.assert_not_called()
+
+    def test_broad_turn_list_is_rewritten_to_current_and_read_set(self) -> None:
+        context, service, _writer = _context(
+            permissions=frozenset({"context:read"})
+        )
+
+        output = list_conversation_turns_handler(
+            RunContextWrapper(context),
+            ListConversationTurnsToolInput(
+                conversation_id="conversation-1",
+                limit=20,
+            ),
+        )
+
+        self.assertEqual(output.outcome, "succeeded")
+        query = service.list_conversation_turns.call_args.args[0]
+        self.assertEqual(
+            query.turn_ids,
+            ["turn-1", "turn-current"],
+        )
+
+    def test_non_read_set_turn_is_rejected_without_query(self) -> None:
+        context, service, _writer = _context(
+            permissions=frozenset({"context:read"})
+        )
+
+        output = list_conversation_turns_handler(
+            RunContextWrapper(context),
+            ListConversationTurnsToolInput(
+                conversation_id="conversation-1",
+                turn_ids=["turn-other"],
+            ),
+        )
+
+        self.assertEqual(output.outcome, "rejected")
+        self.assertEqual(output.result_code, "task_scope_violation")
+        service.list_conversation_turns.assert_not_called()
 
     def test_permission_denial_does_not_query_database(self) -> None:
         context, service, _writer = _context(permissions=frozenset())

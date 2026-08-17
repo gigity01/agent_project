@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import unittest
 from unittest import mock
 
@@ -29,8 +30,14 @@ from app.modules.context.infrastructure.persistence.models.conversation_turn imp
 from app.modules.context.infrastructure.persistence.mapper import (
     build_context_chain,
 )
-from app.modules.context.infrastructure.persistence.models.context_route_record import (
-    ContextRouteRecord,
+from app.modules.context.infrastructure.persistence.models.context_chain import (
+    ContextChain,
+)
+from app.modules.context.infrastructure.persistence.models.context_chain_node import (
+    ContextChainNode,
+)
+from app.modules.context.infrastructure.persistence.models.context_selection_record import (
+    ContextSelectionRecord,
 )
 from app.modules.context.domain.models import ContextResourceQueue
 from app.modules.planning.agent_tools.planning_tools import (
@@ -88,9 +95,11 @@ class _ClosedLoopPlannerRunner:
         self.active_collectors = 0
         self.max_active_collectors = 0
         self.planner_input: PlannerContextInput | None = None
+        self.agent_context = None
 
     async def run(self, *, planner_input: PlannerContextInput, context) -> str:
         self.planner_input = planner_input
+        self.agent_context = context
 
         async def collect() -> None:
             self.active_collectors += 1
@@ -153,7 +162,9 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         )
         self.tables = [
             ConversationTurn.__table__,
-            ContextRouteRecord.__table__,
+            ContextChain.__table__,
+            ContextChainNode.__table__,
+            ContextSelectionRecord.__table__,
             Plan.__table__,
             Task.__table__,
             TaskDependency.__table__,
@@ -162,25 +173,84 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         ]
         Base.metadata.create_all(self.engine, tables=self.tables)
         with self.session_factory() as session:
-            session.add(
-                ConversationTurn(
-                    turn_id="turn-planner-1",
-                    conversation_id="conversation-1",
-                    user_input="处理、切块并索引文档 7",
-                    task_ids=[],
-                    status="context_ready",
-                )
+            session.add_all(
+                [
+                    ConversationTurn(
+                        turn_id="turn-planner-1",
+                        conversation_id="conversation-1",
+                        user_input="处理、切块并索引文档 7",
+                        task_ids=[],
+                        status="context_ready",
+                    ),
+                    ConversationTurn(
+                        turn_id="turn-history-a",
+                        conversation_id="conversation-1",
+                        user_input="历史上下文 A",
+                        assistant_content="回答 A",
+                        assistant_compact="摘要 A",
+                        task_ids=[],
+                        status="completed",
+                    ),
+                    ConversationTurn(
+                        turn_id="turn-history-b",
+                        conversation_id="conversation-1",
+                        user_input="历史上下文 B",
+                        assistant_content="回答 B",
+                        assistant_compact="摘要 B",
+                        task_ids=[],
+                        status="completed",
+                    ),
+                ]
+            )
+            session.add_all(
+                [
+                    ContextChain(
+                        chain_id="chain-a",
+                        conversation_id="conversation-1",
+                        resources={},
+                        resource_version=0,
+                        last_active_at=datetime(2026, 8, 1, 12, 0, 0),
+                        archived=False,
+                    ),
+                    ContextChain(
+                        chain_id="chain-b",
+                        conversation_id="conversation-1",
+                        resources={},
+                        resource_version=0,
+                        last_active_at=datetime(2026, 8, 1, 12, 1, 0),
+                        archived=False,
+                    ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
+                    ContextChainNode(
+                        node_id="node-a",
+                        chain_id="chain-a",
+                        turn_id="turn-history-a",
+                        sequence=0,
+                        related_task_ids=[],
+                        related_resource_refs=[],
+                    ),
+                    ContextChainNode(
+                        node_id="node-b",
+                        chain_id="chain-b",
+                        turn_id="turn-history-b",
+                        sequence=0,
+                        related_task_ids=[],
+                        related_resource_refs=[],
+                    ),
+                ]
             )
             session.add(
-                ContextRouteRecord(
-                    route_id="selection-planner-1",
+                ContextSelectionRecord(
+                    selection_id="selection-planner-1",
                     conversation_id="conversation-1",
                     current_turn_id="turn-planner-1",
-                    selected_chain_ids=[],
-                    create_new_chain=True,
-                    route_mode="no_context",
-                    reason_summary="当前请求不需要历史上下文",
-                    new_chain_id="chain-placeholder",
+                    relevant_chain_ids=["chain-a", "chain-b"],
+                    selection_mode="multi_context",
+                    reason_summary="Planner 需要两条历史上下文",
                 )
             )
             session.commit()
@@ -325,7 +395,9 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         )
         evidence_result.to_input_list.assert_called_once_with()
 
-    async def test_routed_turn_runs_planner_and_publishes_database_plan(self) -> None:
+    async def test_context_ready_turn_runs_planner_and_publishes_plan(
+        self,
+    ) -> None:
         ports = PlanningApplicationPorts(
             uow_factory=lambda: SQLAlchemyUnitOfWork(self.session_factory),
             plan_factory=Plan,
@@ -342,6 +414,9 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         resource_service.empty_queue.return_value = ContextResourceQueue(
             capacity=16,
             items=[],
+        )
+        resource_service.get_queue = mock.AsyncMock(
+            return_value=ContextResourceQueue(capacity=16, items=[])
         )
         run_planning = RunPlanningUseCase(
             ports=ports,
@@ -367,7 +442,30 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             closed_loop_runner.planner_input.current_user_input,
             "处理、切块并索引文档 7",
         )
-        self.assertEqual(closed_loop_runner.planner_input.context_chains, [])
+        self.assertEqual(
+            [
+                chain.chain_id
+                for chain in closed_loop_runner.planner_input.context_chains
+            ],
+            ["chain-a", "chain-b"],
+        )
+        self.assertEqual(
+            [
+                chain.nodes[0].turn.user_input
+                for chain in closed_loop_runner.planner_input.context_chains
+            ],
+            ["历史上下文 A", "历史上下文 B"],
+        )
+        self.assertEqual(
+            closed_loop_runner.agent_context.allowed_context_chain_ids,
+            frozenset({"chain-a", "chain-b"}),
+        )
+        self.assertEqual(
+            closed_loop_runner.agent_context.allowed_context_turn_ids,
+            frozenset(
+                {"turn-planner-1", "turn-history-a", "turn-history-b"}
+            ),
+        )
         self.assertEqual(result.status.value, "ready")
         self.assertEqual(len(result.task_ids), 3)
         self.assertIsNone(result.failure_reason)

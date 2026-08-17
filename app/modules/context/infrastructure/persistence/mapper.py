@@ -11,8 +11,8 @@ from app.modules.context.infrastructure.persistence.models.context_chain_node im
 from app.modules.context.infrastructure.persistence.models.context_resource_event import (
     ContextChainResourceEvent,
 )
-from app.modules.context.infrastructure.persistence.models.context_route_record import (
-    ContextRouteRecord,
+from app.modules.context.infrastructure.persistence.models.context_selection_record import (
+    ContextSelectionRecord,
 )
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn as TurnModel,
@@ -31,8 +31,11 @@ class SQLAlchemyContextRecordFactory:
     def conversation_turn(self, **values: Any) -> TurnModel:
         return TurnModel(**values)
 
-    def context_route_record(self, **values: Any) -> ContextRouteRecord:
-        return ContextRouteRecord(**values)
+    def context_selection_record(
+        self,
+        **values: Any,
+    ) -> ContextSelectionRecord:
+        return ContextSelectionRecord(**values)
 
     def context_chain(self, **values: Any) -> ContextChainModel:
         return ContextChainModel(**values)

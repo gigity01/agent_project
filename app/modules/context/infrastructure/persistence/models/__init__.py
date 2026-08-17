@@ -12,8 +12,8 @@ from app.modules.context.infrastructure.persistence.models.context_resource impo
 from app.modules.context.infrastructure.persistence.models.context_resource_event import (
     ContextChainResourceEvent,
 )
-from app.modules.context.infrastructure.persistence.models.context_route_record import (
-    ContextRouteRecord,
+from app.modules.context.infrastructure.persistence.models.context_selection_record import (
+    ContextSelectionRecord,
 )
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn,
@@ -25,6 +25,6 @@ __all__ = [
     "ContextChainNode",
     "ContextChainResource",
     "ContextChainResourceEvent",
-    "ContextRouteRecord",
+    "ContextSelectionRecord",
     "ConversationTurn",
 ]

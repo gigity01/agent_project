@@ -13,7 +13,7 @@ from app.modules.context.agent_tools.query_tools import (
     list_context_chain_nodes,
     list_context_chain_resources,
     list_context_chains,
-    list_context_route_records,
+    list_context_selection_records,
     list_conversation_turns,
 )
 
@@ -60,9 +60,9 @@ CONTEXT_COLLECTOR_CATALOG = (
         ["chain", "resource"],
     ),
     _registration(
-        list_context_route_records,
-        "查询 Context RouteRecord",
-        ["conversation", "turn", "route_record"],
+        list_context_selection_records,
+        "查询 Context SelectionRecord",
+        ["conversation", "turn", "selection_record"],
     ),
 )
 

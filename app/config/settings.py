@@ -177,3 +177,4 @@ DOCUMENT_RETRIEVAL_LOG_DIR: Final[Path] = (
     DOCUMENT_LIFECYCLE_LOG_DIR / "retrieval"
 )
 AGENT_TOOL_LOG_DIR: Final[Path] = LOG_STORAGE_DIR / "agent_tools"
+CONTEXT_OBSERVABILITY_LOG_DIR: Final[Path] = LOG_STORAGE_DIR / "context"

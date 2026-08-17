@@ -14,9 +14,9 @@ from app.modules.context.application.query_dto import (
     ContextChainResourceQueryResult,
     ContextChainResourceSearchQuery,
     ContextChainSearchQuery,
-    ContextRouteRecordListResult,
-    ContextRouteRecordQueryResult,
-    ContextRouteRecordSearchQuery,
+    ContextSelectionRecordListResult,
+    ContextSelectionRecordQueryResult,
+    ContextSelectionRecordSearchQuery,
     ConversationTurnListResult,
     ConversationTurnQueryResult,
     ConversationTurnSearchQuery,
@@ -110,18 +110,18 @@ class ContextQueryService:
                 offset=query.offset,
             )
 
-    def list_context_route_records(
+    def list_context_selection_records(
         self,
-        query: ContextRouteRecordSearchQuery,
-    ) -> ContextRouteRecordListResult:
+        query: ContextSelectionRecordSearchQuery,
+    ) -> ContextSelectionRecordListResult:
         with self._uow_factory() as uow:
-            items = uow.context.search_route_records(query)
-            return ContextRouteRecordListResult(
+            items = uow.context.search_selection_records(query)
+            return ContextSelectionRecordListResult(
                 items=[
-                    ContextRouteRecordQueryResult.model_validate(item)
+                    ContextSelectionRecordQueryResult.model_validate(item)
                     for item in items
                 ],
-                total=uow.context.count_route_records(query),
+                total=uow.context.count_selection_records(query),
                 limit=query.limit,
                 offset=query.offset,
             )
