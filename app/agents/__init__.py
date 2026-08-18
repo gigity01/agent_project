@@ -6,6 +6,7 @@ from app.agents.collectors import (
     CollectorResult,
     EvidenceItem,
     build_collector_agents,
+    extract_collector_results,
 )
 from app.agents.document_executors import (
     DocumentExecutorAgentSet,
@@ -17,17 +18,30 @@ from app.agents.planner import (
     PlannerAgentRunner,
     build_planner_agent,
 )
+from app.agents.gap_handler import (
+    EvidenceRound,
+    GapAction,
+    GapDecision,
+    GapHandlerInput,
+    build_gap_handler_agent,
+)
 
 __all__ = [
     "CollectorAgentSet",
     "CollectorRequest",
     "CollectorResult",
     "EvidenceItem",
+    "EvidenceRound",
+    "GapAction",
+    "GapDecision",
+    "GapHandlerInput",
     "DocumentExecutorAgentSet",
     "ClarificationAgentOutput",
     "ClarificationHandoffInput",
     "build_collector_agents",
+    "build_gap_handler_agent",
     "build_document_executor_agents",
+    "extract_collector_results",
     "PlannerAgentRunner",
     "build_planner_agent",
 ]

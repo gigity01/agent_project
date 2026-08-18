@@ -22,6 +22,7 @@ from app.agents.collectors import (
     _extract_evidence_items,
     _normalize_tool_output,
     build_collector_agents,
+    extract_collector_results,
 )
 
 
@@ -382,6 +383,33 @@ class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(case_name=case_name):
                 with self.assertRaises(ValueError):
                     _extract_evidence_items(new_items)
+
+    def test_top_level_collector_boundaries_fail_closed(self) -> None:
+        valid_result = CollectorResult(
+            collector_code="document_collector",
+            summary="文档已查询",
+        ).model_dump_json()
+        invalid_cases = {
+            "output_without_call": [
+                self._tool_output("outer-1", valid_result)
+            ],
+            "unknown_evidence_tool": [
+                self._tool_call("outer-1", "get_document"),
+                self._tool_output("outer-1", valid_result),
+            ],
+            "collector_source_mismatch": [
+                self._tool_call(
+                    "outer-1",
+                    "collect_context_information",
+                ),
+                self._tool_output("outer-1", valid_result),
+            ],
+        }
+
+        for case_name, new_items in invalid_cases.items():
+            with self.subTest(case_name=case_name):
+                with self.assertRaises(ValueError):
+                    extract_collector_results(new_items)
 
     def test_invalid_tool_output_envelope_fails_closed(self) -> None:
         invalid_outputs = (

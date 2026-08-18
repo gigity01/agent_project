@@ -15,3 +15,11 @@ class PlanningApplicationError(Exception):
         self.status_code = status_code
         self.detail = detail
         self.result_code = result_code
+
+
+class PlanningRetryRequested(RuntimeError):
+    """Planner 前置判断确认本轮应进入 Application 重试语义。"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason

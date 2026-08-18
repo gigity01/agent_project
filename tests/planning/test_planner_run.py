@@ -19,7 +19,12 @@ from app.agent_runtime.context import (
     DocumentToolServices,
     OperationsToolServices,
 )
-from app.agents.collectors import build_collector_agents
+from app.agents.collectors import (
+    CollectorResult,
+    EvidenceItem,
+    build_collector_agents,
+)
+from app.agents.gap_handler import GapDecision
 from app.agents.planner import build_planner_agent
 from app.infrastructure.database.base import Base
 from app.infrastructure.database.model_registry import load_all_models
@@ -290,6 +295,17 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
                 "mark_plan_unsupported",
             },
         )
+        self.assertEqual(
+            {
+                tool.name
+                for tool in configured_runner.gap_handler_agent.tools
+            },
+            {
+                "search_business_docs",
+                "list_evidence_tools",
+                "find_evidence_tools",
+            },
+        )
         collector_tool_names = {
             "collect_document_information",
             "collect_context_information",
@@ -310,6 +326,9 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             configured_runner.commit_agent.model_settings.parallel_tool_calls
         )
+        self.assertFalse(
+            configured_runner.gap_handler_agent.model_settings.parallel_tool_calls
+        )
         self.assertEqual(
             configured_runner.evidence_run_config.tool_execution.max_function_tool_concurrency,
             3,
@@ -317,6 +336,14 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             configured_runner.commit_run_config.tool_execution.max_function_tool_concurrency,
             1,
+        )
+        self.assertEqual(
+            configured_runner.gap_handler_run_config.tool_execution.max_function_tool_concurrency,
+            1,
+        )
+        self.assertIs(
+            configured_runner.gap_handler_agent.output_type,
+            GapDecision,
         )
         self.assertIsNone(configured_runner.commit_agent.output_type)
         self.assertEqual(configured_runner.evidence_agent.handoffs, [])
@@ -342,13 +369,22 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
         for invariant in (
             "EvidenceItem.arguments 表示 Query Tool 实际使用的查询条件",
             "evidence_items 为空只表示该 Collector 未提供可验证业务证据",
-            "no-op Collector",
-            "只有影响当前 Plan 必要前置事实的 gap 才阻塞对应 Task",
-            "如果由可重试查询失败造成，不得向用户询问系统状态",
-            "当前 Capability 无法取得必要事实",
+            "前置 Gap 层已经确认现有 Evidence 足够进入规划",
+            "Tool succeeded 但业务对象不存在仍是有效查询事实",
+            "本阶段不得重新分类 gap",
         ):
             with self.subTest(invariant=invariant):
                 self.assertIn(invariant, commit_instructions)
+
+        evidence_instructions = configured_runner.evidence_agent.instructions
+        for invariant in (
+            "Collector 已经返回足够证据的事实，不得重复调查",
+            "必须明确写入对应 Collector 的 gap",
+            "gap 只描述未知事实",
+            "Service Map",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, evidence_instructions)
 
     async def test_planner_continues_commit_from_full_evidence_history(self) -> None:
         collectors = build_collector_agents(
@@ -361,15 +397,38 @@ class PlannerRunTest(unittest.IsolatedAsyncioTestCase):
             collectors=collectors,
         )
         evidence_result = mock.Mock()
+        evidence_result.new_items = []
         evidence_history = [{"role": "user", "content": "evidence"}]
         evidence_result.to_input_list.return_value = evidence_history
         commit_result = mock.Mock()
         context = mock.Mock()
+        collector_results = [
+            CollectorResult(
+                collector_code="document_collector",
+                summary="文档已确认",
+                evidence_items=[
+                    EvidenceItem(
+                        tool_name="get_document",
+                        tool_call_id="call-1",
+                        arguments={"document_id": 7},
+                        outcome="succeeded",
+                        result_code="document_retrieved",
+                        message="文档读取成功",
+                        retryable=False,
+                        resource_refs=["document:7"],
+                        payload={"document": {"id": 7}},
+                    )
+                ],
+            )
+        ]
 
         with mock.patch(
             "app.agents.planner.Runner.run",
             new=mock.AsyncMock(side_effect=[evidence_result, commit_result]),
-        ) as run:
+        ) as run, mock.patch(
+            "app.agents.planner.extract_collector_results",
+            return_value=collector_results,
+        ):
             result = await configured_runner.run(
                 planner_input=PlannerContextInput(
                     current_user_input="处理文档 7",

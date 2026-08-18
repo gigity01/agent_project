@@ -35,6 +35,12 @@ CollectorCode = Literal[
     "operations_collector",
 ]
 
+COLLECTOR_TOOL_CODES: dict[str, CollectorCode] = {
+    "collect_document_information": "document_collector",
+    "collect_context_information": "context_collector",
+    "collect_operation_information": "operations_collector",
+}
+
 
 class CollectorLLMResult(BaseModel):
     """Collector LLM 只负责解释证据并指出仍未确认的相关信息。"""
@@ -242,6 +248,65 @@ def _extract_evidence_items(new_items: list[Any]) -> list[EvidenceItem]:
         )
 
     return evidence_items
+
+
+def extract_collector_results(new_items: list[Any]) -> list[CollectorResult]:
+    """从顶层 Evidence Run 配对 Agent-as-Tool 的结构化结果。"""
+    calls: dict[str, CollectorCode] = {}
+    for item in new_items:
+        if not isinstance(item, ToolCallItem):
+            continue
+
+        call_id = item.call_id
+        tool_name = item.tool_name
+        if not call_id or not tool_name:
+            raise ValueError("Evidence Collector ToolCall 缺少 call_id 或 tool_name")
+        if call_id in calls:
+            raise ValueError(f"重复 Evidence Tool call_id: {call_id}")
+
+        collector_code = COLLECTOR_TOOL_CODES.get(tool_name)
+        if collector_code is None:
+            raise ValueError(f"Evidence Run 包含非 Collector Tool: {tool_name}")
+        calls[call_id] = collector_code
+
+    results: list[CollectorResult] = []
+    consumed_call_ids: set[str] = set()
+    for item in new_items:
+        if not isinstance(item, ToolCallOutputItem):
+            continue
+
+        call_id = item.call_id
+        if not call_id:
+            raise ValueError("Evidence Collector ToolCallOutput 缺少 call_id")
+        expected_code = calls.get(call_id)
+        if expected_code is None:
+            raise ValueError(
+                "找不到 Evidence Collector ToolCallOutput 对应的 ToolCall: "
+                f"{call_id}"
+            )
+        if call_id in consumed_call_ids:
+            raise ValueError(
+                f"同一 Evidence Collector ToolCall 出现多个 Output: {call_id}"
+            )
+
+        result = CollectorResult.model_validate(
+            _normalize_tool_output(item.output)
+        )
+        if result.collector_code != expected_code:
+            raise ValueError(
+                "CollectorResult 来源与调用 Tool 不一致: "
+                f"expected={expected_code}, actual={result.collector_code}"
+            )
+        results.append(result)
+        consumed_call_ids.add(call_id)
+
+    missing_outputs = set(calls) - consumed_call_ids
+    if missing_outputs:
+        raise ValueError(
+            "Evidence Collector ToolCall 缺少 Output: "
+            f"{sorted(missing_outputs)}"
+        )
+    return results
 
 
 def _build_collector_output_extractor(collector_code: CollectorCode):

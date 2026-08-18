@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from app.modules.context.infrastructure.llm.deepseek_router import (
+    CONTEXT_AGENT_INSTRUCTIONS,
     CONTEXT_SELECTION_TOOL_NAME,
     DeepSeekContextRouter,
 )
@@ -121,6 +122,13 @@ class ContextSelectionToolSchemaTest(unittest.TestCase):
 
 
 class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
+    async def test_service_map_does_not_expand_context_authority(self) -> None:
+        self.assertIn("Document Processing", CONTEXT_AGENT_INSTRUCTIONS)
+        self.assertIn("Context Management", CONTEXT_AGENT_INSTRUCTIONS)
+        self.assertIn("Operations", CONTEXT_AGENT_INSTRUCTIONS)
+        self.assertIn("不授予 Tool 权限", CONTEXT_AGENT_INSTRUCTIONS)
+        self.assertIn("不扩大", CONTEXT_AGENT_INSTRUCTIONS)
+
     async def test_without_existing_chains_returns_empty_selection_without_llm(self) -> None:
         create = mock.AsyncMock()
         router = ContextAgentRouter(_provider(create))

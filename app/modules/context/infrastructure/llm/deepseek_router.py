@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.agent_runtime.business_docs import load_service_map
 from app.infrastructure.llm.deepseek.provider import DeepSeekModelProvider
 from app.modules.context.application.dto import ContextAgentInput
 from app.modules.context.domain.models import ContextSelectionDecision
@@ -18,12 +19,18 @@ from app.modules.context.infrastructure.llm.strict_schema_adapter import (
 
 CONTEXT_SELECTION_TOOL_NAME = "submit_context_selection"
 DEFAULT_CONTEXT_AGENT_OUTPUT_ATTEMPTS = 2
+SERVICE_MAP = load_service_map()
 
-CONTEXT_AGENT_INSTRUCTIONS = """
+CONTEXT_AGENT_INSTRUCTIONS = f"""
 你是 Context Selection Agent。
 
 你的唯一职责是选择 Planner 为正确理解并处理当前用户请求所需要读取的历史
 ContextChain。选择的是 Planner 所需的历史信息，不是“当前消息最像哪条 Chain”。
+
+以下 Service Map 只帮助理解请求所属业务语境，不得因此扩大 Context Selection 的
+授权读取范围：
+
+{SERVICE_MAP}
 
 规则：
 

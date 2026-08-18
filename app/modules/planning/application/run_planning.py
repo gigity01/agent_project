@@ -29,7 +29,10 @@ from app.modules.planning.application.dto import (
     RunPlanningResult,
     SetClarificationQuestionInput,
 )
-from app.modules.planning.application.errors import PlanningApplicationError
+from app.modules.planning.application.errors import (
+    PlanningApplicationError,
+    PlanningRetryRequested,
+)
 from app.modules.planning.application.ports import (
     PlannerRunnerPort,
     PlanningApplicationPorts,
@@ -143,6 +146,13 @@ class RunPlanningUseCase:
             runner_result = await self._planner_runner.run(
                 planner_input=planner_input,
                 context=context,
+            )
+        except PlanningRetryRequested as exc:
+            return await asyncio.to_thread(
+                self._finish_from_database,
+                plan_id,
+                command.turn_id,
+                exc.reason,
             )
         except Exception:
             return await asyncio.to_thread(
@@ -425,4 +435,3 @@ class RunPlanningUseCase:
                     else None
                 ),
             )
-    PlannerContextInput,

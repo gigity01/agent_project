@@ -6,7 +6,7 @@
 
 - 文档上传、格式转换、清洗、父子切块、Embedding 和 Qdrant 入库。
 - Planner 历史 Context Selection、Turn Attribution 完成回写及 Redis 热资源队列。
-- 基于可验证事实的 Planner、Plan/Task DAG 持久化和澄清流程。
+- 基于可验证事实、显式 Gap 前置判断的 Planner、Plan/Task DAG 持久化和澄清流程。
 - 独立 Task Runtime Worker、可靠事件投递、失败重试和 Replan。
 - Task 全部成功后的确定性结果聚合及 Context Turn 回写。
 
@@ -25,6 +25,7 @@ Client
 FastAPI
   ├─ Context Agent：为当前 Turn 选择 Planner 历史 Read Set
   ├─ Planner Evidence：最多三路并行收集只读事实
+  ├─ GapHandler：按需补查、重试、澄清或判定必要事实不可获得
   ├─ Planner Commit：串行创建 Task、发布 Plan 或澄清
   ├─ MySQL：原子发布 Plan、Task DAG 和 Outbox Event
   └─ 返回 processing / needs_clarification / unsupported / ...
@@ -51,8 +52,8 @@ app/
 ├── main.py
 ├── api/router.py
 ├── workers/runtime_main.py       # 独立 Runtime Worker 入口
-├── agents/                       # Planner、Collector、Clarification 与 Executor Agents
-├── agent_runtime/                # Agent Tool 公共上下文、策略与审计
+├── agents/                       # Planner、Collector、Gap、Clarification 与 Executor Agents
+├── agent_runtime/                # Agent Tool 公共上下文、业务文档查询、Registry 与审计
 ├── bootstrap/                    # 应用工厂、容器和 lifespan 装配
 ├── config/                       # 环境变量与应用配置
 ├── infrastructure/              # 数据库、DeepSeek Provider、Redis 客户端
@@ -67,6 +68,8 @@ app/
     ├── clarification/            # 澄清请求及回答关联
     ├── aggregation/              # Plan 结果聚合与 Turn 完成
     └── operations/               # 运行日志查询与 Agent Tools
+
+business_docs/                    # GapHandler 按需查询的业务规则与 Service Map
 ```
 
 固定依赖方向：
@@ -147,38 +150,69 @@ Planner 仅凭 `turn_id` 重新加载持久化 Selection，并接收
 资源；宽泛 list 查询会被改写到允许范围，越权 ID 会被拒绝，不能重新枚举整个
 Conversation。
 
+Context Agent 的常驻 Prompt 包含短 Service Map，用于理解 Document Processing、Context
+Management 和 Operations 三类业务语境。Service Map 不改变 Selection Schema，也不
+授予 Tool 权限或扩大历史 Read Set。
+
 同一 Conversation 的 Selection 和完成写回都使用 Redis 短锁串行化；MySQL 保存完整
 事实，Redis 保存有版本的热资源队列。
 
 ### 2. Planner 与澄清
 
-Planner 是一个逻辑 Agent，但使用两个物理隔离的执行阶段。Evidence Agent 只能看到
-Document、Context、Operations 三个独立的只读 Collector Agent-as-Tool，开启
+Planner 主链使用物理隔离的 Evidence、GapHandler 和 Commit Agent。Evidence Agent
+只能看到 Document、Context、Operations 三个独立的只读 Collector Agent-as-Tool，开启
 `parallel_tool_calls` 且 `max_function_tool_concurrency=3`，因此最多三路并行取证；
-每个 Collector 内部保持串行。Collector LLM 的结构化输出只包含 `summary` 和
-`gaps`；Runtime 从 nested Run 的 `new_items` 按 `call_id` 配对实际 Tool Call 与
-Tool Output，每次调用生成一个 `EvidenceItem`。其中 `arguments` 保存 Tool 实际使用的
-查询条件，`payload` 保存公共执行 envelope 之外的实际业务查询结果；Runtime 再把公共
-执行字段与这些 Tool-specific 数据确定性组合成 `CollectorResult`。缺少调用边界或
-arguments、arguments 不是 JSON object、缺少公共 envelope、重复 `call_id` 或非法输出
-时 extractor 会 fail closed，不生成不完整证据。
+每个 Collector 内部保持串行。Evidence Prompt 要求已充分验证的事实不得重复调查，当前
+规划所需但仍未知的事实必须明确成为 gap；gap 只陈述未知，不决定后续动作。
 
-`CollectorResult.resource_refs` 是全部 EvidenceItem 引用的稳定去重并集，只表示本次
-调查涉及相应资源，不证明资源存在或状态正常。Commit Planner 以 `evidence_items` 为
-业务状态的主要依据，判断证据是否支持结论时必须同时考虑 `arguments` 和 `payload`；
-`summary` 和 `gaps` 只能辅助解释，冲突时以前者为准。空 `evidence_items` 只表示该
-Collector 没有贡献 Query Evidence，绝不表示业务事实已验证；它与空 `gaps` 组合表示
-no-op，与非空 `gaps` 组合表示没有取得 Evidence 且有明确知识缺口。非空 Evidence 与
-空 gaps 表示未声明剩余缺口，两者都非空表示取得部分 Evidence 后仍有明确缺口。只有
-影响 Plan 必要前置事实的 gap 才阻塞对应 Task，并按用户信息缺失、可重试查询失败或
-当前 Capability 不足分别进入 clarification、planning retry 或 unsupported。Evidence
-Run 的完整 Tool Call/Output 历史仍通过 `RunResult.to_input_list()` 交给 Commit Agent；
-当前不持久化 Evidence Graph。
+Collector LLM 的结构化输出只包含 `summary` 和 `gaps`；Runtime 从 nested Run 的
+`new_items` 按 `call_id` 配对实际 Tool Call 与 Tool Output，每次调用生成一个
+`EvidenceItem`。其中 `arguments` 保存实际查询条件，`payload` 保存公共执行 envelope
+之外的业务结果；Runtime 再确定性组合为 `CollectorResult`。顶层 Evidence Run 还会
+按 `call_id` 配对三个 Collector Agent-as-Tool 的结果并核对 `collector_code`。缺少调用
+边界、非法 arguments/envelope、重复 `call_id`、来源不一致或非法输出都会 fail closed。
 
-Commit Agent 物理上只看到 Planning Tools 和 Clarification Handoff，关闭
-`parallel_tool_calls` 且 `max_function_tool_concurrency=1`，只能串行创建 Task、
-发布 Plan、标记不支持或生成澄清问题。Collector 与 Planning Tool 不会出现在同一个
-Run 中，因此两类操作的隔离由代码保证，而不是仅依赖 Prompt。
+`CollectorResult.resource_refs` 是 EvidenceItem 引用的稳定去重并集，只表示调查涉及相应
+资源，不证明资源存在或状态正常。业务结论必须以 `evidence_items` 的 `arguments` 和
+`payload` 为主要依据；`summary` 和 `gaps` 只能辅助解释。Tool succeeded 但业务对象
+不存在仍是有效 Evidence。空 `evidence_items` 不代表任何状态已验证，当前也不持久化
+Evidence Graph。
+
+第一轮至少包含一个 succeeded EvidenceItem，且不存在 rejected/failed EvidenceItem 或
+gap 时，才直接进入 Commit。Evidence 为空、只有失败/拒绝结果或存在 gap 时运行
+GapHandler；这样纯 Capability 请求仍可由 GapHandler 放行给 Commit 判断 unsupported，
+依赖业务状态的请求则不能用空 Evidence 绕过前置判断。GapHandler 只看到
+`search_business_docs`、`list_evidence_tools` 和
+`find_evidence_tools`：
+
+- `business_docs/*.md` 描述业务规则、前置事实、推荐查询路径和明确能力边界，不是运行时
+  业务事实，也不使用向量数据库。常驻短 Service Map 使用代码内稳定文本，避免 Markdown
+  缺失阻断模块导入；详细查询按需读取该目录，部署时必须与应用源码一并保留，缺失时本轮
+  Planning fail closed。
+- Tool Registry 每次动态投影 Document、Context、Operations 现有 Collector Catalog 的
+  `ToolDescriptor`，不是第二份注册表；Business Docs 与 Registry 冲突时以后者为准。
+- Registry 只证明 Tool 已注册，真正查询仍受 `AgentToolContext` 的权限和 selected
+  Context Read Set 限制。
+
+`GapDecision` 只有 `COMMIT`、`COLLECT_MORE`、`RETRY`、`CLARIFICATION` 和
+`UNSUPPORTED` 五种动作。`COLLECT_MORE` 必须携带定向 `follow_up`，Runner 把第一轮完整
+历史和 follow-up 一并交给第二轮 Evidence；第二轮仍经过 GapHandler，但运行时禁止再次
+返回 `COLLECT_MORE`，因此最多补查一次。`RETRY` 必须有 `outcome=failed` 且
+`retryable=true` 的 Evidence 支持，并通过明确控制信号交给 Planning Application 复用
+`retry_pending` 和 Replan Outbox。非重试失败不能伪装成 RETRY；非法决策按 Planner
+系统失败收敛。
+
+GapHandler 的 `CLARIFICATION` 复用现有 `MarkPlanNeedsClarificationInput`、Clarification
+Request 和 Clarification Agent；Commit 的 `clarification_handoff` 仍保留，用于创建
+Task 时才暴露的用户意图或必要参数歧义。GapHandler 的 `UNSUPPORTED` 表示系统无法取得
+当前规划必需事实；Commit 的 `mark_plan_unsupported` 表示系统没有执行用户动作的
+Capability，两者语义分离。
+
+Commit Agent 物理上仍只看到 Planning Tools 和 Clarification Handoff，关闭
+`parallel_tool_calls` 且 `max_function_tool_concurrency=1`。它以前置 Gap 层已确认
+Evidence 足够为默认前提，只负责基于 Evidence 创建 Task、发布 Plan，或处理执行
+Capability 本身不支持和 Task 参数歧义。Collector、Gap 查询 Tool 与 Planning Tool
+不会暴露在同一个 Run 中。
 
 - 每个 Plan 必须包含 1～10 个 Task。
 - `sequence` 必须从 1 开始连续且唯一。
