@@ -22,6 +22,7 @@ class GapAction(str, Enum):
     COMMIT = "COMMIT"
     COLLECT_MORE = "COLLECT_MORE"
     RETRY = "RETRY"
+    SYSTEM_FAILURE = "SYSTEM_FAILURE"
     CLARIFICATION = "CLARIFICATION"
     UNSUPPORTED = "UNSUPPORTED"
 
@@ -116,15 +117,18 @@ gap。EvidenceItem 是实际查询事实，gap 只是 Collector 在该轮结束�
 - COLLECT_MORE：系统有已注册查询能力，但上一轮没有查询或查询策略不完整；follow_up
   必须只描述需要补充确认的事实，不得重复无关成功查询。
 - RETRY：查询路径正确，并且相关 Tool 本次 outcome=failed 且 retryable=true。
+- SYSTEM_FAILURE：查询能力已注册且查询路径正确，但相关 Tool 本次 outcome=failed 且
+  retryable=false，系统故障使当前无法安全继续。
 - CLARIFICATION：缺失的是用户语义，selected_context 仍无法唯一确定，且业务 Tool
   不能替用户回答；必须给出分类和用户需要补充的信息。
 - UNSUPPORTED：当前规划必需事实无法从 selected_context 获得，Business Docs 表明需要
   该事实，且 Registry 中没有任何可用查询能力。
 
 不得把业务查询失败转成向用户询问系统状态。outcome=failed 且 retryable=false 时不得
-自动 RETRY；先判断是否确实没有能力而应 UNSUPPORTED。若 Tool 已注册但非重试系统失败
-使你无法安全判断，不得伪装成 COMMIT、RETRY 或 UNSUPPORTED，应让本次结构化判断失败，
-由 Planning Application 按系统失败处理。
+自动 RETRY；Tool 已注册但不可重试的系统失败必须返回 SYSTEM_FAILURE，不得伪装成
+COMMIT、RETRY 或 UNSUPPORTED。Business Docs 未写清但 Registry 存在对应查询能力时，
+不得仅因文档缺失返回 UNSUPPORTED，应先使用该能力补查或依据实际 Tool 结果分类。
+Schema Error 只表示模型输出不符合 GapDecision 契约，不能作为业务控制流。
 
 collect_more_allowed=false 时绝不能返回 COLLECT_MORE。第一版最多只允许一次补查。
 """.strip()
@@ -163,23 +167,29 @@ def validate_gap_decision(
     decision: GapDecision,
     handler_input: GapHandlerInput,
 ) -> None:
-    """对 Prompt 无法强制的循环和 retry 语义做确定性校验。"""
+    """对 Prompt 无法强制的循环和失败分流语义做确定性校验。"""
     if (
         decision.action == GapAction.COLLECT_MORE
         and not handler_input.collect_more_allowed
     ):
         raise GapDecisionError("第二轮 Evidence 后禁止再次 COLLECT_MORE")
 
-    if decision.action != GapAction.RETRY:
+    if decision.action not in {
+        GapAction.RETRY,
+        GapAction.SYSTEM_FAILURE,
+    }:
         return
 
-    has_retryable_failure = any(
-        item.outcome == "failed" and item.retryable
+    expected_retryable = decision.action == GapAction.RETRY
+    has_matching_failure = any(
+        item.outcome == "failed" and item.retryable == expected_retryable
         for evidence_round in handler_input.evidence_rounds
         for result in evidence_round.collector_results
         for item in result.evidence_items
     )
-    if not has_retryable_failure:
+    if not has_matching_failure:
+        expected_value = "true" if expected_retryable else "false"
         raise GapDecisionError(
-            "RETRY 必须由 outcome=failed 且 retryable=true 的 Evidence 支持"
+            f"{decision.action.value} 必须由 outcome=failed 且 "
+            f"retryable={expected_value} 的 Evidence 支持"
         )

@@ -202,6 +202,10 @@ class PlannerAgentRunner:
             )
         if decision.action == GapAction.RETRY:
             raise PlanningRetryRequested(decision.reason)
+        if decision.action == GapAction.SYSTEM_FAILURE:
+            raise RuntimeError(
+                f"Planning 前置取证发生系统故障: {decision.reason}"
+            )
         if decision.action == GapAction.UNSUPPORTED:
             await _mark_gap_unsupported(context, decision.reason)
             return gap_result

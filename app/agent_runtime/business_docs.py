@@ -12,18 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 BUSINESS_DOCS_ROOT = Path(__file__).resolve().parents[2] / "business_docs"
 _TERM_PATTERN = re.compile(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]+")
-SERVICE_MAP_PROMPT = """
-本系统主要服务：
-
-- Document Processing：文档处理、切块、向量索引和流水线状态查询。
-- Context Management：Conversation、Turn、ContextChain、ResourceQueue 和 Context
-  Selection。
-- Operations：Workflow、Operation、Task Execution、Compensation、Recovery 和 Agent Tool
-  审计查询。
-
-Service Map 只帮助理解业务语境，不授予 Tool 权限，也不扩大 Context Selection 已确定的
-历史 Read Set。
-""".strip()
 
 
 class SearchBusinessDocsInput(BaseModel):
@@ -94,8 +82,15 @@ def _load_business_doc_sections() -> tuple[BusinessDocMatch, ...]:
 
 
 def load_service_map() -> str:
-    """返回不依赖运行时文件加载的常驻短 Service Map。"""
-    return SERVICE_MAP_PROMPT
+    """从唯一 Markdown 事实源加载常驻短 Service Map。"""
+    path = BUSINESS_DOCS_ROOT / "service_map.md"
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"Service Map 无法读取: {path}") from exc
+    if not content:
+        raise RuntimeError(f"Service Map 内容为空: {path}")
+    return content
 
 
 def search_business_docs_handler(

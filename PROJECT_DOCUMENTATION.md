@@ -186,21 +186,22 @@ GapHandler；这样纯 Capability 请求仍可由 GapHandler 放行给 Commit �
 `find_evidence_tools`：
 
 - `business_docs/*.md` 描述业务规则、前置事实、推荐查询路径和明确能力边界，不是运行时
-  业务事实，也不使用向量数据库。常驻短 Service Map 使用代码内稳定文本，避免 Markdown
-  缺失阻断模块导入；详细查询按需读取该目录，部署时必须与应用源码一并保留，缺失时本轮
-  Planning fail closed。
+  业务事实，也不使用向量数据库。`business_docs/service_map.md` 是 Context Agent 与
+  Planner 常驻短 Service Map 的唯一事实源，在进程启动时通过 `load_service_map()` 读取；
+  详细查询按需读取同一目录。部署时必须与应用源码一并保留，缺失或为空时启动 fail closed。
 - Tool Registry 每次动态投影 Document、Context、Operations 现有 Collector Catalog 的
   `ToolDescriptor`，不是第二份注册表；Business Docs 与 Registry 冲突时以后者为准。
 - Registry 只证明 Tool 已注册，真正查询仍受 `AgentToolContext` 的权限和 selected
   Context Read Set 限制。
 
-`GapDecision` 只有 `COMMIT`、`COLLECT_MORE`、`RETRY`、`CLARIFICATION` 和
-`UNSUPPORTED` 五种动作。`COLLECT_MORE` 必须携带定向 `follow_up`，Runner 把第一轮完整
-历史和 follow-up 一并交给第二轮 Evidence；第二轮仍经过 GapHandler，但运行时禁止再次
-返回 `COLLECT_MORE`，因此最多补查一次。`RETRY` 必须有 `outcome=failed` 且
-`retryable=true` 的 Evidence 支持，并通过明确控制信号交给 Planning Application 复用
-`retry_pending` 和 Replan Outbox。非重试失败不能伪装成 RETRY；非法决策按 Planner
-系统失败收敛。
+`GapDecision` 包含 `COMMIT`、`COLLECT_MORE`、`RETRY`、`SYSTEM_FAILURE`、
+`CLARIFICATION` 和 `UNSUPPORTED` 六种动作。`COLLECT_MORE` 必须携带定向 `follow_up`，
+Runner 把第一轮完整历史和 follow-up 一并交给第二轮 Evidence；第二轮仍经过 GapHandler，
+但运行时禁止再次返回 `COLLECT_MORE`，因此最多补查一次。`RETRY` 必须有
+`outcome=failed` 且 `retryable=true` 的 Evidence 支持；已注册 Tool 的
+`outcome=failed`、`retryable=false` 系统错误必须分类为 `SYSTEM_FAILURE`。两者都交给
+Planning Application 的失败恢复路径，GapHandler 不自行重试、等待或修改数据库状态。
+Schema Error 只表示模型输出不符合结构化契约，不作为业务控制流。
 
 GapHandler 的 `CLARIFICATION` 复用现有 `MarkPlanNeedsClarificationInput`、Clarification
 Request 和 Clarification Agent；Commit 的 `clarification_handoff` 仍保留，用于创建

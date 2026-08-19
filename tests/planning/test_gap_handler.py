@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from agents import ModelSettings
+from agents import ModelSettings, RunContextWrapper
 from agents.items import ToolCallItem, ToolCallOutputItem
 from pydantic import ValidationError
 
+from app.agent_runtime import business_docs as business_docs_module
 from app.agent_runtime.business_docs import (
+    BusinessDocMatch,
     SearchBusinessDocsInput,
+    load_service_map,
     search_business_docs_handler,
 )
+from app.agent_runtime.context import AgentToolContext, ContextToolServices
 from app.agent_runtime.tool_registry import (
     FindEvidenceToolsInput,
     ListEvidenceToolsInput,
@@ -36,6 +42,10 @@ from app.agents.planner import (
     ClarificationAgentOutput,
     build_planner_agent,
 )
+from app.modules.context.agent_tools.query_tools import (
+    get_context_chain_handler,
+)
+from app.modules.context.agent_tools.schemas import GetContextChainToolInput
 from app.modules.planning.application.dto import (
     PlannerContextInput,
     RunPlanningInput,
@@ -137,7 +147,20 @@ class GapHandlerRunnerTest(unittest.IsolatedAsyncioTestCase):
         )
         return _RunResult(
             new_items=[call, output],
-            history=[{"role": "user", "content": history_label}],
+            history=[
+                {"role": "user", "content": history_label},
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": "collect_document_information",
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": collector_result.model_dump_json(),
+                },
+            ],
         )
 
     @staticmethod
@@ -247,11 +270,17 @@ class GapHandlerRunnerTest(unittest.IsolatedAsyncioTestCase):
         )
         commit = _RunResult(final_output="committed")
 
+        pending_results = [first, collect_more, second, resolved, commit]
+
+        async def run_agent(_agent, agent_input, **_kwargs):
+            result = pending_results.pop(0)
+            if result is second:
+                result._history = [*agent_input, *result._history]
+            return result
+
         with mock.patch(
             "app.agents.planner.Runner.run",
-            new=mock.AsyncMock(
-                side_effect=[first, collect_more, second, resolved, commit]
-            ),
+            new=mock.AsyncMock(side_effect=run_agent),
         ) as run:
             result = await self.runner.run(
                 planner_input=self.planner_input,
@@ -269,6 +298,68 @@ class GapHandlerRunnerTest(unittest.IsolatedAsyncioTestCase):
         second_gap_input = json.loads(run.await_args_list[3].args[1])
         self.assertFalse(second_gap_input["collect_more_allowed"])
         self.assertEqual(len(second_gap_input["evidence_rounds"]), 2)
+
+        second_evidence_input = second_evidence_call.args[1]
+        commit_history = run.await_args_list[4].args[1]
+        positions = {
+            "round_1_call": next(
+                index
+                for index, item in enumerate(commit_history)
+                if item.get("call_id") == "outer-evidence-1"
+                and item.get("type") == "function_call"
+            ),
+            "round_1_output": next(
+                index
+                for index, item in enumerate(commit_history)
+                if item.get("call_id") == "outer-evidence-1"
+                and item.get("type") == "function_call_output"
+            ),
+            "follow_up": next(
+                index
+                for index, item in enumerate(commit_history)
+                if item.get("role") == "user"
+                and "Evidence Follow-up" in item.get("content", "")
+            ),
+            "round_2_marker": next(
+                index
+                for index, item in enumerate(commit_history)
+                if item == {"role": "user", "content": "evidence-2"}
+            ),
+            "round_2_call": next(
+                index
+                for index, item in enumerate(commit_history)
+                if item.get("call_id") == "outer-evidence-2"
+                and item.get("type") == "function_call"
+            ),
+            "round_2_output": next(
+                index
+                for index, item in enumerate(commit_history)
+                if item.get("call_id") == "outer-evidence-2"
+                and item.get("type") == "function_call_output"
+            ),
+        }
+        self.assertEqual(
+            list(positions.values()),
+            sorted(positions.values()),
+        )
+        self.assertEqual(
+            commit_history[: positions["round_2_marker"]],
+            second_evidence_input,
+        )
+        self.assertEqual(
+            json.loads(commit_history[positions["round_1_output"]]["output"])[
+                "collector_code"
+            ],
+            "document_collector",
+        )
+        self.assertEqual(
+            json.loads(commit_history[positions["round_2_output"]]["output"])[
+                "collector_code"
+            ],
+            "document_collector",
+        )
+        self.assertIn("Gap Decision", commit_history[-1]["content"])
+        self.assertIn('"action": "COMMIT"', commit_history[-1]["content"])
 
     async def test_retry_requires_retryable_failed_evidence(self) -> None:
         evidence = self._evidence_run(
@@ -336,6 +427,85 @@ class GapHandlerRunnerTest(unittest.IsolatedAsyncioTestCase):
                     context=mock.Mock(),
                 )
 
+    async def test_non_retryable_registered_tool_failure_is_system_failure(
+        self,
+    ) -> None:
+        registered = find_evidence_tools_handler(
+            FindEvidenceToolsInput(query="get_document_chunk_statistics")
+        )
+        self.assertIn(
+            "get_document_chunk_statistics",
+            {tool.descriptor.name for tool in registered.tools},
+        )
+        evidence = self._evidence_run(
+            self._collector_result(
+                gaps=["切块状态仍未知"],
+                evidence_items=[
+                    self._evidence_item(
+                        outcome="failed",
+                        retryable=False,
+                    )
+                ],
+            ),
+            history_label="evidence-1",
+        )
+        system_failure = self._gap_run(
+            GapDecision(
+                action=GapAction.SYSTEM_FAILURE,
+                reason="已注册查询发生不可自动恢复的系统错误",
+            )
+        )
+
+        with mock.patch(
+            "app.agents.planner.Runner.run",
+            new=mock.AsyncMock(side_effect=[evidence, system_failure]),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Planning 前置取证发生系统故障",
+            ):
+                await self.runner.run(
+                    planner_input=self.planner_input,
+                    context=mock.Mock(),
+                )
+
+    async def test_system_failure_requires_non_retryable_failed_evidence(
+        self,
+    ) -> None:
+        evidence = self._evidence_run(
+            self._collector_result(
+                gaps=["切块状态仍未知"],
+                evidence_items=[
+                    self._evidence_item(
+                        outcome="failed",
+                        retryable=True,
+                    )
+                ],
+            ),
+            history_label="evidence-1",
+        )
+        invalid_system_failure = self._gap_run(
+            GapDecision(
+                action=GapAction.SYSTEM_FAILURE,
+                reason="可重试失败不能归类为系统故障",
+            )
+        )
+
+        with mock.patch(
+            "app.agents.planner.Runner.run",
+            new=mock.AsyncMock(
+                side_effect=[evidence, invalid_system_failure]
+            ),
+        ):
+            with self.assertRaisesRegex(
+                GapDecisionError,
+                "retryable=false",
+            ):
+                await self.runner.run(
+                    planner_input=self.planner_input,
+                    context=mock.Mock(),
+                )
+
     async def test_ambiguous_user_reference_uses_existing_clarification_flow(
         self,
     ) -> None:
@@ -384,6 +554,12 @@ class GapHandlerRunnerTest(unittest.IsolatedAsyncioTestCase):
     async def test_unavailable_required_fact_marks_plan_unsupported(
         self,
     ) -> None:
+        self.assertEqual(
+            find_evidence_tools_handler(
+                FindEvidenceToolsInput(query="get_external_approval_status")
+            ).tools,
+            [],
+        )
         evidence = self._evidence_run(
             self._collector_result(gaps=["无法取得外部审批状态"]),
             history_label="evidence-1",
@@ -508,6 +684,34 @@ class GapHandlerRunnerTest(unittest.IsolatedAsyncioTestCase):
 
 
 class GapKnowledgeToolsTest(unittest.TestCase):
+    def test_service_map_markdown_is_the_only_runtime_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            docs_root = Path(temp_dir)
+            service_map_path = docs_root / "service_map.md"
+            service_map_path.write_text(
+                "# Service Map\n\nfirst version",
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                business_docs_module,
+                "BUSINESS_DOCS_ROOT",
+                docs_root,
+            ):
+                self.assertEqual(
+                    load_service_map(),
+                    "# Service Map\n\nfirst version",
+                )
+                service_map_path.write_text(
+                    "# Service Map\n\nsecond version",
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    load_service_map(),
+                    "# Service Map\n\nsecond version",
+                )
+
+        self.assertFalse(hasattr(business_docs_module, "SERVICE_MAP_PROMPT"))
+
     def test_business_docs_and_registry_resolve_chunk_query_path(self) -> None:
         docs = search_business_docs_handler(
             SearchBusinessDocsInput(query="如何确认 Document 的 chunk 状态")
@@ -546,6 +750,12 @@ class GapKnowledgeToolsTest(unittest.TestCase):
         )
         self.assertIn("Tool Registry 优先", GAP_HANDLER_INSTRUCTIONS)
         self.assertIn("不得扩大 Read Set", GAP_HANDLER_INSTRUCTIONS)
+        self.assertIn("SYSTEM_FAILURE", GAP_HANDLER_INSTRUCTIONS)
+        self.assertIn(
+            "Schema Error 只表示模型输出不符合 GapDecision 契约",
+            GAP_HANDLER_INSTRUCTIONS,
+        )
+        self.assertNotIn("应让本次结构化判断失败", GAP_HANDLER_INSTRUCTIONS)
 
     def test_business_docs_do_not_return_weakly_related_sections(self) -> None:
         result = search_business_docs_handler(
@@ -555,26 +765,98 @@ class GapKnowledgeToolsTest(unittest.TestCase):
         self.assertEqual(result.matches, [])
 
     def test_registry_wins_when_documented_query_tool_is_missing(self) -> None:
-        docs = search_business_docs_handler(
-            SearchBusinessDocsInput(query="如何确认 Document 的 chunk 状态")
+        documented_tool = BusinessDocMatch(
+            document="test.md",
+            heading="测试查询能力",
+            content="可调用 foo_query 查询必要事实。",
         )
-        self.assertTrue(
-            any(
-                "get_document_chunk_statistics" in match.content
-                for match in docs.matches
+        with mock.patch.object(
+            business_docs_module,
+            "_load_business_doc_sections",
+            return_value=(documented_tool,),
+        ):
+            docs = search_business_docs_handler(
+                SearchBusinessDocsInput(query="foo_query")
             )
-        )
+        self.assertEqual(docs.matches, [documented_tool])
 
         with mock.patch(
             "app.agent_runtime.tool_registry.list_evidence_tool_views",
             return_value=(),
         ):
             registry = find_evidence_tools_handler(
-                FindEvidenceToolsInput(query="get_document_chunk_statistics")
+                FindEvidenceToolsInput(query="foo_query")
             )
 
         self.assertEqual(registry.tools, [])
         self.assertIn("Tool Registry 优先", GAP_HANDLER_INSTRUCTIONS)
+        self.assertIn(
+            "系统有已注册查询能力",
+            GAP_HANDLER_INSTRUCTIONS,
+        )
+        self.assertIn(
+            "Registry 中没有任何可用查询能力",
+            GAP_HANDLER_INSTRUCTIONS,
+        )
+
+    def test_registry_capability_prevents_docs_only_unsupported(self) -> None:
+        with mock.patch.object(
+            business_docs_module,
+            "_load_business_doc_sections",
+            return_value=(),
+        ):
+            docs = search_business_docs_handler(
+                SearchBusinessDocsInput(query="get_context_chain")
+            )
+        registry = find_evidence_tools_handler(
+            FindEvidenceToolsInput(query="get_context_chain")
+        )
+
+        self.assertEqual(docs.matches, [])
+        self.assertIn(
+            "get_context_chain",
+            {tool.descriptor.name for tool in registry.tools},
+        )
+        self.assertIn(
+            "Business Docs 未写清但 Registry 存在对应查询能力",
+            GAP_HANDLER_INSTRUCTIONS,
+        )
+
+    def test_registered_context_tool_cannot_expand_selected_context(self) -> None:
+        registry = find_evidence_tools_handler(
+            FindEvidenceToolsInput(query="get_context_chain")
+        )
+        self.assertIn(
+            "get_context_chain",
+            {tool.descriptor.name for tool in registry.tools},
+        )
+        query_service = mock.Mock()
+        context = AgentToolContext(
+            trace_id="trace-1",
+            agent_run_id="run-1",
+            agent_name="planner",
+            conversation_id="conversation-1",
+            turn_id="turn-current",
+            task_id=None,
+            actor_code="planner_agent",
+            permissions=frozenset({"context:read"}),
+            document_services=mock.Mock(),
+            context_services=ContextToolServices(
+                query_service=query_service
+            ),
+            allowed_context_chain_ids=frozenset({"chain_A"}),
+            allowed_context_turn_ids=frozenset({"turn-current"}),
+            audit_logger=mock.Mock(),
+        )
+
+        output = get_context_chain_handler(
+            RunContextWrapper(context),
+            GetContextChainToolInput(chain_id="chain_B"),
+        )
+
+        self.assertEqual(output.outcome, "rejected")
+        self.assertEqual(output.result_code, "task_scope_violation")
+        query_service.get_context_chain.assert_not_called()
 
     def test_gap_decision_requires_action_specific_fields(self) -> None:
         with self.assertRaises(ValidationError):
@@ -633,6 +915,47 @@ class PlanningRetryRoutingTest(unittest.IsolatedAsyncioTestCase):
             "plan-1",
             "turn-1",
             "Evidence 查询临时失败",
+        )
+
+    async def test_system_failure_uses_planning_application_recovery(self) -> None:
+        runner = SimpleNamespace(
+            run=mock.AsyncMock(
+                side_effect=RuntimeError(
+                    "Planning 前置取证发生系统故障: 数据库查询失败"
+                )
+            )
+        )
+        use_case = RunPlanningUseCase(
+            ports=mock.Mock(),
+            planning_use_cases=mock.Mock(),
+            planner_runner=runner,
+            document_services=mock.Mock(),
+            context_services=mock.Mock(),
+            context_resource_service=mock.Mock(),
+            context_chain_mapper=mock.Mock(),
+            operations_services=mock.Mock(),
+        )
+        use_case._build_agent_context = mock.Mock(return_value=mock.Mock())
+        expected = mock.sentinel.planning_result
+        use_case._finish_from_database = mock.Mock(return_value=expected)
+
+        result = await use_case._run_existing_plan(
+            RunPlanningInput(
+                conversation_id="conversation-1",
+                turn_id="turn-1",
+            ),
+            "plan-1",
+            PlannerContextInput(
+                current_user_input="索引文档 7",
+                context_chains=[],
+            ),
+        )
+
+        self.assertIs(result, expected)
+        use_case._finish_from_database.assert_called_once_with(
+            "plan-1",
+            "turn-1",
+            "Planner Runner 或 Tool 执行发生系统异常",
         )
 
 
