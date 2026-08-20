@@ -64,6 +64,20 @@ class ContextSelectionMigrationTest(unittest.TestCase):
         statements = "\n".join(
             str(call.args[0]) for call in operations.execute.call_args_list
         )
+        self.assertIn(
+            "RENAME INDEX uq_context_route_decisions_turn "
+            "TO uq_context_selection_records_turn",
+            statements,
+        )
+        self.assertIn(
+            "RENAME INDEX idx_context_route_decisions_conversation_created "
+            "TO idx_context_selection_records_conversation_created",
+            statements,
+        )
+        operations.drop_constraint.assert_not_called()
+        operations.drop_index.assert_not_called()
+        operations.create_unique_constraint.assert_not_called()
+        operations.create_index.assert_not_called()
         self.assertIn("status = 'context_ready'", statements)
         self.assertIn("DELETE n FROM context_chain_nodes", statements)
         self.assertIn("DELETE c FROM context_chains", statements)

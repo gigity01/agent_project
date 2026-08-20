@@ -19,14 +19,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.rename_table("context_route_decisions", "context_selection_records")
-    op.drop_index(
-        "idx_context_route_decisions_conversation_created",
-        table_name="context_selection_records",
-    )
-    op.drop_constraint(
-        "uq_context_route_decisions_turn",
-        "context_selection_records",
-        type_="unique",
+    # MySQL 使用 current_turn_id 上的唯一索引支撑外键，不能先删除再重建。
+    # 原位重命名可在整个迁移期间持续保留外键所需的索引。
+    op.execute(
+        sa.text(
+            "ALTER TABLE context_selection_records "
+            "RENAME INDEX uq_context_route_decisions_turn "
+            "TO uq_context_selection_records_turn, "
+            "RENAME INDEX idx_context_route_decisions_conversation_created "
+            "TO idx_context_selection_records_conversation_created"
+        )
     )
     op.alter_column(
         "context_selection_records",
@@ -96,16 +98,6 @@ def upgrade() -> None:
     )
     op.drop_column("context_selection_records", "create_new_chain")
     op.drop_column("context_selection_records", "new_chain_id")
-    op.create_unique_constraint(
-        "uq_context_selection_records_turn",
-        "context_selection_records",
-        ["current_turn_id"],
-    )
-    op.create_index(
-        "idx_context_selection_records_conversation_created",
-        "context_selection_records",
-        ["conversation_id", "created_at"],
-    )
 
 
 def downgrade() -> None:

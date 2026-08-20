@@ -64,6 +64,7 @@ def build_context_chain(
             turn_id=turn.turn_id,
             conversation_id=turn.conversation_id,
             user_input=turn.user_input,
+            clarification_input=turn.clarification_input,
             assistant_content=turn.assistant_content,
             assistant_compact=turn.assistant_compact,
             task_ids=list(turn.task_ids or []),

@@ -55,6 +55,12 @@ class ChildChunk(Base):
 
 
 Index(
+    "idx_child_chunks_kb_id",
+    ChildChunk.kb_id,
+)
+
+
+Index(
     "idx_child_chunks_parent_chunk_index",
     ChildChunk.parent_id,
     ChildChunk.chunk_index,

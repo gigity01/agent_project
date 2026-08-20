@@ -33,6 +33,7 @@ class ConversationTurn(BaseModel):
     user_input: str
     assistant_content: str | None = None
     assistant_compact: str | None = None
+    clarification_input: str | None = None
     task_ids: list[str] = Field(default_factory=list)
     task_result_summary: str | None = None
     status: str

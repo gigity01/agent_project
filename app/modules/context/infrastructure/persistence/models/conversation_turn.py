@@ -17,6 +17,10 @@ class ConversationTurn(Base):
     turn_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String(100), nullable=False)
     user_input: Mapped[str] = mapped_column(Text, nullable=False)
+    clarification_input: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
     assistant_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     assistant_compact: Mapped[str | None] = mapped_column(Text, nullable=True)
     task_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)

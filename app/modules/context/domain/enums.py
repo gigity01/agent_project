@@ -19,6 +19,7 @@ class ContextTurnStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    NEEDS_CLARIFICATION = "needs_clarification"
 
 
 class ContextResourceAction(str, Enum):
