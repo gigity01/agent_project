@@ -4,6 +4,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Response
 
+from app.modules.clarification.application.errors import (
+    ClarificationApplicationError,
+)
 from app.modules.context.application.errors import (
     ContextApplicationError,
     ContextConflictError,
@@ -54,6 +57,7 @@ async def send_conversation_message(
             SendConversationMessageCommand(
                 conversation_id=conversation_id,
                 message=request.message,
+                source_turn_id=request.source_turn_id,
             )
         )
     except ContextApplicationError as exc:
@@ -62,6 +66,8 @@ async def send_conversation_message(
             detail=str(exc),
         ) from exc
     except PlanningApplicationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except ClarificationApplicationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if result.status in {"processing", "retry_pending"}:
         response.status_code = 202

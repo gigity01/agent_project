@@ -1,11 +1,11 @@
-"""Planner Evidence、Gap 判断、Commit 及其 SDK Runner 适配器。"""
+"""Planner Evidence、Gap 判断、Commit 及其 LangGraph 编排。"""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypedDict
 
 from agents import (
     Agent,
@@ -17,6 +17,8 @@ from agents import (
     ToolExecutionConfig,
     handoff,
 )
+from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 
 from app.agent_runtime.business_docs import load_service_map
@@ -50,6 +52,23 @@ PLANNER_EVIDENCE_MAX_FUNCTION_TOOL_CONCURRENCY = 3
 PLANNER_COMMIT_MAX_FUNCTION_TOOL_CONCURRENCY = 1
 
 
+class _PlannerWorkflowInput(TypedDict):
+    planner_input: PlannerContextInput
+
+
+class _PlannerWorkflowOutput(TypedDict):
+    final_result: Any
+
+
+class _PlannerWorkflowState(TypedDict, total=False):
+    planner_input: PlannerContextInput
+    evidence_rounds: list[EvidenceRound]
+    evidence_history: list[Any]
+    gap_result: Any
+    gap_decision: GapDecision
+    final_result: Any
+
+
 class ClarificationHandoffInput(BaseModel):
     clarification_kind: Literal[
         "resource",
@@ -67,7 +86,7 @@ class ClarificationAgentOutput(BaseModel):
 
 @dataclass(frozen=True)
 class PlannerAgentRunner:
-    """以同一上下文串联 Evidence、Gap 判断与 Commit。"""
+    """用进程内 StateGraph 串联 Evidence、Gap 判断与 Commit。"""
 
     evidence_agent: Agent[AgentToolContext]
     gap_handler_agent: Agent[AgentToolContext]
@@ -78,6 +97,10 @@ class PlannerAgentRunner:
     commit_run_config: RunConfig
     clarification_run_config: RunConfig
     max_turns: int = DEFAULT_PLANNER_MAX_TURNS
+    _workflow: Any = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_workflow", self._build_workflow())
 
     async def run(
         self,
@@ -85,10 +108,66 @@ class PlannerAgentRunner:
         planner_input: PlannerContextInput,
         context: AgentToolContext,
     ) -> Any:
+        result = await self._workflow.ainvoke(
+            {"planner_input": planner_input},
+            context=context,
+        )
+        return result["final_result"]
+
+    def _build_workflow(self) -> Any:
+        workflow = StateGraph(
+            _PlannerWorkflowState,
+            context_schema=AgentToolContext,
+            input_schema=_PlannerWorkflowInput,
+            output_schema=_PlannerWorkflowOutput,
+        )
+        workflow.add_node(
+            "collect_initial_evidence",
+            self._collect_initial_evidence,
+        )
+        workflow.add_node("assess_initial_gap", self._assess_initial_gap)
+        workflow.add_node(
+            "collect_follow_up_evidence",
+            self._collect_follow_up_evidence,
+        )
+        workflow.add_node("assess_final_gap", self._assess_final_gap)
+        workflow.add_node("commit_plan", self._commit_plan)
+        workflow.add_node("resolve_gap", self._resolve_gap)
+        workflow.add_edge(START, "collect_initial_evidence")
+        workflow.add_conditional_edges(
+            "collect_initial_evidence",
+            _route_initial_evidence,
+            {
+                "commit": "commit_plan",
+                "assess_gap": "assess_initial_gap",
+            },
+        )
+        workflow.add_conditional_edges(
+            "assess_initial_gap",
+            _route_initial_gap,
+            {
+                "collect_more": "collect_follow_up_evidence",
+                "resolve": "resolve_gap",
+            },
+        )
+        workflow.add_edge(
+            "collect_follow_up_evidence",
+            "assess_final_gap",
+        )
+        workflow.add_edge("assess_final_gap", "resolve_gap")
+        workflow.add_edge("commit_plan", END)
+        workflow.add_edge("resolve_gap", END)
+        return workflow.compile(name="planner_workflow")
+
+    async def _collect_initial_evidence(
+        self,
+        state: _PlannerWorkflowState,
+        runtime: Runtime[AgentToolContext],
+    ) -> dict[str, Any]:
         first_evidence_result = await Runner.run(
             self.evidence_agent,
-            planner_input.model_dump_json(indent=2),
-            context=context,
+            state["planner_input"].model_dump_json(indent=2),
+            context=runtime.context,
             max_turns=self.max_turns,
             run_config=self.evidence_run_config,
         )
@@ -101,30 +180,37 @@ class PlannerAgentRunner:
                 collector_results=first_collector_results,
             )
         ]
-        if _evidence_is_ready_for_commit(first_collector_results):
-            return await self._run_commit(
-                evidence_history=first_evidence_result.to_input_list(),
-                context=context,
-            )
+        return {
+            "evidence_rounds": evidence_rounds,
+            "evidence_history": first_evidence_result.to_input_list(),
+        }
 
+    async def _assess_initial_gap(
+        self,
+        state: _PlannerWorkflowState,
+        runtime: Runtime[AgentToolContext],
+    ) -> dict[str, Any]:
         first_gap_result, decision = await self._run_gap_handler(
-            planner_input=planner_input,
-            evidence_rounds=evidence_rounds,
+            planner_input=state["planner_input"],
+            evidence_rounds=state["evidence_rounds"],
             collect_more_allowed=True,
-            context=context,
+            context=runtime.context,
         )
-        if decision.action != GapAction.COLLECT_MORE:
-            return await self._resolve_gap_decision(
-                decision=decision,
-                gap_result=first_gap_result,
-                evidence_history=first_evidence_result.to_input_list(),
-                context=context,
-            )
+        return {
+            "gap_result": first_gap_result,
+            "gap_decision": decision,
+        }
 
+    async def _collect_follow_up_evidence(
+        self,
+        state: _PlannerWorkflowState,
+        runtime: Runtime[AgentToolContext],
+    ) -> dict[str, Any]:
+        decision = state["gap_decision"]
         second_evidence_result = await Runner.run(
             self.evidence_agent,
             _append_internal_message(
-                first_evidence_result.to_input_list(),
+                state["evidence_history"],
                 "Evidence Follow-up",
                 {
                     "instruction": decision.follow_up,
@@ -133,30 +219,64 @@ class PlannerAgentRunner:
                     ),
                 },
             ),
-            context=context,
+            context=runtime.context,
             max_turns=self.max_turns,
             run_config=self.evidence_run_config,
         )
-        evidence_rounds.append(
-            EvidenceRound(
-                round_number=2,
-                collector_results=extract_collector_results(
-                    second_evidence_result.new_items
+        return {
+            "evidence_rounds": [
+                *state["evidence_rounds"],
+                EvidenceRound(
+                    round_number=2,
+                    collector_results=extract_collector_results(
+                        second_evidence_result.new_items
+                    ),
                 ),
-            )
-        )
+            ],
+            "evidence_history": second_evidence_result.to_input_list(),
+        }
+
+    async def _assess_final_gap(
+        self,
+        state: _PlannerWorkflowState,
+        runtime: Runtime[AgentToolContext],
+    ) -> dict[str, Any]:
         second_gap_result, second_decision = await self._run_gap_handler(
-            planner_input=planner_input,
-            evidence_rounds=evidence_rounds,
+            planner_input=state["planner_input"],
+            evidence_rounds=state["evidence_rounds"],
             collect_more_allowed=False,
-            context=context,
+            context=runtime.context,
         )
-        return await self._resolve_gap_decision(
-            decision=second_decision,
-            gap_result=second_gap_result,
-            evidence_history=second_evidence_result.to_input_list(),
-            context=context,
-        )
+        return {
+            "gap_result": second_gap_result,
+            "gap_decision": second_decision,
+        }
+
+    async def _commit_plan(
+        self,
+        state: _PlannerWorkflowState,
+        runtime: Runtime[AgentToolContext],
+    ) -> dict[str, Any]:
+        return {
+            "final_result": await self._run_commit(
+                evidence_history=state["evidence_history"],
+                context=runtime.context,
+            )
+        }
+
+    async def _resolve_gap(
+        self,
+        state: _PlannerWorkflowState,
+        runtime: Runtime[AgentToolContext],
+    ) -> dict[str, Any]:
+        return {
+            "final_result": await self._resolve_gap_decision(
+                decision=state["gap_decision"],
+                gap_result=state["gap_result"],
+                evidence_history=state["evidence_history"],
+                context=runtime.context,
+            )
+        }
 
     async def _run_gap_handler(
         self,
@@ -239,6 +359,23 @@ class PlannerAgentRunner:
             max_turns=self.max_turns,
             run_config=self.commit_run_config,
         )
+
+
+def _route_initial_evidence(
+    state: _PlannerWorkflowState,
+) -> Literal["commit", "assess_gap"]:
+    first_round = state["evidence_rounds"][0]
+    if _evidence_is_ready_for_commit(first_round.collector_results):
+        return "commit"
+    return "assess_gap"
+
+
+def _route_initial_gap(
+    state: _PlannerWorkflowState,
+) -> Literal["collect_more", "resolve"]:
+    if state["gap_decision"].action == GapAction.COLLECT_MORE:
+        return "collect_more"
+    return "resolve"
 
 
 def _evidence_is_ready_for_commit(results: list[CollectorResult]) -> bool:

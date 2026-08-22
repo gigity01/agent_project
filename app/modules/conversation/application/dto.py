@@ -12,6 +12,11 @@ class SendConversationMessageCommand(BaseModel):
 
     conversation_id: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1)
+    source_turn_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+    )
 
 
 class ContextSelectionMetadata(BaseModel):

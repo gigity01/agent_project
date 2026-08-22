@@ -21,7 +21,9 @@ from app.modules.planning.application.dto import (
     CreatePlanInput,
     CreateProcessDocumentTaskInput,
     FinalizePlanInput,
+    MarkPlanNeedsClarificationInput,
     MarkPlanUnsupportedInput,
+    SetClarificationQuestionInput,
 )
 from app.modules.planning.application.errors import PlanningApplicationError
 from app.modules.planning.application.ports import PlanningApplicationPorts
@@ -200,6 +202,46 @@ class PlanningUseCasesTest(unittest.TestCase):
         self.assertEqual(raised.exception.result_code, "plan_state_conflict")
         with self.session_factory() as session:
             self.assertEqual(session.query(Task).count(), 0)
+
+    def test_clarification_marks_turn_and_persists_question_atomically(
+        self,
+    ) -> None:
+        plan = self.use_cases.create_plan.execute(
+            CreatePlanInput(turn_id="turn-1")
+        )
+
+        self.use_cases.mark_plan_needs_clarification.execute(
+            MarkPlanNeedsClarificationInput(
+                plan_id=plan.plan_id,
+                conversation_id="conversation-1",
+                kind="resource",
+                reason="文档不唯一",
+                required_information=["document_id"],
+            )
+        )
+        question = self.use_cases.set_clarification_question.execute(
+            SetClarificationQuestionInput(
+                plan_id=plan.plan_id,
+                question="请确认要处理哪一个文档？",
+            )
+        )
+
+        self.assertEqual(question, "请确认要处理哪一个文档？")
+        with self.session_factory() as session:
+            stored_plan = session.get(Plan, plan.plan_id)
+            stored_turn = session.get(ConversationTurn, "turn-1")
+            request = session.query(ClarificationRequest).one()
+            self.assertEqual(stored_plan.status, "needs_clarification")
+            self.assertEqual(stored_turn.status, "needs_clarification")
+            self.assertEqual(
+                stored_turn.assistant_content,
+                "请确认要处理哪一个文档？",
+            )
+            self.assertEqual(request.status, "open")
+            self.assertEqual(request.source_turn_id, "turn-1")
+
+        self.assertEqual(self.uow_factory.instances[-2].commit_calls, 1)
+        self.assertEqual(self.uow_factory.instances[-1].commit_calls, 1)
 
     def test_task_count_and_sequence_invariants_are_enforced(self) -> None:
         plan = self.use_cases.create_plan.execute(

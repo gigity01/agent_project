@@ -18,6 +18,10 @@ class ClarificationRequest(Base):
             "source_plan_id",
             name="uq_clarification_requests_source_plan",
         ),
+        UniqueConstraint(
+            "source_turn_id",
+            name="uq_clarification_requests_source_turn",
+        ),
     )
 
     clarification_id: Mapped[str] = mapped_column(String(100), primary_key=True)

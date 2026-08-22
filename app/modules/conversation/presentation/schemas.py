@@ -9,6 +9,11 @@ from app.modules.conversation.application.dto import ContextSelectionMetadata
 
 class SendMessageRequest(BaseModel):
     message: str = Field(min_length=1)
+    source_turn_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+    )
 
 
 class SendMessageResponse(BaseModel):

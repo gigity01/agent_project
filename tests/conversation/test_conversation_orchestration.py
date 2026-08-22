@@ -90,7 +90,7 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(command.attribution.create_new_chain)
 
-    async def test_clarification_question_completes_source_turn(self) -> None:
+    async def test_clarification_question_keeps_source_turn_open(self) -> None:
         self.planning.execute.return_value = RunPlanningResult(
             plan_id="plan-question",
             turn_id="turn-1",
@@ -110,10 +110,31 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
             result.assistant_message,
             "请确认要处理哪一个文档？",
         )
-        command = self.context.complete_turn.await_args.args[1]
-        self.assertEqual(command.task_ids, [])
-        self.assertEqual(command.attribution.existing_chain_ids, [])
-        self.assertTrue(command.attribution.create_new_chain)
+        self.context.complete_turn.assert_not_awaited()
+
+    async def test_clarification_answer_reuses_source_turn_and_queues_replan(
+        self,
+    ) -> None:
+        self.answer.execute.return_value = "plan-question"
+
+        result = await self.use_case.execute(
+            SendConversationMessageCommand(
+                conversation_id="conversation-1",
+                message="文档 7",
+                source_turn_id="turn-question",
+            )
+        )
+
+        self.assertEqual(result.status, "retry_pending")
+        self.assertEqual(result.turn_id, "turn-question")
+        self.assertEqual(result.plan_id, "plan-question")
+        self.context.send_message.assert_not_awaited()
+        self.planning.execute.assert_not_awaited()
+        self.answer.execute.assert_called_once_with(
+            conversation_id="conversation-1",
+            source_turn_id="turn-question",
+            answer="文档 7",
+        )
 
 
 if __name__ == "__main__":

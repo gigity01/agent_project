@@ -30,6 +30,17 @@ class ClarificationRepository:
             .first()
         )
 
+    def get_by_source_turn_id_for_update(
+        self,
+        source_turn_id: str,
+    ) -> ClarificationRequest | None:
+        return (
+            self.db.query(ClarificationRequest)
+            .filter(ClarificationRequest.source_turn_id == source_turn_id)
+            .with_for_update()
+            .first()
+        )
+
     def get_by_plan_id(self, plan_id: str) -> ClarificationRequest | None:
         return (
             self.db.query(ClarificationRequest)

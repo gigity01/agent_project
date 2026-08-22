@@ -465,9 +465,15 @@ class _MarkPlanUseCase:
                 if clarification is not None:
                     clarification.status = ClarificationStatus.EXPIRED.value
                     clarification.resolved_at = datetime.now()
-                turn = uow.conversation_turns.get_by_id(plan.turn_id)
+                turn = uow.conversation_turns.get_by_id_for_update(
+                    plan.turn_id
+                )
                 if turn is None:
                     raise _turn_not_found()
+                uow.conversation_turns.set_status(
+                    turn,
+                    ContextTurnStatus.PROCESSING.value,
+                )
                 uow.outbox.add(
                     _new_outbox_event(
                         self._ports,
@@ -525,10 +531,24 @@ class MarkPlanNeedsClarificationUseCase:
                     "Clarification 会话归属不一致",
                     result_code="clarification_conversation_conflict",
                 )
-            if uow.clarifications.get_by_plan_id(plan.plan_id) is not None:
+            if turn.status not in {
+                ContextTurnStatus.CONTEXT_READY.value,
+                ContextTurnStatus.PROCESSING.value,
+            }:
                 raise PlanningApplicationError(
                     409,
-                    "Plan 已存在 ClarificationRequest",
+                    "Conversation Turn 当前状态不允许标记需要澄清",
+                    result_code="turn_state_conflict",
+                )
+            if (
+                uow.clarifications.get_by_source_turn_id_for_update(
+                    plan.turn_id
+                )
+                is not None
+            ):
+                raise PlanningApplicationError(
+                    409,
+                    "Conversation Turn 已存在 ClarificationRequest",
                     result_code="clarification_conflict",
                 )
             uow.plans.set_status(
@@ -536,6 +556,10 @@ class MarkPlanNeedsClarificationUseCase:
                 status=PlanStatus.NEEDS_CLARIFICATION.value,
                 failure_code="clarification_required",
                 failure_reason=command.reason,
+            )
+            uow.conversation_turns.set_status(
+                turn,
+                ContextTurnStatus.NEEDS_CLARIFICATION.value,
             )
             uow.clarifications.add(
                 self._ports.clarification_request_factory(
@@ -577,13 +601,25 @@ class SetClarificationQuestionUseCase:
                     "ClarificationRequest 不存在",
                     result_code="clarification_not_found",
                 )
+            turn = uow.conversation_turns.get_by_id_for_update(plan.turn_id)
+            if turn is None:
+                raise _turn_not_found()
             if plan.status != PlanStatus.NEEDS_CLARIFICATION.value:
                 raise PlanningApplicationError(
                     409,
                     "Plan 当前不等待澄清",
                     result_code="plan_state_conflict",
                 )
+            if turn.status != ContextTurnStatus.NEEDS_CLARIFICATION.value:
+                raise PlanningApplicationError(
+                    409,
+                    "Conversation Turn 当前不等待澄清",
+                    result_code="turn_state_conflict",
+                )
             request.question = command.question
+            turn.assistant_content = command.question
+            turn.assistant_compact = command.question
+            turn.task_result_summary = "等待用户补充信息"
             uow.commit()
             return request.question
 

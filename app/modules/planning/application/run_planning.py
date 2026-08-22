@@ -65,6 +65,18 @@ class _PlannableSnapshot:
     chains: list[_PlanningChainSnapshot]
 
 
+def _compose_current_user_input(
+    user_input: str,
+    clarification_input: str | None,
+) -> str:
+    if clarification_input is None:
+        return user_input
+    return (
+        f"原始用户请求：\n{user_input}\n\n"
+        f"用户对澄清问题的补充：\n{clarification_input}"
+    )
+
+
 class RunPlanningUseCase:
     """创建新 Plan、运行 Agent，并以数据库状态结束本轮规划。"""
 
@@ -277,7 +289,10 @@ class RunPlanningUseCase:
                     )
                 )
             return _PlannableSnapshot(
-                current_user_input=turn.user_input,
+                current_user_input=_compose_current_user_input(
+                    turn.user_input,
+                    turn.clarification_input,
+                ),
                 chains=chains,
             )
 

@@ -1,4 +1,4 @@
-"""Clarification 跨 Turn 回答与 Replan 新 revision 测试。"""
+"""Clarification 在源 Turn 回答并创建 Replan revision 的测试。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ from app.infrastructure.database.uow import SQLAlchemyUnitOfWork
 from app.modules.clarification.application.answer import (
     AnswerClarificationUseCase,
 )
+from app.modules.clarification.application.errors import (
+    ClarificationApplicationError,
+)
 from app.modules.clarification.infrastructure.persistence.models import (
     ClarificationRequest,
 )
@@ -30,6 +33,9 @@ from app.modules.planning.application.ports import PlanningApplicationPorts
 from app.modules.planning.application.replan import (
     ReplanRequested,
     ReplanUseCase,
+)
+from app.modules.planning.application.run_planning import (
+    _compose_current_user_input,
 )
 from app.modules.planning.domain.enums import PlanStatus
 from app.modules.planning.infrastructure.persistence.models import (
@@ -85,14 +91,7 @@ class ReplanClarificationTest(unittest.IsolatedAsyncioTestCase):
                         user_input="处理那个文档",
                         assistant_content="请确认文档。",
                         task_ids=[],
-                        status="completed",
-                    ),
-                    ConversationTurn(
-                        turn_id="turn-answer",
-                        conversation_id="conversation-1",
-                        user_input="文档 7",
-                        task_ids=[],
-                        status="context_ready",
+                        status="needs_clarification",
                     ),
                 ]
             )
@@ -141,16 +140,18 @@ class ReplanClarificationTest(unittest.IsolatedAsyncioTestCase):
         )
         source_plan_id = answer.execute(
             conversation_id="conversation-1",
-            answer_turn_id="turn-answer",
+            source_turn_id="turn-question",
+            answer="文档 7",
         )
         self.assertEqual(source_plan_id, "plan-question")
         with self.session_factory() as session:
             event = session.query(OutboxEvent).one()
             request = session.get(ClarificationRequest, "clarification-1")
-            answer_turn = session.get(ConversationTurn, "turn-answer")
+            source_turn = session.get(ConversationTurn, "turn-question")
             self.assertEqual(request.status, "answered")
-            self.assertEqual(request.answer_turn_id, "turn-answer")
-            self.assertEqual(answer_turn.status, "processing")
+            self.assertEqual(request.answer_turn_id, "turn-question")
+            self.assertEqual(source_turn.clarification_input, "文档 7")
+            self.assertEqual(source_turn.status, "processing")
 
         runner = _RunPlanning()
         ports = PlanningApplicationPorts(
@@ -174,10 +175,89 @@ class ReplanClarificationTest(unittest.IsolatedAsyncioTestCase):
                 session.query(Plan).filter(Plan.revision == 2).one()
             )
             self.assertEqual(old_plan.status, "superseded")
-            self.assertEqual(new_plan.turn_id, "turn-answer")
+            self.assertEqual(new_plan.turn_id, "turn-question")
             self.assertEqual(new_plan.workflow_id, "workflow-1")
             self.assertEqual(new_plan.parent_plan_id, "plan-question")
             self.assertEqual(session.query(InboxEvent).count(), 1)
+
+    async def test_answer_cannot_be_submitted_twice(self) -> None:
+        answer = AnswerClarificationUseCase(
+            uow_factory=lambda: SQLAlchemyUnitOfWork(self.session_factory),
+            outbox_event_factory=OutboxEvent,
+        )
+        answer.execute(
+            conversation_id="conversation-1",
+            source_turn_id="turn-question",
+            answer="文档 7",
+        )
+
+        with self.assertRaises(ClarificationApplicationError) as raised:
+            answer.execute(
+                conversation_id="conversation-1",
+                source_turn_id="turn-question",
+                answer="文档 8",
+            )
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(
+            str(raised.exception),
+            "Clarification 当前状态不允许回答",
+        )
+
+        with self.session_factory() as session:
+            self.assertEqual(session.query(OutboxEvent).count(), 1)
+
+    async def test_invalid_answer_is_rejected_without_writing_event(self) -> None:
+        answer = AnswerClarificationUseCase(
+            uow_factory=lambda: SQLAlchemyUnitOfWork(self.session_factory),
+            outbox_event_factory=OutboxEvent,
+        )
+
+        with self.assertRaises(ClarificationApplicationError) as raised:
+            answer.execute(
+                conversation_id="conversation-1",
+                source_turn_id="turn-question",
+                answer="   ",
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+
+        with self.session_factory() as session:
+            request = session.get(ClarificationRequest, "clarification-1")
+            self.assertEqual(request.status, "open")
+            self.assertEqual(session.query(OutboxEvent).count(), 0)
+
+    async def test_unknown_source_turn_is_not_found(self) -> None:
+        answer = AnswerClarificationUseCase(
+            uow_factory=lambda: SQLAlchemyUnitOfWork(self.session_factory),
+            outbox_event_factory=OutboxEvent,
+        )
+
+        with self.assertRaises(ClarificationApplicationError) as raised:
+            answer.execute(
+                conversation_id="conversation-1",
+                source_turn_id="turn-missing",
+                answer="文档 7",
+            )
+        self.assertEqual(raised.exception.status_code, 404)
+
+    async def test_cross_conversation_answer_is_not_found(self) -> None:
+        answer = AnswerClarificationUseCase(
+            uow_factory=lambda: SQLAlchemyUnitOfWork(self.session_factory),
+            outbox_event_factory=OutboxEvent,
+        )
+
+        with self.assertRaises(ClarificationApplicationError) as raised:
+            answer.execute(
+                conversation_id="conversation-other",
+                source_turn_id="turn-question",
+                answer="文档 7",
+            )
+        self.assertEqual(raised.exception.status_code, 404)
+
+    def test_planner_input_contains_original_request_and_clarification(self) -> None:
+        combined = _compose_current_user_input("处理那个文档", "文档 7")
+
+        self.assertIn("原始用户请求：\n处理那个文档", combined)
+        self.assertIn("用户对澄清问题的补充：\n文档 7", combined)
 
 
 if __name__ == "__main__":

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import httpx
 from fastapi import FastAPI
-from types import SimpleNamespace
 
 from app.bootstrap.dependencies import get_container
+from app.modules.clarification.application.errors import (
+    ClarificationApplicationError,
+)
 from app.modules.conversation.presentation.router import router
 from app.modules.conversation.presentation.dependencies import (
     get_send_conversation_message,
@@ -93,6 +96,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
             SendConversationMessageCommand(
                 conversation_id="conv_test_001",
                 message="继续完善之前的文档处理日志方案",
+                source_turn_id=None,
             )
         )
 
@@ -159,7 +163,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 422)
 
-    async def test_request_schema_exposes_only_message(self) -> None:
+    async def test_request_schema_exposes_optional_source_turn_id(self) -> None:
         schema = self.app.openapi()
         request_schema = schema["components"]["schemas"][
             "SendMessageRequest"
@@ -167,9 +171,59 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             set(request_schema["properties"]),
-            {"message"},
+            {"message", "source_turn_id"},
         )
         self.assertEqual(request_schema["required"], ["message"])
+
+    async def test_source_turn_id_is_adapted_for_clarification_answer(
+        self,
+    ) -> None:
+        self.use_case.execute.return_value = SendConversationMessageResult(
+            conversation_id="conv_test_001",
+            turn_id="turn-question",
+            plan_id="plan-question",
+            status="retry_pending",
+        )
+
+        response = await self._post(
+            "/api/conversations/conv_test_001/messages",
+            json={
+                "message": "文档 7",
+                "source_turn_id": "turn-question",
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        self.use_case.execute.assert_awaited_once_with(
+            SendConversationMessageCommand(
+                conversation_id="conv_test_001",
+                message="文档 7",
+                source_turn_id="turn-question",
+            )
+        )
+
+    async def test_clarification_errors_are_mapped_to_safe_4xx(self) -> None:
+        cases = [
+            (400, "Clarification 回答不能为空"),
+            (404, "Clarification 不存在"),
+            (409, "Clarification 当前状态不允许回答"),
+        ]
+
+        for status_code, detail in cases:
+            with self.subTest(status_code=status_code):
+                self.use_case.execute.side_effect = (
+                    ClarificationApplicationError(status_code, detail)
+                )
+                response = await self._post(
+                    "/api/conversations/conv_test_001/messages",
+                    json={
+                        "message": "文档 7",
+                        "source_turn_id": "turn-question",
+                    },
+                )
+
+                self.assertEqual(response.status_code, status_code)
+                self.assertEqual(response.json(), {"detail": detail})
 
 
 if __name__ == "__main__":

@@ -39,6 +39,20 @@ class SendConversationMessageUseCase:
         self,
         command: SendConversationMessageCommand,
     ) -> SendConversationMessageResult:
+        if command.source_turn_id is not None:
+            plan_id = await asyncio.to_thread(
+                self._answer_clarification.execute,
+                conversation_id=command.conversation_id,
+                source_turn_id=command.source_turn_id,
+                answer=command.message,
+            )
+
+            return SendConversationMessageResult(
+                conversation_id=command.conversation_id,
+                turn_id=command.source_turn_id,
+                plan_id=plan_id,
+                status="retry_pending",
+            )
         selection = await self._context_service.send_message(
             SendMessageCommand(
                 conversation_id=command.conversation_id,
@@ -57,20 +71,6 @@ class SendConversationMessageUseCase:
         fallback_attribution = build_read_set_fallback_attribution(
             selection.decision.relevant_chain_ids
         )
-        clarification_plan_id = await asyncio.to_thread(
-            self._answer_clarification.execute,
-            conversation_id=command.conversation_id,
-            answer_turn_id=selection.turn_id,
-        )
-        if clarification_plan_id is not None:
-            return SendConversationMessageResult(
-                conversation_id=command.conversation_id,
-                turn_id=selection.turn_id,
-                plan_id=clarification_plan_id,
-                status="retry_pending",
-                context_selection=selection_metadata,
-            )
-
         planning = await self._run_planning.execute(
             RunPlanningInput(
                 conversation_id=selection.conversation_id,
@@ -111,16 +111,6 @@ class SendConversationMessageUseCase:
             question = planning.clarification_question
             if not question:
                 raise RuntimeError("Clarification Agent 未生成问题")
-            await self._context_service.complete_turn(
-                selection.turn_id,
-                CompleteTurnCommand(
-                    assistant_content=question,
-                    assistant_compact=question,
-                    task_ids=[],
-                    task_result_summary="等待用户补充信息",
-                    attribution=fallback_attribution,
-                ),
-            )
             return SendConversationMessageResult(
                 conversation_id=selection.conversation_id,
                 turn_id=selection.turn_id,
