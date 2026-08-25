@@ -24,6 +24,12 @@ from app.modules.task_runtime.application.schemas import (
 
 
 class ProcessDocumentOperationCompensator:
+    """文档处理（Process）副作用补偿适配器。
+
+    在获取 MySQL `document:process:{document_id}` 围栏锁后校验 ownership，
+    清理当前 operation_id 生成的临时 staging 目录并释放文档所有权。
+    """
+
     def __init__(self, compensator: ProcessDocumentCompensator) -> None:
         self._compensator = compensator
 

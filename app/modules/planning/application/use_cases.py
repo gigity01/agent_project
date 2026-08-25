@@ -225,6 +225,8 @@ class _CreateDocumentTaskUseCase:
 
 
 class CreateProcessDocumentTaskUseCase(_CreateDocumentTaskUseCase):
+    """为指定 Plan 创建文档处理（Process）Task 的用例。"""
+
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         super().__init__(
             ports=ports,
@@ -236,6 +238,8 @@ class CreateProcessDocumentTaskUseCase(_CreateDocumentTaskUseCase):
 
 
 class CreateBuildChunksTaskUseCase(_CreateDocumentTaskUseCase):
+    """为指定 Plan 创建文档父子切块（Build Chunks）Task 的用例。"""
+
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         super().__init__(
             ports=ports,
@@ -247,6 +251,8 @@ class CreateBuildChunksTaskUseCase(_CreateDocumentTaskUseCase):
 
 
 class CreateIndexVectorsTaskUseCase(_CreateDocumentTaskUseCase):
+    """为指定 Plan 创建文档向量索引（Index Vectors）Task 的用例。"""
+
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         super().__init__(
             ports=ports,
@@ -258,12 +264,20 @@ class CreateIndexVectorsTaskUseCase(_CreateDocumentTaskUseCase):
 
 
 class FinalizePlanUseCase:
-    """原子发布 draft Tasks，并把真实 task_id 写回 Turn。"""
+    """原子发布 draft Tasks，校验 DAG 约束，并将状态与 Outbox 唤醒事件落盘。
+
+    发布约束：
+    1. Task 数量必须为 1 ~ 10 个。
+    2. sequence 必须从 1 开始严格单调递增且连续。
+    3. DAG 校验：依赖边必须合法、无环、最大深度不超过 3。
+    4. 单一事务内原子将 Plan 推进至 PROCESSING、全部 Task 转为 PENDING、写入依赖边表、更新 Turn 状态及追加首个 `runtime.plan_wakeup` Outbox 事件。
+    """
 
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         self._ports = ports
 
     def execute(self, command: FinalizePlanInput) -> FinalizePlanResult:
+        """执行 Plan 发布与校验流程。"""
         with self._ports.uow_factory() as uow:
             plan = uow.plans.get_by_id_for_update(command.plan_id)
             if plan is None:

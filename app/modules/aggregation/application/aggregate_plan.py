@@ -29,11 +29,21 @@ class _AggregationSnapshot:
 
 
 class AggregatePlanUseCase:
+    """聚合已完成 Plan 执行结果的用例。
+
+    主流程：
+    1. 从数据库读取所有成功 Task 的产出摘要与涉及的资源引用（稳定去重）。
+    2. 生成确定性执行事实摘要字符串（非 RAG 问答）。
+    3. 若该 Turn 存在已回答的 ClarificationRequest，原子标记为 RESOLVED。
+    4. 调用 ContextService.complete_turn 完成 Turn，在关联的上下文链上创建节点并刷新热资源队列。
+    """
+
     def __init__(self, *, uow_factory, context_service) -> None:
         self._uow_factory = uow_factory
         self._context_service = context_service
 
     async def execute(self, plan_id: str):
+        """执行 Plan 结果聚合并完成 Context 回写。"""
         snapshot = await asyncio.to_thread(self._load_snapshot, plan_id)
         summary = "；".join(snapshot.summaries)
         assistant_content = f"已完成 {len(snapshot.task_ids)} 项任务。{summary}"

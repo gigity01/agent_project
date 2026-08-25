@@ -4,10 +4,16 @@ from app.modules.conversation.application.dto import TurnStatusResult
 
 
 class GetTurnStatusUseCase:
+    """读取指定 Conversation Turn 及其最新 Plan revision 执行状态的只读用例。
+
+    供客户端通过 GET /api/conversations/{conversation_id}/turns/{turn_id} 轮询异步任务进度与最终助手结果。
+    """
+
     def __init__(self, uow_factory) -> None:
         self._uow_factory = uow_factory
 
     def execute(self, conversation_id: str, turn_id: str) -> TurnStatusResult:
+        """查询 Turn、关联的最新 Plan revision 状态及任务 ID 列表。"""
         with self._uow_factory() as uow:
             turn = uow.conversation_turns.get_by_id(turn_id)
             if turn is None or turn.conversation_id != conversation_id:

@@ -46,6 +46,11 @@ async def _execute_document_use_case(call):
 
 
 class DeterministicProcessDocumentExecutor:
+    """未配置 Agent Provider 时的确定性文档处理（Process）后备执行器。
+
+    在线程池中调用 ProcessDocumentUseCase，并通过 await_side_effect_quiescence 保证超时时同步 Use Case 执行完全排空后才传播取消。
+    """
+
     def __init__(self, use_case) -> None:
         self._use_case = use_case
 
@@ -54,6 +59,7 @@ class DeterministicProcessDocumentExecutor:
         payload: BaseModel,
         context: TaskRuntimeContext,
     ) -> TaskExecutorResult:
+        """执行文档处理，并返回标准 TaskExecutorResult。"""
         validated = ProcessDocumentTaskPayload.model_validate(payload)
         result = await _execute_document_use_case(
             lambda: self._use_case.execute(

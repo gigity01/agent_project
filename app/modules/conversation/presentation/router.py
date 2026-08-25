@@ -52,6 +52,13 @@ async def send_conversation_message(
     response: Response,
     use_case=Depends(get_send_conversation_message),
 ) -> SendMessageResponse:
+    """接收用户消息或针对澄清提问的回复，执行上下文路由与规划。
+
+    响应状态码规则：
+    - HTTP 202 Accepted: 规划成功并已发布异步 Plan（status 为 processing 或 retry_pending），客户端需通过 Turn 查询接口轮询结果。
+    - HTTP 200 OK: 即时返回非异步终态（needs_clarification、unsupported 或 failed）。
+    - HTTP 400/404/409/502: 对应的参数校验、资源不存在、并发锁冲突或外部路由失败异常。
+    """
     try:
         result = await use_case.execute(
             SendConversationMessageCommand(
@@ -83,6 +90,7 @@ def get_conversation_turn_status(
     turn_id: Annotated[str, Path(min_length=1, max_length=100)],
     use_case=Depends(get_turn_status),
 ) -> TurnStatusResponse:
+    """查询指定 Turn 的当前状态、关联的最新 Plan Revision 及任务执行结果。"""
     try:
         return TurnStatusResponse.model_validate(
             use_case.execute(conversation_id, turn_id)

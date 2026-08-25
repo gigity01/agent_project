@@ -12,10 +12,13 @@ from app.modules.document.domain.enums import (
 
 
 class GetKnowledgeBaseStatisticsUseCase:
+    """统计指定知识库内文档、生命周期、父子块与向量索引总体分布的只读用例。"""
+
     def __init__(self, *, uow_factory: Callable[[], Any]) -> None:
         self._uow_factory = uow_factory
 
     def execute(self, kb_id: int) -> KnowledgeBaseStatisticsResult:
+        """执行统计并返回知识库级整体文档与索引统计数据。"""
         with self._uow_factory() as uow:
             knowledge_base = uow.knowledge_bases.get_by_id(kb_id)
             if knowledge_base is None:

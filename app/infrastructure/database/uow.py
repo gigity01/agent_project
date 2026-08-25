@@ -1,3 +1,9 @@
+"""SQLAlchemy 事务工作单元实现（Unit of Work 模式）。
+
+集中管理数据库 Session 的生命周期与跨模块 Repository 实例，
+保证多仓储写操作在单一数据库事务内原子提交或回滚。
+"""
+
 from collections.abc import Callable
 from types import TracebackType
 
@@ -51,15 +57,21 @@ SessionFactory = Callable[[], Session]
 
 
 class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
-    """基于 SQLAlchemy Session 的工作单元。"""
+    """基于 SQLAlchemy Session 的工作单元实现。"""
 
     def __init__(self, session_factory: SessionFactory = session_local) -> None:
+        """初始化工作单元。
+
+        Args:
+            session_factory: 数据库会话工厂，默认绑定 session_local。
+        """
         self._session_factory = session_factory
         self._committed = False
         self._rolled_back = False
         self.session: Session | None = None
 
     def __enter__(self) -> "SQLAlchemyUnitOfWork":
+        """进入上下文管理器，创建新 Session 并装配各领域 Repository。"""
         self.session = self._session_factory()
         self._committed = False
         self._rolled_back = False
@@ -87,6 +99,7 @@ class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
+        """退出上下文，若发生异常或未显式 commit 则自动回滚并关闭 Session。"""
         try:
             if (exc_type is not None or not self._committed) and not self._rolled_back:
                 self.rollback()
@@ -96,9 +109,11 @@ class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
         return False
 
     def flush(self) -> None:
+        """将当前挂起的 SQL 变更刷新到底层数据库连接（不提交事务）。"""
         self._get_session().flush()
 
     def commit(self) -> None:
+        """提交当前事务。若提交失败则自动回滚并抛出异常。"""
         session = self._get_session()
         try:
             session.commit()
@@ -109,16 +124,19 @@ class SQLAlchemyUnitOfWork(AbstractUnitOfWork):
         self._committed = True
 
     def rollback(self) -> None:
+        """回滚当前事务中的所有变更。"""
         self._get_session().rollback()
         self._committed = False
         self._rolled_back = True
 
     def close(self) -> None:
+        """关闭底层 Session 并释放连接。"""
         if self.session is not None:
             self.session.close()
             self.session = None
 
     def _get_session(self) -> Session:
+        """获取当前活跃的 Session，若未进入上下文则报错。"""
         if self.session is None:
-            raise RuntimeError("Unit of Work must be entered before use")
+            raise RuntimeError("Unit of Work 必须在 enter 上下文内使用")
         return self.session

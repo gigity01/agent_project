@@ -78,6 +78,16 @@ class TaskRuntimeService:
         compensation_execution_id: str | None = None,
         compensation_operation_id: str | None = None,
     ) -> ExecutePlanResult:
+        """执行指定 Plan 的下一个就绪任务或处理挂起的补偿恢复。
+
+        三段式主流程：
+        1. Claim（短事务）：抢占下一个依赖已满足的 pending 任务，生成 execution_id / operation_id；或发现需要补偿的执行。
+        2. 事务外执行：调用能力绑定的 Executor（Agent 或后备确定性 Executor），严格在能力指定的超时时间内运行。
+        3. Completion / Failure / Compensation（短事务）：
+           - 成功：更新 Task 为 succeeded，追加 Outbox 事件（下一个 Task 唤醒或 Plan 聚合）。
+           - 失败：进入补偿流程，补偿成功后根据重试次数决定重试或发起 Replan。
+        """
+        # 第一阶段：短事务 Claim 抢占任务或发现恢复项
         claimed = await asyncio.to_thread(
             self._claim_next,
             ClaimNextTaskInput(plan_id=plan_id),
@@ -95,6 +105,7 @@ class TaskRuntimeService:
                     recovery.execution_id if recovery is not None else None
                 ),
             )
+        # 若需要补偿历史失败副作用，先执行补偿
         if claimed.recovery is not None:
             recovery = claimed.recovery
             definition = self._capabilities.require(
@@ -108,6 +119,7 @@ class TaskRuntimeService:
         if claimed.task is None:
             return ExecutePlanResult(plan_id=plan_id, outcome=claimed.outcome)
 
+        # 第二阶段：事务外执行 Capability Executor
         task = claimed.task
         definition = self._capabilities.require(task.capability_code)
         executor = self._executors.require(definition.executor_code)
@@ -165,6 +177,7 @@ class TaskRuntimeService:
                 event_id=event_id,
             )
 
+        # 第三阶段：短事务标记任务完成，并触发下一任务唤醒或聚合
         await asyncio.to_thread(
             self._complete,
             task,

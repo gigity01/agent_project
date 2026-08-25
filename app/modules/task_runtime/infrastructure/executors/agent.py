@@ -88,7 +88,14 @@ def adapt_index_document_vectors_output(
 
 
 class AgentTaskExecutor:
-    """执行受限 Agent，并仅信任唯一 Command Tool 的结构化输出。"""
+    """基于 Agents SDK 的能力受限 Task Executor 适配器。
+
+    执行特点：
+    1. 每个 Executor Agent 仅暴露受限的查询 Tool 和针对当前 Capability 的唯一 Command Tool。
+    2. 禁止并行工具调用（串行执行）。
+    3. 结果严格由 Command Tool 的结构化 Tool Output 驱动，LLM 生成的自由文本不决定任务成败。
+    4. 任务取消时等待同步 Command Tool 完全排空（Quiescence），避免并发补偿破坏持久化副作用。
+    """
 
     def __init__(
         self,
@@ -126,6 +133,7 @@ class AgentTaskExecutor:
         payload: BaseModel,
         context: TaskRuntimeContext,
     ) -> TaskExecutorResult:
+        """执行 Agent Task，并通过 Command Tool 输出解析确定性结果。"""
         document_id = getattr(payload, "document_id", None)
         if not isinstance(document_id, int):
             raise TaskExecutionError(

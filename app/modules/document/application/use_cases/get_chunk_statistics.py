@@ -8,10 +8,13 @@ from app.modules.document.application.errors import DocumentApplicationError
 
 
 class GetDocumentChunkStatisticsUseCase:
+    """统计指定文档的父块、子块类型与向量状态分布的只读用例。"""
+
     def __init__(self, *, uow_factory: Callable[[], Any]) -> None:
         self._uow_factory = uow_factory
 
     def execute(self, document_id: int) -> DocumentChunkStatisticsResult:
+        """执行统计并返回文档切块与向量状态分布详情。"""
         with self._uow_factory() as uow:
             document = uow.documents.get_by_id(document_id)
             if document is None:

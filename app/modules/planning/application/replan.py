@@ -36,6 +36,16 @@ class ReplanRequested:
 
 
 class ReplanUseCase:
+    """处理 Replan（重新规划）事件的用例。
+
+    主流程：
+    1. 校验最大 revision 限制（最多允许 3 次修订）。
+    2. 使用 Inbox 实现事件幂等去重，防止重复触发 Replan。
+    3. 行锁锁定前一 Plan，将未完成旧任务标记为 SUPERSEDED。
+    4. 原子创建下一版本 Plan 记录（初始状态为 PLANNING）。
+    5. 调用 RunPlanningUseCase.execute_existing 触发新一轮 Planner 规划。
+    """
+
     CONSUMER_NAME = "planning.replan"
 
     def __init__(
@@ -51,6 +61,7 @@ class ReplanUseCase:
         self,
         event: ReplanRequested,
     ) -> RunPlanningResult | None:
+        """执行 Replan 事件处理，生成新 revision Plan 并重新规划。"""
         prepared = self._prepare_revision(event)
         if prepared is None:
             return None

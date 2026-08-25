@@ -78,7 +78,15 @@ def _compose_current_user_input(
 
 
 class RunPlanningUseCase:
-    """创建新 Plan、运行 Agent，并以数据库状态结束本轮规划。"""
+    """Planner 规划执行用例。
+
+    主流程：
+    1. 加载当前 Turn 的用户原始输入、澄清补充输入以及上下文关联链上的热资源队列。
+    2. 创建 Plan 记录（初始状态为 planning）。
+    3. 装配只读 Collector 工具上下文与 Planning Tools。
+    4. 调用 LangGraph 编排的 PlannerRunner（Evidence 取证 → Gap 缺口分析 → Commit 决策）。
+    5. 根据 Planner 执行结果，更新 Plan 状态（processing / needs_clarification / unsupported / retry_pending）并原子持久化。
+    """
 
     def __init__(
         self,
@@ -106,6 +114,7 @@ class RunPlanningUseCase:
         self._audit_logger_factory = audit_logger_factory
 
     async def execute(self, command: RunPlanningInput) -> RunPlanningResult:
+        """执行完整规划用例（新建 Plan revision 并运行 Planner）。"""
         planner_input = await self._load_plannable_input(
             command,
             {ContextTurnStatus.CONTEXT_READY.value},

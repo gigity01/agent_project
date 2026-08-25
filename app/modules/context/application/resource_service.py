@@ -51,7 +51,13 @@ def split_resource_key(resource_key: str) -> tuple[str, str]:
 
 
 class ContextResourceService:
-    """以 MySQL 为事实来源，维护可丢弃并可重建的 Redis 热队列。"""
+    """以 MySQL 为事实来源，维护可丢弃并可重建的 Redis 热队列。
+
+    双存储维护机制：
+    - MySQL：全量事实层。保存资源当前状态（context_chain_resources）与全生命周期事件日志（context_chain_resource_events）。
+    - Redis：热队列层。为每条上下文链维护固定容量（默认 16）的刷新式 FIFO 队列，用于快速为 Context Agent 注入最近活跃资源。
+    - 事务一致性：事务内仅修改 MySQL 并递增 resource_version；MySQL 提交后才增量刷新 Redis；缓存不一致时通过 warm_up_queue 从 MySQL 重新拉取预热。
+    """
 
     def __init__(
         self,
@@ -66,9 +72,11 @@ class ContextResourceService:
 
     @property
     def queue_capacity(self) -> int:
+        """获取热资源队列的最大容量限制。"""
         return self._queue_repository.capacity
 
     def empty_queue(self) -> ContextResourceQueue:
+        """构建空的资源队列实例。"""
         return ContextResourceQueue(capacity=self.queue_capacity)
 
     def apply_in_transaction(
@@ -80,7 +88,7 @@ class ContextResourceService:
         turn_id: str,
         now: datetime,
     ) -> ContextResourceQueueRefresh | None:
-        """在调用方数据库事务中追加事件并更新资源当前状态。"""
+        """在调用方数据库事务中追加事件、更新资源当前状态并准备 Redis 刷新载荷。"""
         if update is None:
             return None
 

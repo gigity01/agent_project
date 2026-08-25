@@ -18,6 +18,8 @@ from app.modules.context.application.query_service import ContextQueryService
 
 
 class GetConversationTurnUseCase:
+    """读取指定 Conversation Turn 记录详情的只读用例。"""
+
     def __init__(self, query_service: ContextQueryService) -> None:
         self._query_service = query_service
 
@@ -26,6 +28,8 @@ class GetConversationTurnUseCase:
 
 
 class ListConversationTurnsUseCase:
+    """分页查询并筛选 Conversation Turn 列表的只读用例。"""
+
     def __init__(self, query_service: ContextQueryService) -> None:
         self._query_service = query_service
 
@@ -37,6 +41,8 @@ class ListConversationTurnsUseCase:
 
 
 class GetContextChainUseCase:
+    """读取指定 Context Chain 及其最新状态的只读用例。"""
+
     def __init__(self, query_service: ContextQueryService) -> None:
         self._query_service = query_service
 

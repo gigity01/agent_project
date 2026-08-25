@@ -1,4 +1,10 @@
-"""Context Chain Redis 刷新式 FIFO 热资源队列。"""
+"""Context Chain Redis 刷新式 FIFO 热资源队列基础设施。
+
+维护结构：
+- KEYS[1] (List): 保存 resource_key 的顺序列表，队头为最旧未访问，队尾为最新活跃。
+- KEYS[2] (Hash): 保存 resource_key 到对应 ContextResourceRef JSON 的哈希映射。
+- KEYS[3] (String): 保存当前缓存对应的 resource_version 版本号。
+"""
 
 from __future__ import annotations
 
@@ -10,11 +16,13 @@ from app.modules.context.domain.models import (
 )
 
 
+# Lua 脚本：原子执行版本 CAS 检查、增量刷新与淘汰、版本号推进
 REFRESH_QUEUE_LUA = """
 local max_size = tonumber(ARGV[1])
 local database_version = ARGV[2]
 local expected_previous_version = ARGV[3]
 local current_version = redis.call("GET", KEYS[3])
+-- 1. CAS 校验：当前缓存版本必须严格等于数据库变更前的一致版本
 if current_version then
     if current_version ~= expected_previous_version then
         return -1
@@ -26,6 +34,7 @@ end
 local refresh_count = tonumber(ARGV[4])
 local index = 5
 
+-- 2. 刷新式插入：旧位置移除后重新进入队尾 (RPUSH)，并更新 Hash 详情
 for _ = 1, refresh_count do
     local resource_key = ARGV[index]
     local resource_json = ARGV[index + 1]
@@ -35,6 +44,7 @@ for _ = 1, refresh_count do
     index = index + 2
 end
 
+-- 3. 显式移除失效或显式停用的资源
 local remove_count = tonumber(ARGV[index])
 index = index + 1
 for _ = 1, remove_count do
@@ -44,6 +54,7 @@ for _ = 1, remove_count do
     index = index + 1
 end
 
+-- 4. 容量限制与淘汰：超过最大容量时从队头 (LPOP) 推出最久未再次使用的资源
 local length = redis.call("LLEN", KEYS[1])
 while length > max_size do
     local removed = redis.call("LPOP", KEYS[1])
@@ -53,6 +64,7 @@ while length > max_size do
     length = length - 1
 end
 
+-- 5. 更新缓存版本号为数据库新版本
 redis.call("SET", KEYS[3], database_version)
 return length
 """.strip()

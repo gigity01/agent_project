@@ -105,10 +105,13 @@ if TYPE_CHECKING:
 
 @dataclass
 class AppContainer:
-    """集中持有应用生命周期内共享的对象。"""
+    """集中持有应用生命周期内共享的外部客户端、Agent 运行时与 Use Case 对象。"""
 
+    # --- 基础客户端与外部提供者 ---
     redis_client: Redis
     deepseek_provider: DeepSeekModelProvider | None
+
+    # --- Context 模块（上下文路由、并发锁、热资源队列与查询）---
     context_agent_router: DeepSeekContextRouter | None
     context_route_lock_manager: ConversationRouteLockManager
     context_resource_service: ContextResourceService
@@ -121,24 +124,39 @@ class AppContainer:
     list_context_chain_nodes: ListContextChainNodesUseCase
     list_context_chain_resources: ListContextChainResourcesUseCase
     list_context_selection_records: ListContextSelectionRecordsUseCase
+
+    # --- Operations 运维日志与时间线查询 ---
     operations_query_service: OperationsQueryService
     query_document_log_events: QueryDocumentLogEventsUseCase
     get_document_operation_timeline: GetDocumentOperationTimelineUseCase
     get_document_workflow_timeline: GetDocumentWorkflowTimelineUseCase
+
+    # --- Agent 与 Planner 编排组件 ---
     collector_agents: CollectorAgentSet | None
     planner_agent_runner: PlannerAgentRunner | None
     document_executor_agents: DocumentExecutorAgentSet | None
     planning_use_cases: PlanningUseCases
     run_planning: RunPlanningUseCase | None
     replan: ReplanUseCase | None
+
+    # --- 异步 Task Runtime、消息事件分派与结果聚合 ---
     task_runtime: TaskRuntimeService
     aggregate_plan: AggregatePlanUseCase
     outbox_publisher: OutboxPublisher
     runtime_event_dispatcher: RuntimeEventDispatcher
     answer_clarification: AnswerClarificationUseCase
+
+    # --- 面向用户的会话编排与状态查询 ---
     send_conversation_message: SendConversationMessageUseCase | None
     get_turn_status: GetTurnStatusUseCase
+
+    # --- 文档领域核心写操作 Use Cases ---
     upload_document: UploadDocumentUseCase
+    process_document: ProcessDocumentUseCase
+    build_chunks: BuildChunksUseCase
+    index_vectors: IndexVectorsUseCase
+
+    # --- 文档只读与统计查询 Use Cases ---
     get_document: GetDocumentUseCase
     list_documents: ListDocumentsUseCase
     search_documents: SearchDocumentsUseCase
@@ -149,12 +167,9 @@ class AppContainer:
     list_child_chunks: ListChildChunksUseCase
     get_document_chunk_statistics: GetDocumentChunkStatisticsUseCase
     get_knowledge_base_statistics: GetKnowledgeBaseStatisticsUseCase
-    process_document: ProcessDocumentUseCase
-    build_chunks: BuildChunksUseCase
-    index_vectors: IndexVectorsUseCase
 
     async def aclose(self) -> None:
-        """按依赖顺序释放外部客户端。"""
+        """按依赖顺序优雅关闭外部客户端与连接池。"""
         try:
             if self.deepseek_provider is not None:
                 await self.deepseek_provider.aclose()

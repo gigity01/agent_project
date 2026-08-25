@@ -91,7 +91,16 @@ class ContextService:
         self,
         command: SendMessageCommand,
     ) -> ContextSelectionResult:
-        """创建唯一 Turn，并持久化 Planner 所需的历史读取集合。"""
+        """创建唯一 Turn，并持久化 Planner 所需的历史读取集合。
+
+        主流程：
+        1. 获取当前 Conversation 的 Redis 短分布式锁，串行化并发路由。
+        2. 短事务内创建 Turn（状态为 context_routing）并加载该会话全部未归档链。
+        3. 从 Redis（或 MySQL 兜底预热）为每条链注入热资源队列。
+        4. 调用 Context Agent Router（DeepSeek 或确定性策略）进行上下文判定。
+        5. 执行严格的领域规则校验（validate_context_selection）。
+        6. 短事务保存路由决策记录，将 Turn 推进至 context_ready 状态。
+        """
         if self._agent_router is None:
             raise RuntimeError("Context Agent Router 未配置")
 
@@ -104,9 +113,11 @@ class ContextService:
         invalid_output_count = 0
 
         try:
+            # 1. 获取分布式锁，防止同一会话多消息并发破坏上下文链路
             async with self._route_lock_manager.hold(
                 command.conversation_id
             ):
+                # 2. 短事务创建 Turn 并读取未归档链
                 loaded_chains = await run_in_threadpool(
                     self._create_turn_and_load_chains,
                     turn_id,
@@ -115,6 +126,7 @@ class ContextService:
                 turn_created = True
                 chain_count = len(loaded_chains)
                 chains: list[ContextChain] = []
+                # 3. 注入热资源队列
                 for loaded in loaded_chains:
                     resource_queue = await self._resource_service.get_queue(
                         conversation_id=command.conversation_id,
@@ -133,6 +145,7 @@ class ContextService:
                     current_user_input=command.message,
                     chains=chains,
                 )
+                # 4. 调用 LLM 路由器
                 try:
                     llm_started_at = monotonic_ns()
                     raw_decision = await self._agent_router.route(agent_input)
@@ -143,6 +156,7 @@ class ContextService:
                 finally:
                     llm_duration_ms = self._elapsed_ms(llm_started_at)
 
+                # 5. 校验决策结果合法性
                 try:
                     decision = validate_context_selection(
                         raw_decision,
@@ -155,6 +169,7 @@ class ContextService:
                         f"Context Agent 返回了非法 Selection: {exc}"
                     ) from exc
 
+                # 6. 持久化路由决策并推进 Turn 状态
                 await run_in_threadpool(
                     self._persist_context_selection,
                     turn_id,

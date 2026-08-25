@@ -16,6 +16,17 @@ from app.modules.planning.domain.enums import PlanStatus
 
 
 class AnswerClarificationUseCase:
+    """处理用户对澄清提问的回复用例。
+
+    主流程（单一数据库事务）：
+    1. 校验回答非空。
+    2. 行锁锁定源 Clarification、源 ConversationTurn 和源 Plan。
+    3. 核验会话归属与澄清状态（必须为 open）。
+    4. 将澄清标记为 ANSWERED，记录回答时间与内容。
+    5. 将补充信息回写至源 Turn 的 clarification_input，推进 Turn 状态至 PROCESSING。
+    6. 生成并插入 `planning.replan_requested` Outbox 异步重规划事件。
+    """
+
     def __init__(
         self,
         *,
@@ -32,6 +43,7 @@ class AnswerClarificationUseCase:
         source_turn_id: str,
         answer: str,
     ) -> str:
+        """执行处理澄清回答，并发布 Replan Outbox 事件。"""
         normalized_answer = answer.strip()
         if not normalized_answer:
             raise ClarificationApplicationError(
