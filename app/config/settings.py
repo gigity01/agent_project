@@ -1,4 +1,18 @@
-"""应用的文件存储、外部服务与处理参数配置。"""
+"""应用全局文件存储、外部服务客户端与处理流水线参数配置模块。
+
+职责说明：
+- 声明并导出系统各模块运行所需的全部静态常量与环境变量配置项。
+- 涵盖配置分组：
+  1. 项目根路径与 `.env` 环境变量加载；
+  2. 原始文件、Docling 中间文本、清洗文本与 Staging 暂存目录配置及上传约束；
+  3. 文档生命周期默认值与编号生成规则；
+  4. MySQL 关系数据库与 Qdrant 向量数据库连接配置；
+  5. DashScope (Qwen) Embedding 向量模型与批处理参数；
+  6. DeepSeek LLM 提供者参数（API Key、Base URL、超时与重试）；
+  7. Redis 连接、超时、Conversation 路由锁租期与热资源队列容量；
+  8. Docling 复杂格式解析服务地址与转换超时；
+  9. 可观测性 JSONL 结构化日志目录路径定义。
+"""
 
 from pathlib import Path
 from typing import Final
@@ -8,14 +22,14 @@ from app.modules.document.domain.enums import DocumentStatus
 
 
 # ----------------------------------------------------------------------
-# 项目基础环境与配置加载
+# 1. 项目基础环境与配置加载
 # ----------------------------------------------------------------------
 # 解析项目根路径（相对于本文件的两级父目录）并优先加载项目根目录下的 .env 文件。
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 environment.load_local_env_file(PROJECT_ROOT)
 
 # ----------------------------------------------------------------------
-# 文件存储路径与上传限制
+# 2. 文件存储路径与上传限制
 # ----------------------------------------------------------------------
 # 路径定义为相对路径，由服务在项目根目录启动时解析。
 # 原始文件、外部转换的中间文本（Docling）、清洗后文本及 staging 临时目录分目录存放，便于失败补偿与追溯。
@@ -49,7 +63,7 @@ ALLOWED_CONTENT_TYPES: Final[set[str]] = {
 }
 
 # ----------------------------------------------------------------------
-# 文档领域默认值与编号生成规则
+# 3. 文档领域默认值与编号生成规则
 # ----------------------------------------------------------------------
 # 新上传文档的初始状态（默认为 uploaded）
 DEFAULT_DOCUMENT_STATUS: Final[str] = DocumentStatus.UPLOADED.value
@@ -62,7 +76,7 @@ DOCUMENT_CODE_PREFIX: Final[str] = "DOC"
 DOCUMENT_CODE_RANDOM_LENGTH: Final[int] = 8
 
 # ----------------------------------------------------------------------
-# 数据库与向量存储 (Qdrant) 配置
+# 4. 数据库与向量存储 (Qdrant) 配置
 # ----------------------------------------------------------------------
 # SQLAlchemy 数据库连接 URL（必填，生产环境通常为 MySQL，测试可配置独立库）
 SQLALCHEMY_DATABASE_URL: Final[str] = environment.get_required_env(
@@ -79,7 +93,7 @@ QDRANT_COLLECTION_NAME: Final[str] = environment.get_env(
 )
 
 # ----------------------------------------------------------------------
-# 向量嵌入服务 (DashScope / Qwen Embedding)
+# 5. 向量嵌入服务 (DashScope / Qwen Embedding)
 # ----------------------------------------------------------------------
 # 向量维度必须与既有 Qdrant collection 的维度严格一致；修改 EMBEDDING_VECTOR_SIZE 前需重建 collection。
 DASHSCOPE_API_KEY: Final[str] = environment.get_required_env("DASHSCOPE_API_KEY")
@@ -103,7 +117,7 @@ EMBEDDING_BATCH_SIZE: Final[int] = environment.get_int_env(
 )
 
 # ----------------------------------------------------------------------
-# 大语言模型服务 (DeepSeek Agent LLM)
+# 6. 大语言模型服务 (DeepSeek Agent LLM)
 # ----------------------------------------------------------------------
 # 用于 Context 路由选择、Planner 任务编排与 Document Executor Agents。
 DEEPSEEK_API_KEY: Final[str | None] = environment.get_optional_env(
@@ -133,7 +147,7 @@ DEEPSEEK_MAX_RETRIES: Final[int] = environment.get_int_env(
 )
 
 # ----------------------------------------------------------------------
-# Redis 缓存与分布式锁配置 (Context & Runtime)
+# 7. Redis 缓存与分布式锁配置 (Context & Runtime)
 # ----------------------------------------------------------------------
 # 应用生命周期持有一个全局异步 Redis 客户端，路由并发锁与热资源队列共享此连接池。
 REDIS_URL: Final[str] = environment.get_env(
@@ -167,7 +181,7 @@ CONTEXT_RESOURCE_QUEUE_MAX_SIZE: Final[int] = environment.get_int_env(
 )
 
 # ----------------------------------------------------------------------
-# 文档转换解析服务 (Docling)
+# 8. 文档转换解析服务 (Docling)
 # ----------------------------------------------------------------------
 # 复杂办公格式（pdf/doc/docx/ppt/pptx）先由 Docling 转换为 Markdown，之后复用本地 Markdown 清洗切块流水线。
 DOCING_SOURCE_TYPES: Final[set[str]] = {"pdf", "doc", "docx", "ppt", "pptx"}
@@ -188,7 +202,7 @@ DOCLING_TIMEOUT_SECONDS: Final[int] = environment.get_int_env(
 DOCLING_OUTPUT_TYPE: Final[str] = environment.get_env("DOCLING_OUTPUT_TYPE", "md")
 
 # ----------------------------------------------------------------------
-# 本地结构化日志与可观测性存储目录 (JSONL)
+# 9. 本地结构化日志与可观测性存储目录 (JSONL)
 # ----------------------------------------------------------------------
 # 日志存储根目录（相对路径始终按项目根目录解析）
 _configured_log_storage_dir = Path(

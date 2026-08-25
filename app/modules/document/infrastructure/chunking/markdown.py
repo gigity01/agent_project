@@ -1,4 +1,11 @@
-"""文档模块按 Markdown 标题层级构造父块和子块。"""
+"""文档模块按 Markdown 标题层级构造父块和子块的切分器。
+
+处理策略：
+1. 维护标题栈构建稳定的 section_path（如 ['一、项目背景', '1.1 现状分析']）。
+2. 将章节正文（不含标题行自身）按 4,000 字符聚合为 ParentBlockData（block_type='section'）。
+3. 父块内部按 600 字符上限进一步切分子块（ChildChunkData，chunk_type='text'）。
+4. 子块 embedding_text 拼接章节路径（'标题路径：...\\n正文：...'），以丰富检索语义。
+"""
 
 import re
 
@@ -15,31 +22,36 @@ from app.modules.document.infrastructure.chunking.common import (
     build_embedding_text,
 )
 
-
+# Markdown ATX 标题正则（匹配 1 到 6 级 # 标题）
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
 class MarkdownChunker(BaseChunker):
-    """
-    MarkdownChunker v1 前提：
-    - 暂不特殊处理代码块
-    - 暂不特殊处理表格
-    - 按 heading 维护 section_path
+    """Markdown 格式文档切块策略实现类。
+
+    依据标题树结构维护层级路径，构建以章节为边界的父级语义块与细粒度子块。
     """
 
     def build(
         self,
         input_data: ChunkBuildInput,
     ) -> ChunkBuildResult:
-        """解析标题路径，并按章节生成父块与长度受限的子块。"""
+        """解析 Markdown 章节结构并生成分层父子切块。
+
+        Args:
+            input_data: 切块输入对象，包含 cleaned_path 与元数据。
+
+        Returns:
+            ChunkBuildResult: 构建完成的父块与子块结果。
+        """
         text = input_data.cleaned_path.read_text(
             encoding="utf-8",
             errors="strict",
         )
         lines = text.splitlines()
 
+        # 优先复用 Process 阶段解析出的章节元数据
         sections = input_data.process_metadata.get("sections")
-
         if not sections:
             sections = self._parse_sections(lines)
 
@@ -54,6 +66,7 @@ class MarkdownChunker(BaseChunker):
                 continue
 
             section_path = section.get("section_path") or None
+            # 将章节正文按父块上限（4,000 字符）分段
             parent_segments = split_text_to_parent_segments(section_content)
 
             for segment_index, parent_content in enumerate(parent_segments):
@@ -68,6 +81,7 @@ class MarkdownChunker(BaseChunker):
                 )
                 parents.append(parent)
 
+                # 将父块正文按子块上限（600 字符）切分
                 child_texts = split_text_to_child_chunks(parent_content)
                 children: list[ChildChunkData] = []
 
@@ -101,7 +115,15 @@ class MarkdownChunker(BaseChunker):
         lines: list[str],
         section: dict,
     ) -> str:
-        """依据 Processor 的 1-based 行范围提取章节正文，不包含标题行。"""
+        """依据 Processor 的 1-based 行范围提取章节正文（不包含标题行自身）。
+
+        Args:
+            lines: 文本所有行列表。
+            section: 章节元数据字典（包含 heading_line, start_line, end_line）。
+
+        Returns:
+            str: 章节正文字符串。
+        """
         heading_line = section.get("heading_line")
         start_line = section["start_line"]
         end_line = section["end_line"]
@@ -116,7 +138,14 @@ class MarkdownChunker(BaseChunker):
         ).strip()
 
     def _parse_sections(self, lines: list[str]) -> list[dict]:
-        """缺少 Processor 元信息时，按相同的 1-based 行范围重新解析章节。"""
+        """在缺失 Processor 预处理元信息时，依据 ATX 标题重新解析 Markdown 章节树。
+
+        Args:
+            lines: 文本行列表。
+
+        Returns:
+            list[dict]: 章节元数据字典列表（包含 level, title, section_path, start_line, end_line 等）。
+        """
         if not lines:
             return []
 
@@ -135,8 +164,7 @@ class MarkdownChunker(BaseChunker):
                 level = len(match.group(1))
                 title = match.group(2).strip()
 
-                # 栈只保留当前标题的祖先；同级或更深标题出现时，先移除已结束的
-                # 分支，再由剩余栈构造稳定的 section_path。
+                # 维护祖先标题栈：同级或更高层级出现时，弹出栈顶
                 while heading_stack and heading_stack[-1][0] >= level:
                     heading_stack.pop()
 
@@ -152,6 +180,7 @@ class MarkdownChunker(BaseChunker):
                 }
                 continue
 
+            # 处理未在任何标题下的前置正文
             if current_section is None and line.strip():
                 current_section = {
                     "level": None,

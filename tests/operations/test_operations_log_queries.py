@@ -1,4 +1,11 @@
-"""JSONL 业务日志和 Tool 审计查询测试。"""
+"""基于 JSONL 日志文件的运维查询与时间线聚合用例测试。
+
+核心业务不变量：
+1. JSONL 日志多源聚合与时间线构建：
+   - 验证对各个阶段（upload, process, chunk, index）JSONL 日志文件的多维聚合与时间线生成（Workflow Timeline, Operation Timeline, Task Tool Timeline）。
+2. 过滤与结构化转换：
+   - 支持按时间范围、workflow_id、operation_id、document_id、event_type 与 outcome 过滤并按时间升序排序。
+"""
 
 from __future__ import annotations
 
@@ -30,6 +37,7 @@ from app.shared.observability.jsonl_writer import JsonlEventWriter
 
 
 def _time(minute: int) -> str:
+    """生成测试用 UTC ISO 时间戳字符串。"""
     return datetime(
         2026,
         8,
@@ -41,6 +49,7 @@ def _time(minute: int) -> str:
 
 
 class OperationsLogQueriesTest(unittest.TestCase):
+    """验证 OperationsQueryService 与用例对 JSONL 文件日志的高级查询与聚合。"""
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         root = Path(self.temp_dir.name)

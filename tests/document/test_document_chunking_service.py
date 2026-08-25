@@ -1,4 +1,13 @@
-"""文档切块领取、事务外执行和结果登记的短事务测试。"""
+"""文档切块用例（BuildChunksUseCase）领取、事务外执行与结果登记的短事务测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 三段式短事务边界（Claim -> Out-of-tx Build -> Short-tx Finalize）：
+   - 领取阶段（Claim）：在排他锁内校验 Document 三状态轴与前置条件（processed 状态或满足条件的重试），记录 `active_operation_id` 并将状态推进到 `chunking` 后立即提交事务。
+   - 执行阶段（Execution）：在数据库事务外调用相应的 Chunker（TextChunker/MarkdownChunker/CsvChunker）进行内存切块，不占用数据库连接。
+   - 登记阶段（Finalize）：短事务重新校验 operation ownership 与 Document 状态，删除旧父子块，批量插入新父块与子块（初始 vector_status='pending'），将状态更新为 `chunked`。
+2. 异常与所有权隔离：
+   - claim 提交后失败时 UseCase 不调用 Compensator，保留 `chunking` 与 ownership，由 Runtime 驱动 Compensator 标记失败并释放 token。
+"""
 
 from __future__ import annotations
 
@@ -32,6 +41,7 @@ SERVICE_PATH = (
 
 
 class _HTTPException(Exception):
+    """测试用 HTTP 业务异常替身。"""
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)
         self.status_code = status_code

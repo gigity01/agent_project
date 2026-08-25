@@ -1,9 +1,22 @@
-"""增加 Task Runtime、可靠消息、澄清与 DAG 持久化基座。
+"""构建 Task Runtime 异步执行、可靠消息传递（Outbox/Inbox）、澄清请求与 Task DAG 依赖关系基础设施。
+
+业务背景与设计规范：
+1. Plan / Task 模型演进：
+   - plans 增加 `workflow_id`（同一业务流程的多 revision 标识）、`parent_plan_id`、`current_task_id`、`failure_code` 等。
+   - tasks 增加 `task_ref`（如 task_1, task_2）、`attempt_count`、`max_attempts`（默认 3）、`output_json`、`last_error_code` 等。
+2. 任务执行跟踪 `task_executions`：
+   - 记录每次 Task attempt 的执行快照、状态、执行器（executor_code）、输入/输出快照、资源引用、operation_id 及 agent_run_id。
+3. 事务性消息驱动 `outbox_events` & `inbox_events`：
+   - Outbox 模式：业务事务与事件在 MySQL 内同事务提交，由 Publisher 轮询并推入 Redis Streams。
+   - Inbox 模式：记录各消费组对事件的处理记录，实现幂等去重与防重放。
+4. 交互式澄清 `clarification_requests`：
+   - 当参数缺失或存在歧义时持久化澄清请求，支持后续用户回复关联并触发 Replan。
+5. 任务依赖 DAG `task_dependencies`：
+   - 持久化 Task 之间的拓扑依赖关系（task_id 依赖 depends_on_task_id），增加无自环 Check 约束与边唯一约束。
 
 Revision ID: a8d2e4f6b1c3
 Revises: f6c1d8a4e2b7
 Create Date: 2026-08-05 00:00:00.000000
-
 """
 from typing import Sequence, Union
 
@@ -11,6 +24,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
+# revision identifiers, used by Alembic.
 revision: str = "a8d2e4f6b1c3"
 down_revision: Union[str, Sequence[str], None] = "f6c1d8a4e2b7"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -18,6 +32,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    """扩展 plans/tasks 表字段，并创建 task_executions、outbox_events、inbox_events、clarification_requests 与 task_dependencies 表。"""
     op.add_column("plans", sa.Column("workflow_id", sa.String(100)))
     op.add_column("plans", sa.Column("parent_plan_id", sa.String(100)))
     op.add_column("plans", sa.Column("current_task_id", sa.String(100)))

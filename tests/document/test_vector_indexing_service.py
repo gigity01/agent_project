@@ -1,4 +1,16 @@
-"""文档向量索引领取、事务外执行、完成与补偿的短事务测试。"""
+"""文档向量索引用例（IndexVectorsUseCase）领取、外部 Embedding/Qdrant 执行与补偿恢复短事务测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 三段式短事务与跨存储一致性边界：
+   - 领取阶段（Claim）：在行锁内将 Document 状态与本次待索引子块（status='active' & vector_status in ('pending', 'failed')）推进到 `indexing`，写入 `active_operation_id` 后立即提交事务。
+   - 外部调用阶段（Out-of-tx Execution）：事务外分批调用 DashScope Embedding API 并 upsert 至 Qdrant，不占用数据库事务连接。
+   - 完成阶段（Finalize）：短事务重新复核 Document 状态与 ownership，锁定本次子块，将子块与 Document 均推进为 `indexed`。
+2. 异常与补偿恢复机制（IndexVectorsCompensator）：
+   - UseCase 执行或 finalize 失败时保留 `indexing` 状态、Qdrant Points 与 ownership；
+   - Runtime 驱动的 Compensator 获取 `document:index:{document_id}` MySQL 命名锁围栏，复核 ownership，
+     从数据库当前 `indexing` 状态子块的稳定 ID 独立推导 Point ID，并在 Qdrant 中执行删除；
+   - 只有在 Qdrant 删除成功后，才将子块标记为 `failed` 并释放 Document ownership。若 Qdrant 删除失败，保留 ownership 禁止新 attempt 接管。
+"""
 
 from __future__ import annotations
 
@@ -30,6 +42,7 @@ SERVICE_PATH = (
 
 
 class _HTTPException(Exception):
+    """测试用 HTTP 异常替身。"""
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)
         self.status_code = status_code
@@ -37,11 +50,13 @@ class _HTTPException(Exception):
 
 
 class _KeywordModel(SimpleNamespace):
+    """测试用简单命名空间替身。"""
     def __init__(self, **values) -> None:
         super().__init__(**values)
 
 
 class _PointStruct:
+    """测试用 Qdrant models.PointStruct 替身。"""
     def __init__(self, *, id: int, vector: list[float], payload: dict) -> None:
         self.id = id
         self.vector = vector
@@ -49,6 +64,7 @@ class _PointStruct:
 
 
 class _ExternalEffectFence:
+    """测试用副作用命名锁围栏替身。"""
     def __init__(self) -> None:
         self.keys: list[str] = []
         self.on_hold = None

@@ -1,4 +1,7 @@
-"""Task Executor 实现。"""
+"""Task Executor 适配器导出。
+
+导出 AgentTaskExecutor、确定性后备 Executor 以及输出适配函数。
+"""
 
 from app.modules.task_runtime.infrastructure.executors.agent import (
     AgentTaskExecutor,
@@ -6,7 +9,6 @@ from app.modules.task_runtime.infrastructure.executors.agent import (
     adapt_index_document_vectors_output,
     adapt_process_document_output,
 )
-
 from app.modules.task_runtime.infrastructure.executors.document import (
     DeterministicBuildDocumentChunksExecutor,
     DeterministicIndexDocumentVectorsExecutor,

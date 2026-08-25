@@ -1,4 +1,8 @@
-"""Context SQLAlchemy ORM 模型。"""
+"""Context 模块 SQLAlchemy ORM 模型定义包。
+
+包含 ContextChain, ContextChainNode, ContextChainResource, ContextChainResourceEvent,
+ContextSelectionRecord 以及 ConversationTurn 实体模型。
+"""
 
 from app.modules.context.infrastructure.persistence.models.context_chain import (
     ContextChain,

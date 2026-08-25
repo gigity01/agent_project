@@ -1,4 +1,14 @@
-"""文档状态轴和有效内容 Hash migration 的结构测试。"""
+"""文档三状态轴扩展与激活态内容哈希唯一性 Alembic 迁移（e7b3c2d4a9f1）结构测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 三状态轴物理表结构变更：
+   - 增加 `lifecycle_status`（业务生命周期，默认 active）。
+   - 增加 `storage_status`（物理存储状态，默认 active）。
+   - 增加 `active_content_hash`（激活态内容哈希，允许 NULL）。
+2. 知识库级激活态唯一索引：
+   - 创建 `uq_documents_kb_active_content_hash` 唯一约束 `(kb_id, active_content_hash)`。
+   - 利用 MySQL 唯一索引忽略多 NULL 行的特性，仅对 active 激活文档强制内容哈希唯一，失效/软删除文档通过将 `active_content_hash` 置为 NULL 释放哈希槽位。
+"""
 
 from __future__ import annotations
 
@@ -23,11 +33,13 @@ MIGRATION_PATH = (
 
 
 class _String:
+    """测试用 SQLAlchemy String 类型替身。"""
     def __init__(self, length: int) -> None:
         self.length = length
 
 
 class _Column:
+    """测试用 SQLAlchemy Column 定义替身。"""
     def __init__(
         self,
         name: str,

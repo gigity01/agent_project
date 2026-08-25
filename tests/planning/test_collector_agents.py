@@ -1,4 +1,14 @@
-"""Collector Agent 的 Catalog 隔离与确定性证据提取测试。"""
+"""Collector Agent 隔离取证、只读 Catalog 与确定性证据（EvidenceItem / CollectorResult）提取测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 物理隔离与只读 Catalog 约束：
+   - Evidence 阶段三路并行取证（DocumentCollector, ContextCollector, OperationsCollector），各自只能访问其限定的只读查询 Tool，严禁包含任何写命令。
+   - Collector LLM 仅负责规划查询并输出 summary 与 gaps。
+2. 确定性证据提取（Deterministic Evidence Extraction）：
+   - Runtime 从 Collector 的 nested Run 中按 `call_id` 精确配对 ToolCallItem 与 ToolCallOutputItem。
+   - 每个 Tool 调用生成一个结构化 `EvidenceItem`，并组合为包含稳定去重 `resource_refs` 与完整 payload 的 `CollectorResult`。
+   - 若出现输出非法、call_id 重复或缺少对应 Tool Call，提取器必须 fail-closed 抛错。
+"""
 
 from __future__ import annotations
 
@@ -38,6 +48,7 @@ class _SampleToolOutput(BaseModel):
 
 
 class CollectorAgentsTest(unittest.IsolatedAsyncioTestCase):
+    """验证 Collector Agents 的 Catalog 装配、Tool 输出规范化与按 call_id 证据提取。"""
     def setUp(self) -> None:
         self.collectors = build_collector_agents(
             model="test-model",

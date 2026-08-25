@@ -1,4 +1,19 @@
-"""处理文档应用用例：以短事务编排领取、执行与结果登记。"""
+"""处理文档应用用例：以短事务编排领取、执行与结果登记。
+
+流水线阶段 2：Process
+负责将原始文档转换为标准化清洗文本（cleaned_text），流程遵循严格的三段式边界：
+1. Claim 短事务：以行锁锁定 Document，校验前置技术状态（uploaded/failed）与三状态轴，
+   将状态推进为 processing 并写入当前 operation_id 作为排他 ownership token。
+2. 事务外执行（在 document:process:{document_id} 命名锁围栏内）：
+   - 复核 operation ownership
+   - 如需外部转换（PDF/Word/PPT）则调用 Docling 生成 Markdown 二级文本
+   - 调用对应格式的文本清洗处理器（Processor）清洗为标准文本
+   - 将临时 staging 产物提升（promote）为 operation-scoped 正式目录
+3. Finalize 短事务：再次以行锁复核状态与 operation_id，将旧 active 产物标记为 superseded，
+   持久化新产物记录，更新 Document.cleaned_uri 并推进状态至 processed，释放 active_operation_id。
+
+若失败，由 ProcessDocumentCompensator 校验 ownership 并清理当前 operation_id 的目录，将 Document 置为 failed。
+"""
 
 import shutil
 from dataclasses import dataclass, replace
@@ -34,6 +49,7 @@ from app.shared.observability.document_process_logger import (
 from app.shared.observability.correlation import DocumentOperationContext
 
 
+# 允许执行处理的业务生命周期状态集合
 PROCESSABLE_LIFECYCLE_STATUSES = frozenset(
     {
         DocumentLifecycleStatus.ACTIVE.value,
@@ -43,12 +59,25 @@ PROCESSABLE_LIFECYCLE_STATUSES = frozenset(
 
 
 class ProcessingAbortedError(RuntimeError):
-    """表示任务执行期间文档状态变化，结果不得登记。"""
+    """表示任务执行或完成期间检测到文档状态/ownership 发生非预期变化，处理结果必须丢弃。"""
 
 
 @dataclass(frozen=True)
 class ProcessingContext:
-    """领取事务提交后，执行阶段所需的不可变文档快照。"""
+    """领取事务提交后传递给事务外执行阶段的不可变文档上下文快照。
+
+    Attributes:
+        document_id: 文档自增主键 ID。
+        doc_code: 文档业务编码。
+        kb_id: 所属知识库 ID。
+        domain_code: 业务领域编码。
+        business_scene: 业务场景标识。
+        source_type: 原始文件类型。
+        source_path: 原始文件物理路径。
+        created_by_actor_code: 创建人编码。
+        status_before: 领取前的原始状态。
+        operation_id: 本次处理操作的唯一 operation 标识（兼作 ownership token）。
+    """
 
     document_id: int
     doc_code: str
@@ -64,7 +93,15 @@ class ProcessingContext:
 
 @dataclass(frozen=True)
 class ProcessingExecutionResult:
-    """事务外处理完成、等待在完成事务中登记的结果。"""
+    """事务外处理执行完成、等待在完成短事务中登记的内存结果结构。
+
+    Attributes:
+        document_id: 文档 ID。
+        operation_id: 本次操作 ID。
+        cleaned_path: 清洗后生成的标准化文本文件绝对路径。
+        prepared_source: 预备阶段生成的源文件及二级产物信息。
+        cleaned_artifact: 清洗后文本产物的待登记元数据。
+    """
 
     document_id: int
     operation_id: str
@@ -74,10 +111,12 @@ class ProcessingExecutionResult:
 
     @property
     def secondary_artifact(self) -> PendingArtifact | None:
+        """获取可选的二级文本（Markdown）待登记产物。"""
         return self.prepared_source.secondary_artifact
 
+
 class ProcessDocumentUseCase:
-    """在短事务之间编排 Document 转换与清洗。"""
+    """在短事务与外部副作用围栏之间编排文档格式转换与文本清洗的用例入口。"""
 
     def __init__(
         self,
@@ -85,6 +124,12 @@ class ProcessDocumentUseCase:
         ports: DocumentApplicationPorts,
         settings: DocumentProcessingSettings,
     ) -> None:
+        """初始化文档处理用例。
+
+        Args:
+            ports: 外部依赖端口容器。
+            settings: 文档处理存储路径配置。
+        """
         self._ports = ports
         self._settings = settings
 
@@ -94,6 +139,18 @@ class ProcessDocumentUseCase:
         *,
         operation_context: DocumentOperationContext | None = None,
     ) -> ProcessDocumentResult:
+        """同步执行文档处理流水线（Claim -> Execute/Promote -> Finalize）。
+
+        Args:
+            document_id: 待处理的文档 ID。
+            operation_context: 可选的操作上下文追踪信息。
+
+        Returns:
+            ProcessDocumentResult: 处理结果 DTO（包含 cleaned_uri 等）。
+
+        Raises:
+            DocumentApplicationError: 状态不合法（409）、未找到（404）或执行失败（500）。
+        """
         return _process_document(
             document_id,
             ports=self._ports,
@@ -118,6 +175,7 @@ def _process_document(
     context: ProcessingContext | None = None
     phase = "claim"
     try:
+        # 阶段 1：短事务领取处理权（行锁 + 校验三状态轴 + 写入 processing 与 operation_id）
         context = _claim_processing(
             document_id,
             operation_id=operation_id,
@@ -125,9 +183,11 @@ def _process_document(
         )
         process_logger.claimed(context)
 
+        # 阶段 2：在 MySQL document:process:{document_id} 命名锁围栏内执行文件副作用
         with ports.external_effect_fence.hold(
             _process_effect_fence_key(document_id)
         ):
+            # 锁内复核 operation ownership，防止并发 stale attempt 产生冲突
             _assert_processing_owned(context, ports=ports)
             phase = "execute"
             execution_result = _execute_processing(
@@ -136,12 +196,14 @@ def _process_document(
                 settings=settings,
             )
 
+            # 将 staging 临时产物原子提升至正式 operation-scoped 目录
             phase = "promote"
             execution_result = _promote_processing_artifacts(
                 execution_result,
                 settings=settings,
             )
 
+        # 阶段 3：短事务完成登记（supersede 旧产物、创建新产物、推进至 processed、清空 ownership）
         phase = "finalize"
         response = _complete_processing(execution_result, ports=ports)
         process_logger.completed(
@@ -195,7 +257,23 @@ def _claim_processing(
     operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> ProcessingContext:
-    """以行锁领取处理权，并立即提交 processing 状态。"""
+    """以行锁领取处理权，并立即提交 processing 状态。
+
+    严格复核：
+    - 文档必须存在（404）
+    - 无未释放的 active_operation_id（409）
+    - 文档状态必须为 uploaded 或 failed（409）
+    - 业务生命周期必须为 active 或 scheduled（409）
+    - 存储状态必须为 active（409）
+
+    Args:
+        document_id: 文档 ID。
+        operation_id: 本次操作唯一 ID。
+        ports: 端口容器。
+
+    Returns:
+        ProcessingContext: 领取成功后的不可变快照。
+    """
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
 
@@ -252,7 +330,16 @@ def _execute_processing(
     ports: DocumentApplicationPorts,
     settings: DocumentProcessingSettings,
 ) -> ProcessingExecutionResult:
-    """在数据库事务外执行源检查、转换、清洗和文件元数据计算。"""
+    """在数据库事务外执行源文件检查、格式转换、文本清洗和文件元数据计算。
+
+    Args:
+        context: 领取上下文。
+        ports: 端口容器。
+        settings: 处理配置。
+
+    Returns:
+        ProcessingExecutionResult: 事务外执行结果。
+    """
     if not context.source_path.exists():
         raise DocumentApplicationError(
             status_code=404,
@@ -264,6 +351,7 @@ def _execute_processing(
             detail=f"原始路径不是有效文件: {context.source_path}",
         )
 
+    # 在 staging/{operation_id}/ 临时目录中执行转换与清洗
     operation_dir = _processing_operation_dir(
         settings,
         context.operation_id,
@@ -312,7 +400,15 @@ def _assert_processing_owned(
     *,
     ports: DocumentApplicationPorts,
 ) -> None:
-    """在文件副作用围栏内复核当前 Operation 仍持有处理权。"""
+    """在文件副作用围栏内复核当前 Operation 仍持有文档处理权（防 stale attempt 接管）。
+
+    Args:
+        context: 处理上下文。
+        ports: 端口容器。
+
+    Raises:
+        ProcessingAbortedError: 当 ownership 失效、状态改变或文档已进入归档/失效时抛出。
+    """
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(context.document_id)
         if (
@@ -332,7 +428,15 @@ def _complete_processing(
     *,
     ports: DocumentApplicationPorts,
 ) -> ProcessDocumentResult:
-    """在短事务中复核状态、登记 Artifact 并推进到 processed。"""
+    """在短事务中复核状态、登记新 Artifact、标记旧产物 superseded 并推进状态至 processed。
+
+    Args:
+        result: 处理执行结果。
+        ports: 端口容器。
+
+    Returns:
+        ProcessDocumentResult: 完成响应。
+    """
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(result.document_id)
 
@@ -349,18 +453,21 @@ def _complete_processing(
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
             raise ProcessingAbortedError("文档已进入归档流程")
 
+        # 登记可选的 Docling 二级文本产物
         if result.secondary_artifact is not None:
             _persist_secondary_artifact(
                 uow=uow,
                 document=document,
                 artifact=result.secondary_artifact,
             )
+        # 登记本次生成的 cleaned 文本产物
         _persist_cleaned_artifact(
             uow=uow,
             document=document,
             artifact=result.cleaned_artifact,
         )
 
+        # 更新文档主表 cleaned_uri 并推进状态为 processed，释放 active_operation_id
         document.cleaned_uri = str(result.cleaned_path)
         document.status = DocumentStatus.PROCESSED.value
         document.active_operation_id = None
@@ -383,7 +490,15 @@ def _promote_processing_artifacts(
     *,
     settings: DocumentProcessingSettings,
 ) -> ProcessingExecutionResult:
-    """把 operation staging 产物提升到正式的 operation-scoped 目录。"""
+    """把 operation staging 临时产物原子提升（移动）到正式的 operation-scoped 存储目录。
+
+    Args:
+        result: 原始执行结果。
+        settings: 处理路径配置。
+
+    Returns:
+        ProcessingExecutionResult: 更新了物理路径后的执行结果。
+    """
     cleaned_dir = _operation_scoped_dir(
         settings.cleaned_storage_dir,
         result.operation_id,
@@ -413,6 +528,7 @@ def _promote_processing_artifacts(
             ),
         )
 
+    # 清理 staging 下的临时目录
     operation_dir = _processing_operation_dir(settings, result.operation_id)
     if operation_dir.exists():
         shutil.rmtree(operation_dir)
@@ -426,6 +542,15 @@ def _promote_processing_artifacts(
 
 
 def _promote_file(source_path: Path, destination_dir: Path) -> Path:
+    """将源文件原子移动到目标目录中。
+
+    Args:
+        source_path: 源文件路径。
+        destination_dir: 目标目录。
+
+    Returns:
+        移动后的目标文件 Path。
+    """
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination_path = destination_dir / source_path.name
     if destination_path.exists():
@@ -441,7 +566,17 @@ def _fail_processing(
     operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
-    """围栏仍由指定 Operation 持有的 processing 文档。"""
+    """条件更新（CAS）：仅当仍由指定 operation_id 持有且处于 processing 状态时，标记为 failed。
+
+    Args:
+        document_id: 文档 ID。
+        error: 导致失败的异常。
+        operation_id: 操作 ID。
+        ports: 端口容器。
+
+    Returns:
+        FailureStateResult: 状态变更快照。
+    """
     del error
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
@@ -471,7 +606,15 @@ def _fail_processing(
 
 
 class ProcessDocumentCompensator:
-    """按 operation-scoped 目录补偿文档处理副作用。"""
+    """按 operation-scoped 目录边界补偿文档处理副作用的确定性补偿器。
+
+    由 Task Runtime 在 attempt 失败或超时后驱动调用。
+    补偿流程：
+    1. 校验文档是否仍由当前 operation_id 持有。
+    2. 获取 document:process:{document_id} 命名锁围栏。
+    3. 物理删除 staging 与正式 storage 下属于该 operation_id 的产物目录。
+    4. 释放 Document.active_operation_id，完成补偿。
+    """
 
     def __init__(
         self,
@@ -479,6 +622,12 @@ class ProcessDocumentCompensator:
         ports: DocumentApplicationPorts,
         settings: DocumentProcessingSettings,
     ) -> None:
+        """初始化补偿器。
+
+        Args:
+            ports: 端口容器。
+            settings: 存储路径配置。
+        """
         self._ports = ports
         self._settings = settings
 
@@ -488,6 +637,15 @@ class ProcessDocumentCompensator:
         document_id: int,
         operation_id: str,
     ) -> FailureStateResult:
+        """执行处理阶段副作用的恢复与补偿。
+
+        Args:
+            document_id: 文档 ID。
+            operation_id: 需补偿的操作 ID。
+
+        Returns:
+            FailureStateResult: 状态变更结果。
+        """
         failure_result = _fail_processing(
             document_id,
             RuntimeError("文档处理 Operation 需要补偿"),
@@ -507,6 +665,7 @@ class ProcessDocumentCompensator:
             if not owns_operation:
                 return failure_result
 
+            # 收集该 operation_id 下的所有可能产物目录并清理
             operation_dirs = tuple(
                 dict.fromkeys(
                     (
@@ -529,6 +688,7 @@ class ProcessDocumentCompensator:
                 if operation_dir.exists():
                     shutil.rmtree(operation_dir)
 
+            # 释放 active_operation_id token
             with self._ports.uow_factory() as uow:
                 document = uow.documents.get_by_id_for_update(document_id)
                 if (
@@ -546,16 +706,17 @@ def _processing_operation_dir(
     settings: DocumentProcessingSettings,
     operation_id: str,
 ) -> Path:
-    """返回不能逃逸 staging 根目录的 Operation 产物目录。"""
+    """返回不能逃逸 staging 根目录的 Operation 临时产物目录。"""
     return _operation_scoped_dir(settings.staging_storage_dir, operation_id)
 
 
 def _process_effect_fence_key(document_id: int) -> str:
+    """获取文档处理外部副作用的 MySQL 命名锁唯一键名。"""
     return f"document:process:{document_id}"
 
 
 def _operation_scoped_dir(root: Path, operation_id: str) -> Path:
-    """返回不能逃逸指定根目录的 Operation 目录。"""
+    """返回安全限定在指定根目录下的 Operation 目录（防止路径穿越攻击）。"""
     if (
         not operation_id
         or Path(operation_id).name != operation_id
@@ -566,7 +727,7 @@ def _operation_scoped_dir(root: Path, operation_id: str) -> Path:
 
 
 def _persist_secondary_artifact(*, uow, document, artifact: PendingArtifact) -> None:
-    """登记本次 Docling 二级文本，并淘汰旧的 active 版本。"""
+    """登记本次 Docling 二级文本产物，并将同角色的旧 active 产物标记为 superseded。"""
     artifact_code = Path(artifact.artifact_uri).stem
     _persist_artifact(
         uow=uow,
@@ -577,7 +738,7 @@ def _persist_secondary_artifact(*, uow, document, artifact: PendingArtifact) -> 
 
 
 def _persist_cleaned_artifact(*, uow, document, artifact: PendingArtifact) -> None:
-    """登记本次 cleaned 文本，并淘汰旧的 active 版本。"""
+    """登记本次 cleaned 文本产物，并将旧 active 产物标记为 superseded。"""
     _persist_artifact(
         uow=uow,
         document=document,
@@ -596,7 +757,7 @@ def _persist_artifact(
     artifact: PendingArtifact,
     artifact_code: str,
 ) -> None:
-    """在当前 UoW 中把待登记产物转换为持久化模型。"""
+    """在当前 UoW 事务中将待登记产物转换为持久化实体并写入。"""
     uow.document_artifacts.mark_active_as_superseded(
         document_id=document.id,
         artifact_type=artifact.artifact_type,
@@ -628,7 +789,7 @@ def _generate_cleaned_artifact_code(
     doc_code: str,
     artifact_format: str,
 ) -> str:
-    """生成不超过 Artifact 字段长度的唯一 cleaned 产物编号。"""
+    """生成不超过 Artifact 字段长度限制的唯一 cleaned 产物编码。"""
     suffix = (
         f"_ART_CLEANED_{artifact_format.upper()}_"
         f"{uuid4().hex[:12].upper()}"

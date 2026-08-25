@@ -1,4 +1,11 @@
-"""文档模块纯文本文件标准化处理器。"""
+"""文档模块纯文本文件（TXT）标准化清洗处理器。
+
+处理策略：
+1. 移除 NUL (\x00) 字符，统一换行符为 \\n。
+2. 裁剪每行行尾多余空白（rstrip），但严格保留行首缩进格式。
+3. 折叠连续多余空行，去除文件首尾空行。
+4. 统计自然段落数量（按 \\n\\n 划分）与空行数。
+"""
 
 from pathlib import Path
 
@@ -9,7 +16,7 @@ from app.modules.document.infrastructure.parsing.base import (
 
 
 class TxtProcessor(BaseProcessor):
-    """保留行首缩进和段落边界的 TXT 处理器。"""
+    """纯文本文件清洗与标准化处理器实现。"""
 
     source_type = "txt"
 
@@ -18,7 +25,15 @@ class TxtProcessor(BaseProcessor):
         source_path: Path,
         cleaned_path: Path,
     ) -> ProcessResult:
-        """严格读取 UTF-8 文本，清洗后写入目标路径。"""
+        """严格读取 UTF-8/UTF-8-SIG 文本，执行清洗并写入 cleaned 目标文件。
+
+        Args:
+            source_path: 原始 TXT 文件路径。
+            cleaned_path: 清洗后输出的标准 TXT 路径。
+
+        Returns:
+            ProcessResult: 包含字符数、行数、段落数及空行数的处理结果对象。
+        """
         source_path = self.validate_source_path(source_path)
         cleaned_path = self.prepare_cleaned_path(cleaned_path)
 
@@ -40,7 +55,7 @@ class TxtProcessor(BaseProcessor):
         )
 
     def _clean_text(self, text: str) -> tuple[str, dict]:
-        """规范换行和空行，仅移除每行行尾空白。"""
+        """规范换行和空行，移除 NUL 字符与行尾空白，保留行首缩进。"""
         text = (
             text.replace("\x00", "")
             .replace("\r\n", "\n")
@@ -53,6 +68,7 @@ class TxtProcessor(BaseProcessor):
         for raw_line in text.split("\n"):
             line = raw_line.rstrip()
 
+            # 折叠连续空行
             if not line.strip():
                 blank_line_count += 1
 
@@ -63,6 +79,7 @@ class TxtProcessor(BaseProcessor):
 
             cleaned_lines.append(line)
 
+        # 移除文件开头与结尾的空行
         while cleaned_lines and cleaned_lines[0] == "":
             cleaned_lines.pop(0)
 

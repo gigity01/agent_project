@@ -1,4 +1,7 @@
-"""文档模块子块 ORM 模型的持久化和向量索引状态管理。"""
+"""文档模块子块（ChildChunk）ORM 模型的持久化与向量状态管理仓储。
+
+封装可向量化子块的新增、重建全量替换删除、多维条件检索、行锁锁定及向量索引状态机推进（pending -> indexing -> indexed / failed）。
+"""
 
 from collections.abc import Iterable
 from datetime import datetime
@@ -12,20 +15,39 @@ from app.modules.document.infrastructure.persistence.models.child_chunk import (
 )
 
 
-
 class ChildChunkRepository:
-    """封装子块创建、重建清理与索引状态转换。"""
-    def __init__(self, db: Session):
+    """可向量化子块数据访问仓储类。"""
+
+    def __init__(self, db: Session) -> None:
+        """初始化子块仓储。
+
+        Args:
+            db: SQLAlchemy 数据库会话。
+        """
         self.db = db
 
     def create(self, child_chunk: ChildChunk) -> ChildChunk:
-        """加入会话并 flush，使调用方可继续使用新子块主键。"""
+        """持久化单个子块并 flush。
+
+        Args:
+            child_chunk: 待插入的子块实体。
+
+        Returns:
+            ChildChunk: 包含自增主键的子块实体。
+        """
         self.db.add(child_chunk)
         self.db.flush()
         return child_chunk
 
     def create_many(self, child_chunks: list[ChildChunk]) -> list[ChildChunk]:
-        """批量加入子块并统一 flush；事务提交仍由调用方负责。"""
+        """批量持久化子块实体列表并统一 flush。
+
+        Args:
+            child_chunks: 子块实体列表。
+
+        Returns:
+            list[ChildChunk]: 插入后的子块实体列表。
+        """
         if not child_chunks:
             return []
 
@@ -34,7 +56,11 @@ class ChildChunkRepository:
         return child_chunks
 
     def delete_by_doc_id(self, doc_id: int) -> None:
-        """删除指定文档的全部子块，不在此处提交事务。"""
+        """物理删除指定文档关联的所有子块记录（切块重建时调用）。
+
+        Args:
+            doc_id: 文档 ID。
+        """
         (
             self.db.query(ChildChunk)
             .filter(ChildChunk.doc_id == doc_id)
@@ -42,7 +68,14 @@ class ChildChunkRepository:
         )
 
     def exists_by_doc_id(self, doc_id: int) -> bool:
-        """判断文档是否仍有 active 子块，不改变任何持久化状态。"""
+        """检查指定文档是否已存在 active 状态的子块记录。
+
+        Args:
+            doc_id: 文档 ID。
+
+        Returns:
+            bool: 存在返回 True，否则返回 False。
+        """
         return (
             self.db.query(ChildChunk.id)
             .filter(
@@ -58,7 +91,15 @@ class ChildChunkRepository:
         doc_id: int,
         vector_status: str,
     ) -> bool:
-        """判断文档是否存在指定向量状态的 active 子块。"""
+        """检查文档是否存在特定向量状态的 active 子块。
+
+        Args:
+            doc_id: 文档 ID。
+            vector_status: 向量状态（如 'pending', 'indexing', 'failed'）。
+
+        Returns:
+            bool: 存在返回 True，否则返回 False。
+        """
         return (
             self.db.query(ChildChunk.id)
             .filter(
@@ -71,7 +112,14 @@ class ChildChunkRepository:
         )
 
     def count_active_not_indexed_by_doc_id(self, doc_id: int) -> int:
-        """统计文档中尚未完成向量索引的 active 子块。"""
+        """统计文档中尚未完成向量索引（vector_status != 'indexed'）的 active 子块数。
+
+        Args:
+            doc_id: 文档 ID。
+
+        Returns:
+            int: 待索引/失败的子块数量。
+        """
         return (
             self.db.query(ChildChunk.id)
             .filter(
@@ -86,7 +134,14 @@ class ChildChunkRepository:
         self,
         doc_id: int,
     ) -> dict[str, int]:
-        """按向量状态汇总文档的 active 子块。"""
+        """按向量状态（pending / indexing / indexed / failed）统计文档内 active 子块分布。
+
+        Args:
+            doc_id: 文档 ID。
+
+        Returns:
+            dict[str, int]: 状态 -> 数量的字典映射。
+        """
         rows = (
             self.db.query(
                 ChildChunk.vector_status,
@@ -102,7 +157,14 @@ class ChildChunkRepository:
         return {status: count for status, count in rows}
 
     def search(self, filters: ChildChunkSearchQuery) -> list[ChildChunk]:
-        """按向量状态、章节和 CSV 行范围稳定分页返回子块。"""
+        """按复合条件检索子块列表并稳定分页。
+
+        Args:
+            filters: 查询过滤条件 DTO。
+
+        Returns:
+            list[ChildChunk]: 子块实体列表。
+        """
         return (
             self._search_query(filters)
             .order_by(
@@ -117,9 +179,18 @@ class ChildChunkRepository:
         )
 
     def count_search(self, filters: ChildChunkSearchQuery) -> int:
+        """统计复合查询条件匹配的子块总数。
+
+        Args:
+            filters: 查询过滤条件 DTO。
+
+        Returns:
+            int: 总记录数。
+        """
         return self._search_query(filters).count()
 
     def _search_query(self, filters: ChildChunkSearchQuery):
+        """构建子块多条件组合查询 SQLAlchemy Query。"""
         query = self.db.query(ChildChunk)
         scalar_filters = (
             (ChildChunk.doc_id, filters.document_id),
@@ -173,6 +244,7 @@ class ChildChunkRepository:
         return query
 
     def count_by_status_for_document(self, doc_id: int) -> dict[str, int]:
+        """统计文档内所有子块的 status（active/inactive）分布。"""
         rows = (
             self.db.query(ChildChunk.status, func.count(ChildChunk.id))
             .filter(ChildChunk.doc_id == doc_id)
@@ -185,6 +257,7 @@ class ChildChunkRepository:
         self,
         doc_id: int,
     ) -> dict[str, int]:
+        """统计文档内所有（含非 active）子块的 vector_status 分布。"""
         rows = (
             self.db.query(
                 ChildChunk.vector_status,
@@ -200,6 +273,7 @@ class ChildChunkRepository:
         self,
         doc_id: int,
     ) -> dict[str, int]:
+        """统计文档内按 chunk_type（如 text, csv_row）划分的子块数量分布。"""
         rows = (
             self.db.query(ChildChunk.chunk_type, func.count(ChildChunk.id))
             .filter(ChildChunk.doc_id == doc_id)
@@ -212,6 +286,7 @@ class ChildChunkRepository:
         self,
         doc_id: int,
     ) -> tuple[int, int]:
+        """统计文档中已关联 Qdrant Point ID 与未关联的子块数量元组 (with_id, without_id)。"""
         with_vector_id = (
             self.db.query(ChildChunk.id)
             .filter(
@@ -231,6 +306,7 @@ class ChildChunkRepository:
         return with_vector_id, without_vector_id
 
     def count_active_for_kb(self, kb_id: int) -> int:
+        """统计知识库当前所有 active 状态的子块总数。"""
         return (
             self.db.query(ChildChunk.id)
             .filter(
@@ -241,6 +317,7 @@ class ChildChunkRepository:
         )
 
     def count_by_vector_status_for_kb(self, kb_id: int) -> dict[str, int]:
+        """按向量状态统计知识库内所有 active 子块的分布字典。"""
         rows = (
             self.db.query(
                 ChildChunk.vector_status,
@@ -260,7 +337,17 @@ class ChildChunkRepository:
         doc_id: int,
         statuses: set[str],
     ) -> list[ChildChunk]:
-        """稳定返回指定文档中处于可领取向量状态的 active 子块。"""
+        """查询文档中处于指定向量状态（如 {'pending', 'failed'}）的 active 子块列表。
+
+        按 (parent_id, chunk_index) 稳定升序排序。
+
+        Args:
+            doc_id: 文档 ID。
+            statuses: 待领取的向量状态集合。
+
+        Returns:
+            list[ChildChunk]: 待处理子块列表。
+        """
         if not statuses:
             return []
 
@@ -283,7 +370,17 @@ class ChildChunkRepository:
         doc_id: int,
         chunk_ids: Iterable[int],
     ) -> list[ChildChunk]:
-        """按主键升序锁定文档内的本次索引子块，直至事务结束。"""
+        """按主键升序加悲观行锁（FOR UPDATE）查询指定文档的一组子块。
+
+        用于在 Finalize 短事务中复核并提交索引结果。
+
+        Args:
+            doc_id: 文档 ID。
+            chunk_ids: 待锁定的子块 ID 集合。
+
+        Returns:
+            list[ChildChunk]: 锁定后的子块列表。
+        """
         ordered_ids = sorted(set(chunk_ids))
         if not ordered_ids:
             return []
@@ -300,10 +397,10 @@ class ChildChunkRepository:
         )
 
     def mark_indexing(self, chunks: list[ChildChunk]) -> None:
-        """将本批子块切换为 indexing 状态。
+        """将一组子块的 vector_status 切换为 'indexing' 并 flush。
 
-        调用方需在发起外部 Embedding 请求前提交该状态，以便进程中断后能识别
-        已离开 pending 队列、需要人工或任务系统补偿的批次。
+        Args:
+            chunks: 待推进状态的子块列表。
         """
         for chunk in chunks:
             chunk.vector_status = "indexing"
@@ -311,7 +408,11 @@ class ChildChunkRepository:
         self.db.flush()
 
     def mark_indexed_many(self, chunks: list[ChildChunk]) -> None:
-        """批量记录稳定 Point ID，并把本次子块统一标为 indexed。"""
+        """将一组子块的 vector_status 标记为 'indexed'，设置 qdrant_point_id=str(id)，并记录 indexed_at。
+
+        Args:
+            chunks: 向量写入成功的子块列表。
+        """
         indexed_at = datetime.now()
         for chunk in chunks:
             chunk.vector_status = "indexed"
@@ -321,7 +422,11 @@ class ChildChunkRepository:
         self.db.flush()
 
     def mark_failed(self, chunks: list[ChildChunk]) -> None:
-        """仅把仍处于 indexing 的本次子块标记为 failed。"""
+        """仅将当前处于 'indexing' 状态的子块标记为 'failed' 并 flush。
+
+        Args:
+            chunks: 待标记失败的子块列表。
+        """
         for chunk in chunks:
             if chunk.vector_status == "indexing":
                 chunk.vector_status = "failed"

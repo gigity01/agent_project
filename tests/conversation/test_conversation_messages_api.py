@@ -1,4 +1,16 @@
-"""Conversation 用户消息 API 测试。"""
+"""Conversation 用户消息 HTTP API 接入与错误映射测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 异步任务与 HTTP 状态码规范：
+   - 当消息成功触发 Context 路由与 Planner，并发布异步 Plan 时，返回 HTTP 202 Accepted（状态为 processing 或 retry_pending）。
+   - 响应包含完整的 `ContextSelectionMetadata`、关联 Task ID 列表与 Plan ID。
+2. 参数校验与安全边界：
+   - message 字段为必填且非空，超过长度限制或 conversation_id 长度超标直接返回 HTTP 422。
+   - 依赖缺失（如 LLM Router 服务未配置）返回 HTTP 503 Service Unavailable。
+   - 上游路由失败（ContextRoutingError）安全映射为 HTTP 502 Bad Gateway。
+3. 澄清回答交互：
+   - 携带 `source_turn_id` 时复用源轮次，澄清相关业务错误分别映射为 HTTP 400（空回答）、404（不存在）、409（状态冲突）。
+"""
 
 from __future__ import annotations
 
@@ -27,7 +39,10 @@ from app.modules.context.domain.enums import ContextSelectionMode
 
 
 class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
+    """验证 POST /api/conversations/{conversation_id}/messages 的请求适配、响应契约与异常映射。"""
+
     def setUp(self) -> None:
+        """初始化测试用 FastAPI 应用并覆盖应用层 UseCase 依赖。"""
         self.app = FastAPI()
         self.app.include_router(router, prefix="/api")
         self.use_case = mock.Mock()
@@ -41,6 +56,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _post(self, path: str, *, json: dict[str, str]):
+        """使用 httpx ASGI 传输层发送异步 HTTP POST 请求。"""
         transport = httpx.ASGITransport(app=self.app)
         async with httpx.AsyncClient(
             transport=transport,
@@ -49,6 +65,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
             return await client.post(path, json=json)
 
     async def test_message_is_adapted_to_application_command(self) -> None:
+        """验证用户消息正确转化为 SendConversationMessageCommand 并返回 HTTP 202 Accepted 与结构化响应。"""
         result = SendConversationMessageResult(
             conversation_id="conv_test_001",
             turn_id="turn-1",
@@ -101,6 +118,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_message_is_required_and_must_not_be_empty(self) -> None:
+        """验证缺少 message 字段或 message 为空字符串时返回 HTTP 422 验证错误。"""
         missing_response = await self._post(
             "/api/conversations/conv_test_001/messages",
             json={},
@@ -114,6 +132,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empty_response.status_code, 422)
 
     async def test_routing_error_is_mapped_to_bad_gateway(self) -> None:
+        """验证上游 ContextRoutingError 异常被正确映射为 HTTP 502 Bad Gateway。"""
         self.use_case.execute.side_effect = ContextRoutingError(
             "Context Agent 路由失败"
         )
@@ -130,6 +149,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_unconfigured_agent_is_service_unavailable(self) -> None:
+        """验证当服务容器未配置 Conversation Agent 时返回 HTTP 503 Service Unavailable。"""
         async def get_unconfigured_container():
             return SimpleNamespace(
                 context_agent_router=None,
@@ -156,6 +176,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_conversation_id_must_not_exceed_service_limit(self) -> None:
+        """验证 conversation_id 长度超过 100 字符时被 Pydantic 校验拦截并返回 HTTP 422。"""
         response = await self._post(
             f"/api/conversations/{'c' * 101}/messages",
             json={"message": "继续之前的方案"},
@@ -164,6 +185,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422)
 
     async def test_request_schema_exposes_optional_source_turn_id(self) -> None:
+        """验证 OpenAPI Schema 正确暴露了可选的 source_turn_id 澄清字段。"""
         schema = self.app.openapi()
         request_schema = schema["components"]["schemas"][
             "SendMessageRequest"
@@ -178,6 +200,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_source_turn_id_is_adapted_for_clarification_answer(
         self,
     ) -> None:
+        """验证携带 source_turn_id 时正确适配并触发澄清回答流程，返回 202 retry_pending。"""
         self.use_case.execute.return_value = SendConversationMessageResult(
             conversation_id="conv_test_001",
             turn_id="turn-question",
@@ -203,6 +226,7 @@ class ConversationMessagesApiTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_clarification_errors_are_mapped_to_safe_4xx(self) -> None:
+        """验证 ClarificationApplicationError 分别映射为安全的 HTTP 400、404、409 状态码，避免暴露 500 内部错误。"""
         cases = [
             (400, "Clarification 回答不能为空"),
             (404, "Clarification 不存在"),

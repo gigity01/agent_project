@@ -1,4 +1,15 @@
-"""replace context routes with selections
+"""将 Context 路由决策表重构为上下文选择记录表（context_selection_records）。
+
+业务背景与设计规范：
+1. 模型与语义重构：
+   - 将 `context_route_decisions` 表更名为 `context_selection_records`。
+   - 字段更名：`route_id` -> `selection_id`，`selected_chain_ids` -> `relevant_chain_ids`，`route_mode` -> `selection_mode`。
+   - 移除 `create_new_chain` 与 `new_chain_id`，明确 Context Agent 仅负责链关联选择，新链创建与链归属收敛至下游完成阶段。
+2. 历史与未完成状态清理：
+   - 将处于 `routed` 状态的会话轮次统一推进到 `context_ready`。
+   - 清理旧架构在路由阶段提前为未完成轮次建立的占位 `context_chain_nodes` 和空 `context_chains`，确保 MySQL 节点仅代表最终真实事实。
+3. 迁移单向性：
+   - 由于清理了非事实占位记录并转变了数据模型语义，本迁移不可逆（downgrade 抛出 RuntimeError）。
 
 Revision ID: f4a7c9e2b6d8
 Revises: d8f2a4c6e9b1
@@ -11,6 +22,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
+# revision identifiers, used by Alembic.
 revision: str = "f4a7c9e2b6d8"
 down_revision: Union[str, Sequence[str], None] = "d8f2a4c6e9b1"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -18,6 +30,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    """重命名表与列，迁移现有路由模式为选择模式，并清理未完成轮次的非事实占位节点与空链。"""
     op.rename_table("context_route_decisions", "context_selection_records")
     # MySQL 使用 current_turn_id 上的唯一索引支撑外键，不能先删除再重建。
     # 原位重命名可在整个迁移期间持续保留外键所需的索引。

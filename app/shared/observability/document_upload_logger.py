@@ -1,4 +1,9 @@
-"""记录文档上传各阶段结构化运维事件。"""
+"""文档上传各阶段结构化运维事件记录模块。
+
+职责说明：
+- 提供 `DocumentUploadLogger` 类，详细记录上传开始、原始文件落盘、SHA-256 哈希计算、重复校验拦截、元数据入库、业务 HTTP 异常与非预期系统异常等事件。
+- 保证敏感文本（API Key、Token 等）在日志记录时被自动遮蔽 (redact)。
+"""
 
 from __future__ import annotations
 
@@ -18,13 +23,18 @@ if TYPE_CHECKING:
 
 
 class DocumentUploadLogger(DocumentStageLogger):
-    """保留既有上传事件名，并使用统一生命周期字段。"""
+    """文档上传阶段专用结构化日志记录器。"""
 
     def __init__(
         self,
         *,
         operation_context: DocumentOperationContext | None = None,
     ) -> None:
+        """初始化上传日志记录器并绑定 upload 日志输出目录。
+
+        参数:
+            operation_context: 可选的操作关联上下文。
+        """
         super().__init__(
             stage="upload",
             operation_context=operation_context,
@@ -47,7 +57,19 @@ class DocumentUploadLogger(DocumentStageLogger):
         saved_filename: str,
         created_by_actor_code: str,
     ) -> None:
-        """记录文件开始上传并绑定本次任务上下文。"""
+        """记录文件开始上传并绑定本次任务业务上下文。
+
+        参数:
+            doc_code: 文档业务编号。
+            kb_id: 知识库 ID。
+            domain_code: 业务领域编码。
+            business_scene: 业务场景编码。
+            title: 文档标题。
+            filename: 原始文件名。
+            source_type: 文档扩展名源类型。
+            saved_filename: 落盘存储文件名。
+            created_by_actor_code: 操作人标识。
+        """
         self.bind(
             doc_code=doc_code,
             kb_id=kb_id,
@@ -74,7 +96,14 @@ class DocumentUploadLogger(DocumentStageLogger):
         source_uri: str,
         file_size: int,
     ) -> None:
-        """记录原始文件成功写入本地存储。"""
+        """记录原始文件成功分块写入本地存储。
+
+        参数:
+            doc_code: 文档编号。
+            kb_id: 知识库 ID。
+            source_uri: 本地存储路径 URI。
+            file_size: 文件总大小（字节）。
+        """
         self.write(
             phase="execute",
             level="info",
@@ -93,7 +122,13 @@ class DocumentUploadLogger(DocumentStageLogger):
         kb_id: int,
         content_hash: str,
     ) -> None:
-        """记录文件内容哈希计算完成。"""
+        """记录文件 SHA-256 内容哈希计算完成。
+
+        参数:
+            doc_code: 文档编号。
+            kb_id: 知识库 ID。
+            content_hash: 文件 SHA-256 字符串。
+        """
         self.write(
             phase="execute",
             level="info",
@@ -112,7 +147,14 @@ class DocumentUploadLogger(DocumentStageLogger):
         content_hash: str,
         duplicated_document: Document,
     ) -> None:
-        """记录因同知识库内容重复而拒绝上传。"""
+        """记录因同知识库内内容哈希重复而被业务规则拒绝上传。
+
+        参数:
+            doc_code: 当前尝试上传的文档编号。
+            kb_id: 知识库 ID。
+            content_hash: 重复的内容哈希。
+            duplicated_document: 已存在的重复文档 ORM 实例。
+        """
         self.write(
             phase="finalize",
             level="warning",
@@ -133,7 +175,11 @@ class DocumentUploadLogger(DocumentStageLogger):
         )
 
     def completed(self, *, document: Document) -> None:
-        """记录文档元数据持久化成功。"""
+        """记录文档记录成功持久化至数据库，状态为 uploaded。
+
+        参数:
+            document: 创建成功的 Document ORM 实例。
+        """
         self.bind(
             document_id=document.id,
             doc_code=document.doc_code,
@@ -173,7 +219,22 @@ class DocumentUploadLogger(DocumentStageLogger):
         file_size: int,
         cleanup_success: bool,
     ) -> None:
-        """记录由输入校验或业务规则导致的上传失败。"""
+        """记录由输入校验或业务规则引发的 HTTP 异常及残留文件清理结果。
+
+        参数:
+            exc: 捕获的 HTTPException。
+            phase: 发生异常的阶段。
+            doc_code: 文档编号。
+            kb_id: 知识库 ID。
+            domain_code: 领域编码。
+            business_scene: 业务场景。
+            title: 文档标题。
+            filename: 文件名。
+            source_type: 源类型。
+            source_uri: 文件 URI。
+            file_size: 文件大小。
+            cleanup_success: 残留原件文件是否清理成功。
+        """
         self.write(
             phase=phase,
             level="warning",
@@ -217,7 +278,22 @@ class DocumentUploadLogger(DocumentStageLogger):
         file_size: int,
         cleanup_success: bool,
     ) -> None:
-        """记录未预期异常导致的上传失败及清理结果。"""
+        """记录未预期系统异常导致的上传失败及尽力清理原件结果。
+
+        参数:
+            exc: 捕获的非预期异常。
+            phase: 发生阶段。
+            doc_code: 文档编号。
+            kb_id: 知识库 ID。
+            domain_code: 领域编码。
+            business_scene: 业务场景。
+            title: 标题。
+            filename: 文件名。
+            source_type: 源类型。
+            source_uri: 文件 URI。
+            file_size: 文件大小。
+            cleanup_success: 残留文件清理是否成功。
+        """
         self.write(
             phase=phase,
             level="error",

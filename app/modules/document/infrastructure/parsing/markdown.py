@@ -1,4 +1,11 @@
-"""文档模块 Markdown 文本规范化与标题提取处理器。"""
+"""文档模块 Markdown 文本规范化与标题提取处理器。
+
+清洗与提取逻辑：
+1. 规范换行符为 \\n，剔除 NUL 字符。
+2. 折叠连续多余空行，去除每行行尾多余空白。
+3. 规范化 ATX 标题格式（如 '## 标题'）。
+4. 递归解析 Markdown 标题树，提取 1-based 行范围及完整标题面包屑路径（section_path）。
+"""
 
 import re
 from pathlib import Path
@@ -11,10 +18,11 @@ from app.modules.document.infrastructure.parsing.base import (
 
 
 class MdProcessor(BaseProcessor):
-    """低风险清理 Markdown，并提取 ATX 标题层级元信息。"""
+    """Markdown 文本标准化与 ATX 标题层级提取处理器。"""
 
     source_type = "md"
 
+    # 匹配 1 到 6 级 ATX 标题正则
     HEADING_PATTERN = re.compile(
         r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)\s*$"
     )
@@ -24,7 +32,15 @@ class MdProcessor(BaseProcessor):
         source_path: Path,
         cleaned_path: Path,
     ) -> ProcessResult:
-        """严格读取 UTF-8 Markdown，规范文本并记录标题区段。"""
+        """严格读取 UTF-8/UTF-8-SIG Markdown，规范文本、提取标题并写入 cleaned 文件。
+
+        Args:
+            source_path: 输入 Markdown 文件路径。
+            cleaned_path: 清洗后输出的标准 Markdown 路径。
+
+        Returns:
+            ProcessResult: 处理结果对象（包含章节标题元数据 sections、heading_count 等）。
+        """
         source_path = self.validate_source_path(source_path)
         cleaned_path = self.prepare_cleaned_path(cleaned_path)
 
@@ -60,7 +76,7 @@ class MdProcessor(BaseProcessor):
         )
 
     def _normalize_text(self, text: str) -> str:
-        """保留行首空白，规范换行、空行和 ATX 标题格式。"""
+        """剔除 NUL 字符、统一 \\n 换行、折叠连续空行并标准化 ATX 标题行空格。"""
         text = (
             text.replace("\x00", "")
             .replace("\r\n", "\n")
@@ -72,13 +88,13 @@ class MdProcessor(BaseProcessor):
         for raw_line in text.split("\n"):
             line = raw_line.rstrip()
 
+            # 折叠连续空行
             if not line.strip():
                 if cleaned_lines and cleaned_lines[-1] != "":
                     cleaned_lines.append("")
                 continue
 
             heading_match = self.HEADING_PATTERN.match(line)
-
             if heading_match:
                 marks = heading_match.group(1)
                 title = heading_match.group(2).strip()
@@ -87,6 +103,7 @@ class MdProcessor(BaseProcessor):
 
             cleaned_lines.append(line)
 
+        # 移除文件开头与结尾的空行
         while cleaned_lines and cleaned_lines[0] == "":
             cleaned_lines.pop(0)
 
@@ -101,7 +118,7 @@ class MdProcessor(BaseProcessor):
         return cleaned_text
 
     def _extract_sections(self, text: str) -> list[dict[str, Any]]:
-        """按 ATX 标题切分区段，并记录标题路径与清洗后行范围。"""
+        """按 ATX 标题解析章节树，并记录每个 section 的 1-based 起止行号与标题路径。"""
         lines = text.splitlines()
 
         if not lines:
@@ -122,6 +139,7 @@ class MdProcessor(BaseProcessor):
                 level = len(match.group(1))
                 title = match.group(2).strip()
 
+                # 维护祖先栈
                 while heading_stack and heading_stack[-1][0] >= level:
                     heading_stack.pop()
 
@@ -139,6 +157,7 @@ class MdProcessor(BaseProcessor):
                 }
                 continue
 
+            # 处理文档最开头的无标题前言
             if current_section is None and line.strip():
                 current_section = {
                     "level": None,

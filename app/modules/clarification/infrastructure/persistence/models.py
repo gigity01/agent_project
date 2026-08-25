@@ -1,4 +1,6 @@
-"""ClarificationRequest ORM 模型。"""
+"""ClarificationRequest ORM 模型定义。"""
+
+from __future__ import annotations
 
 from datetime import datetime
 
@@ -12,6 +14,27 @@ from app.modules.clarification.domain.enums import ClarificationStatus
 
 
 class ClarificationRequest(Base):
+    """ClarificationRequest 持久化实体。
+
+    记录一次跨 Turn 的用户澄清请求。当 Planner 在规划阶段发现信息缺口、歧义或多重解释时创建。
+    同一 source_turn_id 最多只能存在一个 ClarificationRequest。
+
+    Attributes:
+        clarification_id: 澄清请求主键 ID。
+        conversation_id: 所属会话 ID。
+        source_turn_id: 发起澄清提问的源 Turn 标识（唯一约束）。
+        source_plan_id: 发起澄清的源 Plan 标识（唯一约束）。
+        kind: 澄清类型（如 ambiguous_target, missing_parameter, conflicting_intent）。
+        reason: 发起澄清的技术原因说明。
+        question: 向用户展示的具体澄清问题。
+        required_information_json: 所需补充信息的结构化字段列表。
+        known_resource_refs_json: 规划器已知并已锁定的候选资源引用列表。
+        status: 澄清生命周期状态（open / answered / resolved / expired）。
+        answer_turn_id: 用户提交回答所关联的 Turn 标识（通常为 source_turn_id）。
+        created_at: 创建时间。
+        resolved_at: 新 Plan 全部成功聚合后的解决时间。
+    """
+
     __tablename__ = "clarification_requests"
     __table_args__ = (
         UniqueConstraint(
@@ -23,6 +46,7 @@ class ClarificationRequest(Base):
             name="uq_clarification_requests_source_turn",
         ),
     )
+
 
     clarification_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String(100), nullable=False)

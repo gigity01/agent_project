@@ -1,4 +1,6 @@
-"""Context Collector 的只读 Tool Catalog。"""
+"""Context Collector 的只读 Tool 目录与元数据注册。"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -20,6 +22,13 @@ from app.modules.context.agent_tools.query_tools import (
 
 @dataclass(frozen=True)
 class ContextToolRegistration:
+    """Context Tool 及其运行时描述符元数据对。
+
+    Attributes:
+        tool: OpenAI Agents SDK FunctionTool 实例。
+        descriptor: 统一运行时审计与权限描述符 ToolDescriptor。
+    """
+
     tool: FunctionTool
     descriptor: ToolDescriptor
 
@@ -29,6 +38,16 @@ def _registration(
     description: str,
     resource_types: list[str],
 ) -> ContextToolRegistration:
+    """构造 Context 只读 Tool 注册对象。
+
+    Args:
+        tool: FunctionTool 实例。
+        description: 工具功能描述。
+        resource_types: 涉及的资源类型标识列表。
+
+    Returns:
+        ContextToolRegistration: 包装后的注册项。
+    """
     return ContextToolRegistration(
         tool=tool,
         descriptor=ToolDescriptor(
@@ -72,6 +91,11 @@ CONTEXT_COLLECTOR_TOOLS = tuple(
 
 
 def get_context_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    """获取所有 Context 只读 Tool 的描述符元数据列表。
+
+    Returns:
+        tuple[ToolDescriptor, ...]: 工具描述符元组。
+    """
     return tuple(
         registration.descriptor
         for registration in CONTEXT_COLLECTOR_CATALOG
@@ -79,6 +103,17 @@ def get_context_tool_descriptors() -> tuple[ToolDescriptor, ...]:
 
 
 def resolve_context_tool(tool_name: str) -> FunctionTool:
+    """根据工具名称解析对应的 Context FunctionTool 实例。
+
+    Args:
+        tool_name: 工具名称字符串。
+
+    Returns:
+        FunctionTool: 匹配的工具实例。
+
+    Raises:
+        ToolNotAvailableError: 工具未注册时抛出。
+    """
     for registration in CONTEXT_COLLECTOR_CATALOG:
         if registration.tool.name == tool_name:
             return registration.tool

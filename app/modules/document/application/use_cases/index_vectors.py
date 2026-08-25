@@ -1,4 +1,21 @@
-"""索引文档向量应用用例：以短事务编排领取、执行与结果登记。"""
+"""索引文档向量应用用例：以短事务编排领取、执行与结果登记。
+
+流水线阶段 4：Index Vectors
+负责将可向量化子块（ChildChunk）计算 DashScope / Qwen Embedding 向量并写入 Qdrant 向量数据库：
+1. Claim 短事务：以行锁锁定 Document，仅查询 status='active' 且 vector_status in ('pending', 'failed') 的子块，
+   将 Document 与这批子块推进至 indexing 状态，写入当前 operation_id 作为 ownership token 并提交。
+2. 事务外执行（在 document:index:{document_id} 命名锁围栏内）：
+   - 确保 Qdrant Collection 存在并就绪
+   - 按 EMBEDDING_BATCH_SIZE 分批调用 Embedding API，严格校验返回向量数量与维度（EMBEDDING_VECTOR_SIZE）
+   - Qdrant Point ID 与 ChildChunk.id 一一对应（整数 ID），实现幂等 upsert
+   - 在围栏锁内复核 operation ownership 后写入 Qdrant
+3. Finalize 短事务：再次以行锁锁定 Document 与本次子块，复核状态与 ownership，
+   将子块 vector_status 置为 indexed，若全部子块均已索引则将 Document 标记为 indexed，
+   更新 indexed_at 并释放 ownership。
+
+若失败，由 IndexVectorsCompensator 校验 ownership，在 document:index:{document_id} 命名锁围栏内
+从数据库当前 indexing 子块的稳定 ID 独立推导 Qdrant Point 并删除，删除成功后将子块置为 failed 并释放 ownership。
+"""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,41 +40,62 @@ from app.shared.observability.document_index_logger import DocumentIndexLogger
 from app.shared.observability.correlation import DocumentOperationContext
 from app.shared.time import now_ms
 
+# 允许执行向量索引的业务生命周期状态集合
 INDEXABLE_LIFECYCLE_STATUSES = frozenset(
     {
         DocumentLifecycleStatus.ACTIVE.value,
         DocumentLifecycleStatus.SCHEDULED.value,
     }
 )
+# 允许被索引领取的子块向量状态集合（仅处理待处理与既往失败的子块）
 INDEXABLE_VECTOR_STATUSES = frozenset({"pending", "failed"})
 
 
 class EmbeddingClient(Protocol):
-    """索引编排所需的最小 Embedding 客户端契约。"""
+    """索引编排所需的最小 Embedding 客户端契约协议。"""
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """将文本批次转换为浮点向量列表。
+
+        Args:
+            texts: 输入富文本字符串列表。
+
+        Returns:
+            二维浮点向量列表。
+        """
         ...
 
 
 class VectorStoreClient(Protocol):
-    """索引编排所需的最小向量存储契约。"""
+    """索引编排所需的最小向量存储（Qdrant）客户端契约协议。"""
 
     def ensure_collection(self) -> None:
+        """确保 Qdrant 集合已存在且配置正确。"""
         ...
 
     def upsert_points(self, points: list[Any]) -> None:
+        """批量向 Qdrant 集合写入或更新向量点（PointStruct）。
+
+        Args:
+            points: 包含 ID、向量与 Payload 的点列表。
+        """
         ...
 
     def delete_points(self, point_ids: list[int]) -> None:
+        """根据 Point ID 列表从 Qdrant 集合中物理删除向量点。
+
+        Args:
+            point_ids: 待删除的点 ID 列表（与 ChildChunk.id 对应）。
+        """
         ...
 
 
 class IndexingAbortedError(RuntimeError):
-    """表示索引执行期间文档或子块状态变化，结果不得登记。"""
+    """表示索引执行或完成期间文档/子块状态或 ownership 发生非预期变化，索引结果不得登记。"""
 
 
 class IndexingExecutionError(RuntimeError):
-    """携带失败操作位置和仅用于诊断的 Point ID。"""
+    """携带失败操作位置和用于诊断的 Point ID 集合的索引执行异常。"""
 
     def __init__(
         self,
@@ -69,6 +107,16 @@ class IndexingExecutionError(RuntimeError):
         confirmed_point_ids: tuple[int, ...],
         uncertain_point_ids: tuple[int, ...],
     ) -> None:
+        """初始化索引执行异常。
+
+        Args:
+            message: 错误描述。
+            operation: 发生失败的操作阶段名称（如 'embedding', 'qdrant_upsert'）。
+            batch_index: 发生失败的批次序号。
+            batch_size: 批次大小。
+            confirmed_point_ids: 既往批次已确认写入成功的 Point ID 列表。
+            uncertain_point_ids: 本次失败批次处于不确定状态的 Point ID 列表。
+        """
         super().__init__(message)
         self.operation = operation
         self.batch_index = batch_index
@@ -79,7 +127,21 @@ class IndexingExecutionError(RuntimeError):
 
 @dataclass(frozen=True)
 class IndexingChunkInput:
-    """事务外生成向量所需的不可变子块快照。"""
+    """事务外生成向量与构造 Qdrant Point 所需的不可变子块数据快照。
+
+    Attributes:
+        chunk_id: 子块自增主键 ID（直接用作 Qdrant Point ID）。
+        chunk_code: 子块业务编码。
+        embedding_text: 送入 Embedding 模型的富文本正文。
+        parent_id: 所属父块 ID。
+        doc_id: 所属文档 ID。
+        kb_id: 所属知识库 ID。
+        domain_code: 业务领域编码。
+        business_scene: 业务场景标识。
+        chunk_index: 子块序号。
+        section_path: 章节层级路径。
+        source_row_index: 表格源行号。
+    """
 
     chunk_id: int
     chunk_code: str
@@ -96,7 +158,23 @@ class IndexingChunkInput:
 
 @dataclass(frozen=True)
 class IndexingContext:
-    """领取事务提交后，索引执行阶段使用的文档和子块快照。"""
+    """领取事务提交后传递给事务外索引执行阶段的不可变上下文快照。
+
+    Attributes:
+        document_id: 文档 ID。
+        source_type: 原始文件类型。
+        title: 文档标题。
+        original_filename: 原始文件名。
+        chunks: 本次待索引的子块快照元组。
+        doc_code: 文档业务编码。
+        kb_id: 知识库 ID。
+        domain_code: 业务领域编码。
+        business_scene: 业务场景标识。
+        status_before: 领取前状态。
+        pending_count: 本批次中 pending 状态子块数。
+        retry_count: 本批次中 failed 重试子块数。
+        operation_id: 本次操作 ID。
+    """
 
     document_id: int
     source_type: str
@@ -115,7 +193,12 @@ class IndexingContext:
 
 @dataclass(frozen=True)
 class IndexingExecutionResult:
-    """Qdrant upsert 完成、等待数据库登记的执行结果。"""
+    """事务外 Embedding 与 Qdrant upsert 完成后等待数据库登记的执行结果。
+
+    Attributes:
+        context: 索引上下文。
+        point_ids: 本次已成功写入 Qdrant 的全部 Point ID 元组。
+    """
 
     context: IndexingContext
     point_ids: tuple[int, ...]
@@ -123,13 +206,21 @@ class IndexingExecutionResult:
 
 @dataclass(frozen=True)
 class IndexingCompensationSnapshot:
+    """准备补偿阶段捕获的不可变文档与子块快照。
+
+    Attributes:
+        document_id: 文档 ID。
+        chunk_ids: 处于 indexing 状态的子块 ID 元组。
+        status_before: 补偿前文档状态。
+    """
+
     document_id: int
     chunk_ids: tuple[int, ...]
     status_before: str
 
 
 class IndexVectorsUseCase:
-    """在短事务之间编排 Embedding 与 Qdrant 索引。"""
+    """在短事务与外部副作用围栏之间编排 Embedding 计算与 Qdrant 索引写入的用例入口。"""
 
     def __init__(
         self,
@@ -137,6 +228,12 @@ class IndexVectorsUseCase:
         ports: DocumentApplicationPorts,
         settings: DocumentIndexingSettings,
     ) -> None:
+        """初始化向量索引用例。
+
+        Args:
+            ports: 外部依赖端口容器。
+            settings: 向量批次与维度配置。
+        """
         self._ports = ports
         self._settings = settings
 
@@ -148,6 +245,20 @@ class IndexVectorsUseCase:
         embedding_client: EmbeddingClient | None = None,
         vector_store: VectorStoreClient | None = None,
     ) -> IndexVectorsResult:
+        """同步执行文档向量索引流水线（Claim -> Execute -> Finalize）。
+
+        Args:
+            document_id: 待索引的文档 ID。
+            operation_context: 可选的操作上下文追踪信息。
+            embedding_client: 可选显式指定的 Embedding 客户端替身。
+            vector_store: 可选显式指定的 VectorStore 客户端替身。
+
+        Returns:
+            IndexVectorsResult: 索引执行统计 DTO。
+
+        Raises:
+            DocumentApplicationError: 状态不合法（409）、未找到（404）或索引异常（500）。
+        """
         return _index_document_vectors(
             document_id,
             ports=self._ports,
@@ -179,6 +290,7 @@ def _index_document_vectors(
     phase = "claim"
 
     try:
+        # 阶段 1：短事务领取索引权（行锁锁定 Document 与待索引子块，标记为 indexing）
         context = _claim_indexing(
             document_id,
             operation_id=operation_id,
@@ -186,6 +298,7 @@ def _index_document_vectors(
         )
         index_logger.claimed(context)
 
+        # 阶段 2：事务外分批调用 Embedding API 并在 document:index:{id} 围栏内 upsert Qdrant
         phase = "execute"
         resolved_embedding_client = (
             embedding_client or ports.embedding_factory()
@@ -201,6 +314,7 @@ def _index_document_vectors(
         )
         confirmed_point_ids = execution_result.point_ids
 
+        # 阶段 3：短事务完成登记（子块标记 indexed，若全完成则 Document 推进至 indexed）
         phase = "finalize"
         response = _complete_indexing(execution_result, ports=ports)
         index_logger.completed(response)
@@ -267,7 +381,23 @@ def _claim_indexing(
     operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> IndexingContext:
-    """以行锁领取索引权，并提交 Document/Chunk 的 indexing 状态。"""
+    """以行锁领取索引权，并提交 Document/Chunk 的 indexing 状态。
+
+    业务规则：
+    - 文档状态必须为 chunked 或 failed（409）
+    - 无未释放的 active_operation_id（409）
+    - 不存在处于 indexing 状态的悬挂子块（409）
+    - 仅领取 active 且 vector_status in ('pending', 'failed') 的子块
+    - 确保子块与文档知识库、领域编码一致
+
+    Args:
+        document_id: 文档 ID。
+        operation_id: 操作 ID。
+        ports: 端口容器。
+
+    Returns:
+        IndexingContext: 领取成功后的上下文快照。
+    """
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
 
@@ -297,6 +427,7 @@ def _claim_indexing(
                 detail="文档不在活跃存储区",
             )
 
+        # 检查是否存在上一次未完成的 indexing 悬挂状态
         if uow.child_chunks.exists_by_doc_id_and_vector_status(
             document.id,
             "indexing",
@@ -306,6 +437,7 @@ def _claim_indexing(
                 detail="文档存在未完成的索引任务，请先执行恢复操作",
             )
 
+        # 仅查询 active 且待索引或失败的子块
         chunks = uow.child_chunks.list_indexable_by_doc_id(
             document.id,
             set(INDEXABLE_VECTOR_STATUSES),
@@ -318,6 +450,7 @@ def _claim_indexing(
             )
             raise DocumentApplicationError(status_code=409, detail=detail)
 
+        # 严密复核子块与文档的归属权威性
         _validate_indexing_chunk_ownership(document, chunks)
 
         status_before = document.status
@@ -342,6 +475,7 @@ def _claim_indexing(
             retry_count=retry_count,
             operation_id=operation_id,
         )
+        # 将本次处理的子块批量推进为 indexing 状态
         uow.child_chunks.mark_indexing(chunks)
         document.status = DocumentStatus.INDEXING.value
         document.active_operation_id = operation_id
@@ -360,7 +494,22 @@ def _execute_indexing(
     ports: DocumentApplicationPorts,
     settings: DocumentIndexingSettings,
 ) -> IndexingExecutionResult:
-    """在数据库事务外分批生成向量并以稳定 ID upsert Qdrant。"""
+    """在数据库事务外分批生成向量并以稳定 ID upsert Qdrant。
+
+    Args:
+        context: 索引上下文。
+        embedding_client: Embedding 客户端。
+        vector_store: 向量库客户端。
+        index_logger: 可选日志记录器。
+        ports: 端口容器。
+        settings: 索引参数设置。
+
+    Returns:
+        IndexingExecutionResult: 写入成功的执行结果。
+
+    Raises:
+        IndexingExecutionError: 外部服务调用或校验失败时抛出。
+    """
     if settings.embedding_batch_size <= 0:
         raise IndexingExecutionError(
             "EMBEDDING_BATCH_SIZE 必须大于 0",
@@ -373,6 +522,7 @@ def _execute_indexing(
 
     confirmed_point_ids: list[int] = []
     try:
+        # 确保 Qdrant collection 就绪
         vector_store.ensure_collection()
     except Exception as exc:
         raise IndexingExecutionError(
@@ -394,6 +544,7 @@ def _execute_indexing(
             vector_size=settings.embedding_vector_size,
         )
 
+    # 按照 EMBEDDING_BATCH_SIZE 分批处理
     for start in range(
         0,
         len(context.chunks),
@@ -412,6 +563,7 @@ def _execute_indexing(
                 embedding_model=settings.embedding_model_name,
             )
         try:
+            # 外部 Embedding API 调用
             vectors = embedding_client.embed_texts(
                 [chunk.embedding_text for chunk in batch]
             )
@@ -426,7 +578,9 @@ def _execute_indexing(
             ) from exc
 
         try:
+            # 严格校验向量数量与维度
             _validate_vectors(batch, vectors, settings=settings)
+            # 构造与 ChildChunk.id 一一对应的 Qdrant Point
             points = [
                 _build_point(context, chunk, vector, ports=ports)
                 for chunk, vector in zip(batch, vectors)
@@ -451,6 +605,7 @@ def _execute_indexing(
 
         qdrant_started_at_ms = now_ms()
         try:
+            # 在 MySQL 命名锁 document:index:{id} 围栏内写入 Qdrant
             with ports.external_effect_fence.hold(
                 _index_effect_fence_key(context.document_id)
             ):
@@ -487,7 +642,15 @@ def _complete_indexing(
     *,
     ports: DocumentApplicationPorts,
 ) -> IndexVectorsResult:
-    """在短事务中复核文档和子块状态，并原子登记 indexed。"""
+    """在短事务中复核文档和子块状态，并原子登记 indexed。
+
+    Args:
+        result: 索引执行结果。
+        ports: 端口容器。
+
+    Returns:
+        IndexVectorsResult: 索引结果统计。
+    """
     context = result.context
     chunk_ids = _context_chunk_ids(context)
     with ports.uow_factory() as uow:
@@ -506,6 +669,7 @@ def _complete_indexing(
         if document.storage_status != DocumentStorageStatus.ACTIVE.value:
             raise IndexingAbortedError("文档已进入归档流程")
 
+        # 锁定并复核本次处理的子块
         chunks = uow.child_chunks.list_by_ids_for_update(
             document.id,
             chunk_ids,
@@ -515,13 +679,17 @@ def _complete_indexing(
         ):
             raise IndexingAbortedError("索引子块状态已经变化")
 
+        # 将这批子块标记为 indexed
         uow.child_chunks.mark_indexed_many(chunks)
+
+        # 检查是否还有其他未完成索引的子块
         remaining_count = (
             uow.child_chunks.count_active_not_indexed_by_doc_id(document.id)
         )
         if remaining_count > 0:
             raise IndexingAbortedError("文档仍存在未完成索引的子块")
 
+        # 全部子块已完成索引：推进 Document 为 indexed 并清空 active_operation_id
         document.status = DocumentStatus.INDEXED.value
         document.active_operation_id = None
         document.indexed_at = datetime.now()
@@ -539,9 +707,22 @@ def _complete_indexing(
 
 
 class IndexVectorsCompensator:
-    """围栏 Document 后按稳定 Chunk ID 删除 Qdrant Point。"""
+    """在命名锁围栏内复核 Document 后按稳定 Chunk ID 删除 Qdrant Point 并标记失败的补偿器。
+
+    由 Task Runtime 在 attempt 失败或超时后驱动调用。
+    补偿流程：
+    1. Prepare 短事务：查询当前仍由该 operation_id 持有的 indexing 子块并构造快照，将 Document 置为 failed。
+    2. 在 document:index:{document_id} 命名锁围栏内调用 Qdrant 删除这些 Point。
+    3. Complete 短事务：Qdrant 删除成功后，将子块置为 failed 并清空 Document.active_operation_id。
+    若 Qdrant 删除抛错，保留 ownership 禁止新 attempt 接管。
+    """
 
     def __init__(self, *, ports: DocumentApplicationPorts) -> None:
+        """初始化向量索引补偿器。
+
+        Args:
+            ports: 端口容器。
+        """
         self._ports = ports
 
     def compensate(
@@ -552,6 +733,17 @@ class IndexVectorsCompensator:
         vector_store: VectorStoreClient | None = None,
         index_logger: DocumentIndexLogger | None = None,
     ) -> IndexFailureStateResult:
+        """执行向量索引副作用补偿。
+
+        Args:
+            document_id: 文档 ID。
+            operation_id: 需补偿的操作 ID。
+            vector_store: 可选向量库客户端。
+            index_logger: 可选日志记录器。
+
+        Returns:
+            IndexFailureStateResult: 状态变更快照。
+        """
         snapshot = self._prepare(
             document_id=document_id,
             operation_id=operation_id,
@@ -574,6 +766,7 @@ class IndexVectorsCompensator:
                         uncertain_point_count=0,
                     )
                 try:
+                    # 从 Qdrant 中物理删除对应的向量点
                     resolved_vector_store.delete_points(
                         list(compensation_point_ids)
                     )
@@ -593,6 +786,7 @@ class IndexVectorsCompensator:
                         started_at_ms=started_at_ms,
                     )
 
+            # Qdrant 删除成功后完成数据库子块状态更新与 ownership 释放
             return self._complete(
                 snapshot=snapshot,
                 operation_id=operation_id,
@@ -605,6 +799,7 @@ class IndexVectorsCompensator:
         document_id: int,
         operation_id: str,
     ) -> IndexingCompensationSnapshot | None:
+        """短事务捕获当前 operation_id 持有的 indexing 子块，将 Document 置为 failed 并提交。"""
         with self._ports.uow_factory() as uow:
             document = uow.documents.get_by_id_for_update(document_id)
             if (
@@ -640,6 +835,7 @@ class IndexVectorsCompensator:
         operation_id: str,
         chunk_ids: tuple[int, ...],
     ) -> IndexFailureStateResult:
+        """短事务将子块置为 failed 并释放 active_operation_id。"""
         with self._ports.uow_factory() as uow:
             document = uow.documents.get_by_id_for_update(
                 snapshot.document_id
@@ -687,7 +883,7 @@ def _handle_indexing_failure(
     batch_index: int | None = None,
     batch_size: int | None = None,
 ) -> None:
-    """记录失败诊断；claim 提交后的正式补偿由 Runtime 编排。"""
+    """记录索引失败诊断日志；claim 提交后的正式补偿由 Task Runtime 编排驱动。"""
     index_logger.failed(
         error=error,
         phase=phase,
@@ -703,7 +899,7 @@ def _handle_indexing_failure(
 
 
 def _validate_indexing_chunk_ownership(document, chunks) -> None:
-    """确保待索引子块与 Document 的权威归属字段一致。"""
+    """确保待索引子块与 Document 的权威归属字段（doc_id, kb_id, domain_code）一致。"""
     if any(chunk.doc_id != document.id for chunk in chunks):
         raise RuntimeError("索引子块与文档关联不一致")
     if any(chunk.kb_id != document.kb_id for chunk in chunks):
@@ -713,7 +909,7 @@ def _validate_indexing_chunk_ownership(document, chunks) -> None:
 
 
 def _to_chunk_input(chunk) -> IndexingChunkInput:
-    """把 ORM 子块转换为事务外使用的不可变输入。"""
+    """把 ORM 子块转换为事务外使用的不可变快照对象。"""
     return IndexingChunkInput(
         chunk_id=chunk.id,
         chunk_code=chunk.chunk_code,
@@ -739,7 +935,7 @@ def _validate_vectors(
     *,
     settings: DocumentIndexingSettings,
 ) -> None:
-    """校验一个批次的 Embedding 数量和维度。"""
+    """严格校验一个批次的 Embedding 返回向量数量与维度大小。"""
     if len(vectors) != len(chunks):
         raise RuntimeError("Embedding 返回数量不一致")
     if any(
@@ -756,7 +952,7 @@ def _build_point(
     *,
     ports: DocumentApplicationPorts,
 ) -> Any:
-    """使用 ChildChunk 主键构造可幂等 upsert 的 Qdrant Point。"""
+    """使用 ChildChunk 主键构造可幂等 upsert 的 Qdrant PointStruct 向量点。"""
     return ports.point_factory(
         id=chunk.chunk_id,
         vector=vector,
@@ -784,7 +980,7 @@ def _assert_indexing_owned(
     *,
     ports: DocumentApplicationPorts,
 ) -> None:
-    """在外部写入围栏内复核 Operation 仍持有 Document。"""
+    """在外部写入围栏内复核 Operation 仍持有 Document 处理权（防 stale attempt 冲突）。"""
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(context.document_id)
         if (
@@ -796,8 +992,10 @@ def _assert_indexing_owned(
 
 
 def _index_effect_fence_key(document_id: int) -> str:
+    """获取文档向量索引外部副作用的 MySQL 命名锁唯一键名。"""
     return f"document:index:{document_id}"
 
 
 def _context_chunk_ids(context: IndexingContext) -> tuple[int, ...]:
+    """提取上下文中的全部子块主键 ID 元组。"""
     return tuple(chunk.chunk_id for chunk in context.chunks)

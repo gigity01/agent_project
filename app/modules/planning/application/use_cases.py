@@ -1,4 +1,11 @@
-"""Plan 与 Task 的事务型核心 Use Cases。"""
+"""Plan 与 Task 的事务型核心 Use Cases。
+
+本模块实现了规划系统核心用例：
+1. CreatePlanUseCase: 创建 Plan 实体与初始 revision。
+2. CreateProcessDocumentTaskUseCase / CreateBuildChunksTaskUseCase / CreateIndexVectorsTaskUseCase: 创建草稿 Task。
+3. FinalizePlanUseCase: 校验 Task 连续性与 DAG 依赖拓扑（最大深度 3、无环），并在单一事务中原子发布 Plan、更新 Turn 状态及写入 Outbox 事件。
+4. MarkPlanUnsupportedUseCase / MarkPlanRetryPendingUseCase / MarkPlanNeedsClarificationUseCase: 处理规划异常、不支持请求及用户澄清流程。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,12 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from app.modules.clarification.domain.enums import ClarificationStatus
+from app.modules.context.domain.enums import ContextTurnStatus
+from app.modules.messaging.domain.enums import (
+    OutboxEventStatus,
+    RuntimeEventType,
+)
 from app.modules.planning.application.dto import (
     CreateBuildChunksTaskInput,
     CreateIndexVectorsTaskInput,
@@ -14,12 +27,12 @@ from app.modules.planning.application.dto import (
     CreateProcessDocumentTaskInput,
     FinalizePlanInput,
     FinalizePlanResult,
-    MarkPlanRetryPendingInput,
     MarkPlanNeedsClarificationInput,
+    MarkPlanRetryPendingInput,
     MarkPlanUnsupportedInput,
     PlanResult,
-    TaskResult,
     SetClarificationQuestionInput,
+    TaskResult,
 )
 from app.modules.planning.application.errors import PlanningApplicationError
 from app.modules.planning.application.ports import PlanningApplicationPorts
@@ -28,12 +41,6 @@ from app.modules.planning.domain.enums import (
     PlanStatus,
     TaskStatus,
 )
-from app.modules.context.domain.enums import ContextTurnStatus
-from app.modules.messaging.domain.enums import (
-    OutboxEventStatus,
-    RuntimeEventType,
-)
-from app.modules.clarification.domain.enums import ClarificationStatus
 
 
 MAX_TASKS_PER_PLAN = 10
@@ -41,6 +48,7 @@ MAX_PLAN_DAG_DEPTH = 3
 
 
 def _new_id(prefix: str) -> str:
+    """生成带前缀的唯一十六进制 ID。"""
     return f"{prefix}_{uuid4().hex}"
 
 
@@ -51,6 +59,7 @@ def _new_outbox_event(
     aggregate_id: str,
     payload: dict,
 ):
+    """构建标准初始状态的 OutboxEvent 实体。"""
     return ports.outbox_event_factory(
         event_id=_new_id("event"),
         event_type=event_type.value,
@@ -65,6 +74,7 @@ def _new_outbox_event(
 
 
 def _plan_not_found() -> PlanningApplicationError:
+    """生成 Plan 不存在的标准业务异常。"""
     return PlanningApplicationError(
         404,
         "Plan 不存在",
@@ -73,6 +83,7 @@ def _plan_not_found() -> PlanningApplicationError:
 
 
 def _turn_not_found() -> PlanningApplicationError:
+    """生成 Conversation Turn 不存在的标准业务异常。"""
     return PlanningApplicationError(
         404,
         "Conversation Turn 不存在",
@@ -81,6 +92,7 @@ def _turn_not_found() -> PlanningApplicationError:
 
 
 def _require_planning(plan: Any) -> None:
+    """校验 Plan 状态必须为 PLANNING，否则抛出状态冲突异常。"""
     if plan.status != PlanStatus.PLANNING.value:
         raise PlanningApplicationError(
             409,
@@ -90,6 +102,7 @@ def _require_planning(plan: Any) -> None:
 
 
 def _require_turn_ownership(plan: Any, turn_id: str) -> None:
+    """校验 Plan 归属的 Turn ID 与当前上下文是否一致。"""
     if plan.turn_id != turn_id:
         raise PlanningApplicationError(
             409,
@@ -102,13 +115,31 @@ class CreatePlanUseCase:
     """为已持久化 Turn 创建 planning 状态的 revision。"""
 
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
+        """初始化 CreatePlanUseCase。
+
+        Args:
+            ports: 数据库能力与模型工厂集合。
+        """
         self._ports = ports
 
     def execute(self, command: CreatePlanInput) -> PlanResult:
+        """执行创建 Plan 流程。
+
+        Args:
+            command: 包含 turn_id、revision、workflow_id 等参数的输入模型。
+
+        Returns:
+            PlanResult: 创建完成的 Plan 视图对象。
+
+        Raises:
+            PlanningApplicationError: Turn 不存在或该 revision 已存在时。
+        """
         with self._ports.uow_factory() as uow:
+            # 校验所属 Turn 是否存在
             turn = uow.conversation_turns.get_by_id(command.turn_id)
             if turn is None:
                 raise _turn_not_found()
+            # 校验 workflow 或 turn 下该 revision 是否发生冲突
             existing = (
                 uow.plans.get_by_workflow_and_revision(
                     command.workflow_id,
@@ -126,6 +157,7 @@ class CreatePlanUseCase:
                     "该 Turn 的 Plan revision 已存在",
                     result_code="plan_revision_conflict",
                 )
+            # 持久化新 Plan 实体
             plan = uow.plans.create(
                 self._ports.plan_factory(
                     plan_id=_new_id("plan"),
@@ -144,34 +176,58 @@ class CreatePlanUseCase:
 
 
 class _CreateDocumentTaskUseCase:
+    """创建文档领域 Task 的抽象基类。"""
+
     def __init__(
         self,
         *,
         ports: PlanningApplicationPorts,
         capability_code: PlanningCapabilityCode,
     ) -> None:
+        """初始化 _CreateDocumentTaskUseCase。
+
+        Args:
+            ports: 数据库能力集合。
+            capability_code: 当前用例对应的领域能力编码。
+        """
         self._ports = ports
         self._capability_code = capability_code
 
     def _execute(self, command: Any) -> TaskResult:
+        """执行 Task 创建的核心校验与持久化。
+
+        Args:
+            command: 任务创建命令对象。
+
+        Returns:
+            TaskResult: 创建完成的 Task 实体对象。
+
+        Raises:
+            PlanningApplicationError: 任务数超限、序号重复、标识冲突或依赖非法时。
+        """
         with self._ports.uow_factory() as uow:
+            # 行锁锁定 Plan，确保当前处于 planning 状态
             plan = uow.plans.get_by_id_for_update(command.plan_id)
             if plan is None:
                 raise _plan_not_found()
             _require_planning(plan)
             _require_turn_ownership(plan, command.turn_id)
+
+            # 查询并锁定当前已有的 draft 任务列表
             draft_tasks = (
                 uow.tasks.list_by_plan_id_and_status_for_update(
                     plan.plan_id,
                     TaskStatus.DRAFT.value,
                 )
             )
+            # 校验任务数量上限（最多 10 个）
             if len(draft_tasks) >= MAX_TASKS_PER_PLAN:
                 raise PlanningApplicationError(
                     409,
                     f"Plan 的 draft Task 数量不能超过 {MAX_TASKS_PER_PLAN}",
                     result_code="plan_task_limit_exceeded",
                 )
+            # 校验 sequence 序号唯一性
             if any(
                 task.sequence == command.sequence
                 for task in draft_tasks
@@ -181,12 +237,14 @@ class _CreateDocumentTaskUseCase:
                     "同一 Plan 的 Task sequence 不得重复",
                     result_code="plan_task_sequence_conflict",
                 )
+            # 校验 task_ref 引用唯一性
             if any(task.task_ref == command.task_ref for task in draft_tasks):
                 raise PlanningApplicationError(
                     409,
                     "同一 Plan 的 task_ref 不得重复",
                     result_code="plan_task_ref_conflict",
                 )
+            # 校验前置依赖合法性：去重并禁止自身依赖
             dependency_refs = list(dict.fromkeys(command.depends_on_task_refs))
             if command.task_ref in dependency_refs:
                 raise PlanningApplicationError(
@@ -194,6 +252,7 @@ class _CreateDocumentTaskUseCase:
                     "Task 不能依赖自身 task_ref",
                     result_code="plan_task_dependency_invalid",
                 )
+            # 写入 draft 任务实体
             try:
                 task = uow.tasks.create(
                     self._ports.task_factory(
@@ -234,6 +293,7 @@ class CreateProcessDocumentTaskUseCase(_CreateDocumentTaskUseCase):
         )
 
     def execute(self, command: CreateProcessDocumentTaskInput) -> TaskResult:
+        """执行创建文档处理任务。"""
         return self._execute(command)
 
 
@@ -247,6 +307,7 @@ class CreateBuildChunksTaskUseCase(_CreateDocumentTaskUseCase):
         )
 
     def execute(self, command: CreateBuildChunksTaskInput) -> TaskResult:
+        """执行创建文档切块任务。"""
         return self._execute(command)
 
 
@@ -260,6 +321,7 @@ class CreateIndexVectorsTaskUseCase(_CreateDocumentTaskUseCase):
         )
 
     def execute(self, command: CreateIndexVectorsTaskInput) -> TaskResult:
+        """执行创建文档向量索引任务。"""
         return self._execute(command)
 
 
@@ -270,25 +332,43 @@ class FinalizePlanUseCase:
     1. Task 数量必须为 1 ~ 10 个。
     2. sequence 必须从 1 开始严格单调递增且连续。
     3. DAG 校验：依赖边必须合法、无环、最大深度不超过 3。
-    4. 单一事务内原子将 Plan 推进至 PROCESSING、全部 Task 转为 PENDING、写入依赖边表、更新 Turn 状态及追加首个 `runtime.plan_wakeup` Outbox 事件。
+    4. 单一事务内原子将 Plan 推进至 READY、全部 Task 转为 PENDING、写入依赖边表、更新 Turn 状态及追加首个 `runtime.plan_wakeup` Outbox 事件。
     """
 
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
+        """初始化 FinalizePlanUseCase。
+
+        Args:
+            ports: 数据库能力集合。
+        """
         self._ports = ports
 
     def execute(self, command: FinalizePlanInput) -> FinalizePlanResult:
-        """执行 Plan 发布与校验流程。"""
+        """执行 Plan 发布与校验流程。
+
+        Args:
+            command: 包含 plan_id 与 turn_id 的输入。
+
+        Returns:
+            FinalizePlanResult: 发布结果。
+
+        Raises:
+            PlanningApplicationError: 当 Plan 状态冲突、任务序号不连续或 DAG 校验失败时。
+        """
         with self._ports.uow_factory() as uow:
+            # 行锁锁定 Plan，校验状态
             plan = uow.plans.get_by_id_for_update(command.plan_id)
             if plan is None:
                 raise _plan_not_found()
             _require_planning(plan)
             _require_turn_ownership(plan, command.turn_id)
 
+            # 查询并锁定所有 draft 状态的 Task
             tasks = uow.tasks.list_by_plan_id_and_status_for_update(
                 plan.plan_id,
                 TaskStatus.DRAFT.value,
             )
+            # 约束 1：任务数量为 1 ~ 10 个
             if not tasks:
                 raise PlanningApplicationError(
                     409,
@@ -301,6 +381,7 @@ class FinalizePlanUseCase:
                     f"Plan 的 Task 数量不能超过 {MAX_TASKS_PER_PLAN}",
                     result_code="plan_task_limit_exceeded",
                 )
+            # 约束 2：sequence 必须从 1 开始严格单调连续递增
             sequences = [task.sequence for task in tasks]
             expected_sequences = list(range(1, len(tasks) + 1))
             if sequences != expected_sequences:
@@ -310,8 +391,10 @@ class FinalizePlanUseCase:
                     result_code="plan_task_sequence_invalid",
                 )
 
+            # 约束 3：校验 Task DAG（无环、无无效引用、深度 <= 3）
             dependency_pairs = self._validate_dag(tasks)
 
+            # 校验并锁定关联的 ConversationTurn
             turn = uow.conversation_turns.get_by_id_for_update(plan.turn_id)
             if turn is None:
                 raise _turn_not_found()
@@ -325,6 +408,8 @@ class FinalizePlanUseCase:
                     result_code="turn_state_conflict",
                 )
             task_ids = [task.task_id for task in tasks]
+
+            # 约束 4：原子落盘 - 写入持久化依赖边记录
             uow.task_dependencies.add_all(
                 self._ports.task_dependency_factory(
                     dependency_id=_new_id("dependency"),
@@ -334,12 +419,14 @@ class FinalizePlanUseCase:
                 )
                 for task_id, depends_on_task_id in dependency_pairs
             )
+            # 清理 input_json 中的临时依赖字段
             for task in tasks:
                 task.input_json = {
                     key: value
                     for key, value in task.input_json.items()
                     if key != "_depends_on_task_refs"
                 }
+            # 原子流转状态：Tasks -> pending, Plan -> ready, Turn -> processing
             uow.tasks.set_status(tasks, TaskStatus.PENDING.value)
             uow.plans.set_status(
                 plan,
@@ -351,6 +438,7 @@ class FinalizePlanUseCase:
                 turn,
                 ContextTurnStatus.PROCESSING.value,
             )
+            # 追加首个 plan_wakeup Outbox 事件以唤醒 Task Runtime Worker
             uow.outbox.add(
                 _new_outbox_event(
                     self._ports,
@@ -372,6 +460,23 @@ class FinalizePlanUseCase:
 
     @staticmethod
     def _validate_dag(tasks: list[Any]) -> list[tuple[str, str]]:
+        """校验任务拓扑图（DAG）的合法性。
+
+        检查项：
+        - task_ref 唯一性。
+        - 依赖引用的存在性与非自依赖性。
+        - 无循环依赖（环检测）。
+        - DAG 最大拓扑深度不超过 MAX_PLAN_DAG_DEPTH (3)。
+
+        Args:
+            tasks: draft 任务列表。
+
+        Returns:
+            list[tuple[str, str]]: (task_id, depends_on_task_id) 依赖对列表。
+
+        Raises:
+            PlanningApplicationError: 拓扑非法或深度超限时。
+        """
         by_ref = {task.task_ref: task for task in tasks}
         if len(by_ref) != len(tasks):
             raise PlanningApplicationError(
@@ -436,6 +541,8 @@ class FinalizePlanUseCase:
 
 
 class _MarkPlanUseCase:
+    """将 Plan 标记为目标状态的抽象基类。"""
+
     def __init__(
         self,
         *,
@@ -472,6 +579,7 @@ class _MarkPlanUseCase:
                 ),
                 failure_reason=normalized_reason,
             )
+            # 若重试挂起，处理澄清请求过期并发布 REPLAN_REQUESTED 事件
             if self._target_status == PlanStatus.RETRY_PENDING:
                 clarification = uow.clarifications.get_by_plan_id_for_update(
                     plan.plan_id
@@ -511,26 +619,45 @@ class _MarkPlanUseCase:
 
 
 class MarkPlanUnsupportedUseCase(_MarkPlanUseCase):
+    """将 Plan 标记为 unsupported（能力不支持）的用例。"""
+
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         super().__init__(ports=ports, target_status=PlanStatus.UNSUPPORTED)
 
     def execute(self, command: MarkPlanUnsupportedInput) -> PlanResult:
+        """执行标记不支持。"""
         return self._execute(command.plan_id, command.reason)
 
 
 class MarkPlanRetryPendingUseCase(_MarkPlanUseCase):
+    """将 Plan 标记为 retry_pending（系统错误待重试）的用例。"""
+
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         super().__init__(ports=ports, target_status=PlanStatus.RETRY_PENDING)
 
     def execute(self, command: MarkPlanRetryPendingInput) -> PlanResult:
+        """执行标记待重试。"""
         return self._execute(command.plan_id, command.reason)
 
 
 class MarkPlanNeedsClarificationUseCase:
+    """将 Plan 与 Turn 标记为 needs_clarification 并创建 ClarificationRequest 的用例。"""
+
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         self._ports = ports
 
     def execute(self, command: MarkPlanNeedsClarificationInput) -> PlanResult:
+        """执行标记需要澄清。
+
+        Args:
+            command: 澄清请求输入。
+
+        Returns:
+            PlanResult: 更新后的 Plan 实体。
+
+        Raises:
+            PlanningApplicationError: 会话归属冲突、状态冲突或已存在 open 澄清时。
+        """
         with self._ports.uow_factory() as uow:
             plan = uow.plans.get_by_id_for_update(command.plan_id)
             if plan is None:
@@ -565,6 +692,7 @@ class MarkPlanNeedsClarificationUseCase:
                     "Conversation Turn 已存在 ClarificationRequest",
                     result_code="clarification_conflict",
                 )
+            # 更新 Plan 与 Turn 状态
             uow.plans.set_status(
                 plan,
                 status=PlanStatus.NEEDS_CLARIFICATION.value,
@@ -575,6 +703,7 @@ class MarkPlanNeedsClarificationUseCase:
                 turn,
                 ContextTurnStatus.NEEDS_CLARIFICATION.value,
             )
+            # 持久化 ClarificationRequest 实体
             uow.clarifications.add(
                 self._ports.clarification_request_factory(
                     clarification_id=_new_id("clarification"),
@@ -600,10 +729,20 @@ class MarkPlanNeedsClarificationUseCase:
 
 
 class SetClarificationQuestionUseCase:
+    """为已标记需要澄清的 Plan 设置具体向用户提问文本的用例。"""
+
     def __init__(self, *, ports: PlanningApplicationPorts) -> None:
         self._ports = ports
 
     def execute(self, command: SetClarificationQuestionInput) -> str:
+        """执行设置澄清提问文本并同步回写 Turn。
+
+        Args:
+            command: 提问文本输入。
+
+        Returns:
+            str: 成功持久化的提问文本。
+        """
         with self._ports.uow_factory() as uow:
             plan = uow.plans.get_by_id_for_update(command.plan_id)
             request = uow.clarifications.get_by_plan_id_for_update(
@@ -630,6 +769,7 @@ class SetClarificationQuestionUseCase:
                     "Conversation Turn 当前不等待澄清",
                     result_code="turn_state_conflict",
                 )
+            # 同步更新 ClarificationRequest 与 Turn 助手内容
             request.question = command.question
             turn.assistant_content = command.question
             turn.assistant_compact = command.question
@@ -640,6 +780,8 @@ class SetClarificationQuestionUseCase:
 
 @dataclass(frozen=True)
 class PlanningUseCases:
+    """包含全部 Planning Use Cases 实例的容器类。"""
+
     create_plan: CreatePlanUseCase
     create_process_document_task: CreateProcessDocumentTaskUseCase
     create_build_chunks_task: CreateBuildChunksTaskUseCase
@@ -654,7 +796,14 @@ class PlanningUseCases:
 def build_planning_use_cases(
     ports: PlanningApplicationPorts,
 ) -> PlanningUseCases:
-    """以同一组显式 Ports 装配全部 Planning Use Cases。"""
+    """以同一组显式 Ports 装配全部 Planning Use Cases。
+
+    Args:
+        ports: PlanningApplicationPorts 实例。
+
+    Returns:
+        PlanningUseCases: 装配完成的用例集合对象。
+    """
     return PlanningUseCases(
         create_plan=CreatePlanUseCase(ports=ports),
         create_process_document_task=CreateProcessDocumentTaskUseCase(

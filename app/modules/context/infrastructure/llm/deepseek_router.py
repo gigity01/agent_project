@@ -54,7 +54,11 @@ reason_summary 只能简要说明上下文关联依据，不得包含后续业�
 
 
 def _empty_selection_without_model() -> ContextSelectionDecision:
-    """没有历史 Chain 时直接返回空读取集合，避免无意义模型调用。"""
+    """当会话没有任何历史未归档链时，直接返回空读取集合，避免无意义的 LLM 网络调用。
+
+    Returns:
+        ContextSelectionDecision: relevant_chain_ids 为空的决策对象。
+    """
     return ContextSelectionDecision(
         relevant_chain_ids=[],
         reason_summary="当前 Conversation 没有历史上下文。",
@@ -62,7 +66,13 @@ def _empty_selection_without_model() -> ContextSelectionDecision:
 
 
 class DeepSeekContextRouter:
-    """通过 DeepSeek strict tool call 返回结构化历史读取集合。"""
+    """通过 DeepSeek strict tool call 返回结构化历史读取集合的路由器实现。
+
+    设计约束：
+    - 使用 strict tool call（submit_context_selection）强制结构化输出，禁用自然语言回复。
+    - 禁用 reasoning/thinking，设置 temperature=0 确保判定确定性与低延迟。
+    - 在输出格式不符合 strict 契约时最多重试 max_output_attempts 次。
+    """
 
     def __init__(
         self,
@@ -71,6 +81,16 @@ class DeepSeekContextRouter:
         max_output_attempts: int = DEFAULT_CONTEXT_AGENT_OUTPUT_ATTEMPTS,
         event_logger: Any | None = None,
     ) -> None:
+        """初始化 DeepSeekContextRouter。
+
+        Args:
+            provider: DeepSeekModelProvider 实例。
+            max_output_attempts: 最大输出重试尝试次数（默认 2 次）。
+            event_logger: 可观测性事件日志记录器。
+
+        Raises:
+            ValueError: 当 max_output_attempts 小于 1 时抛出。
+        """
         if max_output_attempts < 1:
             raise ValueError("max_output_attempts must be at least 1")
         self._client = provider.strict_tool_client
@@ -83,7 +103,18 @@ class DeepSeekContextRouter:
         self,
         agent_input: ContextAgentInput,
     ) -> ContextSelectionDecision:
-        """返回结构化选择结果；没有历史 Chain 时不调用模型。"""
+        """调用 DeepSeek 返回结构化的历史读取集合决策；若无历史 Chain 则直接短路返回。
+
+        Args:
+            agent_input: ContextAgentInput 包含当前用户输入与候选未归档链。
+
+        Returns:
+            ContextSelectionDecision: 结构化路由选择决策。
+
+        Raises:
+            ContextAgentOutputError: 多次尝试后依然未能获得合法 strict tool 调用结果。
+        """
+        # 1. 若当前会话无任何已有链，直接短路返回，无需调用模型
         if not agent_input.chains:
             self._observe(
                 "context_selection_llm_skipped",
@@ -97,6 +128,7 @@ class DeepSeekContextRouter:
 
         started_at = monotonic_ns()
         last_error: ContextAgentOutputError | None = None
+        # 2. 循环重试执行 strict tool 调用
         for attempt in range(self._max_output_attempts):
             try:
                 response = await self._client.chat.completions.create(
@@ -148,6 +180,7 @@ class DeepSeekContextRouter:
                 )
                 raise
 
+            # 3. 解析并校验模型返回的 strict tool 调用
             try:
                 decision = self._parse_response(response)
             except ContextAgentOutputError as exc:
@@ -197,9 +230,11 @@ class DeepSeekContextRouter:
 
     @staticmethod
     def _elapsed_ms(started_at: int) -> float:
+        """计算自 started_at（纳秒）以来的毫秒数。"""
         return round((monotonic_ns() - started_at) / 1_000_000, 3)
 
     def _observe(self, event: str, **fields: Any) -> None:
+        """记录结构化观察事件。"""
         if self._event_logger is None:
             return
         try:
@@ -213,6 +248,15 @@ class DeepSeekContextRouter:
         *,
         retry: bool,
     ) -> list[dict[str, str]]:
+        """组装 LLM 提示词消息序列。
+
+        Args:
+            agent_input: ContextAgentInput 实例。
+            retry: 是否为重试轮次。
+
+        Returns:
+            list[dict[str, str]]: 包含 system 和 user 角色的消息列表。
+        """
         user_content = agent_input.model_dump_json(indent=2)
         if retry:
             user_content = (
@@ -233,6 +277,17 @@ class DeepSeekContextRouter:
 
     @staticmethod
     def _parse_response(response: Any) -> ContextSelectionDecision:
+        """从 ChatCompletion 响应中解析并验证 submit_context_selection 工具调用参数。
+
+        Args:
+            response: OpenAI / DeepSeek 响应对象。
+
+        Returns:
+            ContextSelectionDecision: 解析出的领域决策模型。
+
+        Raises:
+            ContextAgentOutputError: 缺少 choice, message, tool_calls, arguments 或 JSON 校验失败。
+        """
         choices = getattr(response, "choices", None)
         if not choices:
             raise ContextAgentOutputError("Context Agent 没有返回 choice")

@@ -1,4 +1,11 @@
-"""Redis Streams Worker 的离线消费与 ACK 行为。"""
+"""Redis Streams Worker 消费者组消费、死信抢占（Autoclaim）与 ACK 机制测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 消费组与死信抢占（PEL Claim）：
+   - Worker 优先通过 `xautoclaim` 抢占 PEL 中超时的待处理消息，实现崩溃实例未完成消息的无缝接管，再通过 `xreadgroup` 读取新消息。
+2. 业务处理成功后后置 ACK：
+   - 消息只有在业务分派与持久化完全成功后才调用 `xack`；业务处理失败时不 ACK，保留在 pending 列表中供后续重试或由集群其他实例接管。
+"""
 
 from __future__ import annotations
 
@@ -9,6 +16,7 @@ from app.modules.messaging.infrastructure.redis_streams import RedisStreamWorker
 
 
 class _FakeRedis:
+    """测试用 Redis Streams 客户端替身，模拟 xgroup_create, xautoclaim, xreadgroup 与 xack。"""
     def __init__(self, messages, *, claimed_messages=None) -> None:
         self._messages = list(messages)
         self._claimed_messages = list(claimed_messages or [])
@@ -33,6 +41,7 @@ class _FakeRedis:
 
 
 class _Dispatcher:
+    """测试用事件分派器替身。"""
     def __init__(self, *, fail: bool = False) -> None:
         self.events = []
         self._fail = fail
@@ -44,6 +53,7 @@ class _Dispatcher:
 
 
 class RedisStreamWorkerTest(unittest.IsolatedAsyncioTestCase):
+    """验证 RedisStreamWorker 的超时接管、新消息消费与错误不 ACK 行为。"""
     async def test_claims_timed_out_message_before_reading_new_one(self) -> None:
         redis = _FakeRedis(
             [],

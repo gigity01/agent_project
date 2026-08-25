@@ -1,4 +1,12 @@
-"""把 capability-scoped Agent Run 适配为 Task Executor Port。"""
+"""把 capability-scoped Agent Run 适配为 Task Executor Port。
+
+本模块实现了通过 OpenAI Agents SDK 驱动 Document Executor Agent 的适配器：
+1. 每个 Capability 独享专属 Agent，仅提供受限只读查询 Tool 和当前 Capability 的唯一 Command Tool。
+2. 内部严格禁用并行工具调用（parallel_tool_calls=False, max_function_tool_concurrency=1）。
+3. 使用 StopAtTools 在 Command Tool 执行后立即中断 Agent 循环，直接将结构化 Tool Output 传递给适配器。
+4. 任务成败严格取决于 Command Tool 的结构化返回值，LLM 自由文本不影响判定。
+5. 任务取消时通过 await_side_effect_quiescence 排空内部工具调用，避免与补偿产生竞态。
+"""
 
 from __future__ import annotations
 
@@ -43,6 +51,14 @@ DEFAULT_DOCUMENT_EXECUTOR_MAX_TURNS = 8
 def adapt_process_document_output(
     output: ToolResult,
 ) -> TaskExecutorResult:
+    """将 ProcessDocumentToolOutput 转换为通用的 TaskExecutorResult。
+
+    Args:
+        output: 工具执行返回的 ToolResult 结构。
+
+    Returns:
+        TaskExecutorResult: 适配后的任务执行结果与资源引用。
+    """
     result = ProcessDocumentToolOutput.model_validate(output)
     task_output = ProcessDocumentTaskOutput(
         document_id=result.document_id,
@@ -58,6 +74,14 @@ def adapt_process_document_output(
 def adapt_build_document_chunks_output(
     output: ToolResult,
 ) -> TaskExecutorResult:
+    """将 BuildDocumentChunksToolOutput 转换为通用的 TaskExecutorResult。
+
+    Args:
+        output: 工具执行返回的 ToolResult 结构。
+
+    Returns:
+        TaskExecutorResult: 适配后的任务执行结果与资源引用。
+    """
     result = BuildDocumentChunksToolOutput.model_validate(output)
     task_output = BuildDocumentChunksTaskOutput(
         document_id=result.document_id,
@@ -74,6 +98,14 @@ def adapt_build_document_chunks_output(
 def adapt_index_document_vectors_output(
     output: ToolResult,
 ) -> TaskExecutorResult:
+    """将 IndexDocumentVectorsToolOutput 转换为通用的 TaskExecutorResult。
+
+    Args:
+        output: 工具执行返回的 ToolResult 结构。
+
+    Returns:
+        TaskExecutorResult: 适配后的任务执行结果与资源引用。
+    """
     result = IndexDocumentVectorsToolOutput.model_validate(output)
     task_output = IndexDocumentVectorsTaskOutput(
         document_id=result.document_id,
@@ -114,6 +146,24 @@ class AgentTaskExecutor:
             AgentToolAuditLogger
         ),
     ) -> None:
+        """初始化 AgentTaskExecutor。
+
+        Args:
+            agent: OpenAI Agents SDK Agent 实例。
+            executor_code: Executor 标识。
+            primary_tool_name: 该 Capability 唯一的 Command Tool 名称。
+            tool_output_model: 工具输出 ToolResult 模型类。
+            output_adapter: 工具结果到 TaskExecutorResult 的适配函数。
+            document_services: 注入的文档领域服务。
+            permissions: 授权权限集合。
+            run_config: Agent 运行配置（含 LLM Provider 等）。
+            max_turns: Agent 允许交互的最大 Turn 数（默认 8）。
+            runner: Agents SDK Runner 入口。
+            audit_logger_factory: 审计日志记录器工厂。
+
+        Raises:
+            ValueError: 当 Agent 未包含指定的 primary_tool_name 时。
+        """
         if primary_tool_name not in {tool.name for tool in agent.tools}:
             raise ValueError("Executor Agent 未暴露指定 Command Tool")
         self._agent = agent
@@ -133,7 +183,18 @@ class AgentTaskExecutor:
         payload: BaseModel,
         context: TaskRuntimeContext,
     ) -> TaskExecutorResult:
-        """执行 Agent Task，并通过 Command Tool 输出解析确定性结果。"""
+        """执行 Agent Task，并通过 Command Tool 输出解析确定性结果。
+
+        Args:
+            payload: 任务输入 payload 模型。
+            context: 运行时上下文。
+
+        Returns:
+            TaskExecutorResult: 执行结果。
+
+        Raises:
+            TaskExecutionError: 当输入无效、Agent 失败、工具拒绝、执行失败或输出契约不合法时。
+        """
         document_id = getattr(payload, "document_id", None)
         if not isinstance(document_id, int):
             raise TaskExecutionError(
@@ -170,6 +231,7 @@ class AgentTaskExecutor:
             ensure_ascii=False,
         )
         try:
+            # 事务外执行 Agent 并通过 await_side_effect_quiescence 保护排空
             run_result = await await_side_effect_quiescence(
                 self._runner(
                     self._agent,
@@ -188,6 +250,7 @@ class AgentTaskExecutor:
                 retryable=True,
             ) from exc
 
+        # 校验 Command Tool Output
         try:
             output = self._validate_tool_output(run_result.final_output)
         except (TypeError, ValidationError, ValueError) as exc:
@@ -197,6 +260,7 @@ class AgentTaskExecutor:
                 retryable=True,
             ) from exc
 
+        # 校验授权范围一致性
         if output.document_id != document_id:
             raise TaskExecutionError(
                 "task_scope_violation",
@@ -204,6 +268,7 @@ class AgentTaskExecutor:
                 retryable=False,
                 blocked=True,
             )
+        # 显式映射 outcome 分类
         if output.outcome == "rejected":
             raise TaskExecutionError(
                 output.result_code,
@@ -228,6 +293,7 @@ class AgentTaskExecutor:
             ) from exc
 
     def _validate_tool_output(self, output: Any) -> ToolResult:
+        """解析并校验 final_output 符合 ToolResult 契约。"""
         if isinstance(output, str):
             return self._tool_output_model.model_validate_json(output)
         return self._tool_output_model.model_validate(output)

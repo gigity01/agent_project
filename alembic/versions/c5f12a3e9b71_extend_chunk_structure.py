@@ -1,9 +1,18 @@
-"""扩展父子块的语义恢复与检索上下文字段。
+"""扩展父级语义块（parent_blocks）与子块（child_chunks）的语义切分与上下文结构字段。
+
+业务背景与设计规范：
+1. `parent_blocks` 扩展：
+   - `semantic_group_index`：语义分组序号（如 CSV 批量分组、多段落合并大语义块）。
+   - `segment_index`：同一语义组内的切片顺序。
+   - 增加 `(doc_id, semantic_group_index, segment_index)` 与 `(doc_id, block_index)` 索引，支持高效检索与顺序装配。
+2. `child_chunks` 扩展：
+   - `section_path`：记录 Markdown 标题层级路径（如 `["一级标题", "二级标题"]`），保留子块在结构化文档中的语义层级。
+   - `source_row_index`：记录表格类数据（如 CSV）的原始数据行号。
+   - 增加 `(parent_id, chunk_index)` 与 `(doc_id, vector_status, status)` 索引，加速向量索引任务筛选与父子关系关联。
 
 Revision ID: c5f12a3e9b71
 Revises: a473f5174f52
 Create Date: 2026-07-13 16:00:00.000000
-
 """
 from typing import Sequence, Union
 
@@ -19,7 +28,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """增加语义组、组内顺序以及子块检索上下文字段和索引。"""
+    """添加语义组、分段索引及子块层级路径字段，并构建支持向量索引与父子块检索的高性能复合索引。"""
     op.add_column(
         "parent_blocks",
         sa.Column(

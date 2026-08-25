@@ -1,9 +1,15 @@
-"""以 ORM 为准同步数据库结构
+"""以 SQLAlchemy ORM 模型元数据为准对齐数据库物理 Schema。
+
+业务背景与变更内容：
+1. `conversation_turns` 增加 `clarification_input` 文本列，用于在同一 Turn 内保存用户的澄清回复内容，无需创建第二个 Turn。
+2. `child_chunks` 调整：新增 `idx_child_chunks_kb_id` 索引，清理过时的冗余索引与表级注释。
+3. `document_artifacts` 调整：将 `idx_document_artifacts_document_id` 重命名为 `ix_document_artifacts_document_id`，清理冗余索引。
+4. `documents`、`knowledge_bases`、`parent_blocks` 字段与索引清理：移除遗留的旧索引与废弃注释，使数据库结构与 ORM 映射完全保持一致。
+5. 删除废弃的 `domains` 表。
 
 Revision ID: 4ce8fd45dde4
 Revises: f4a7c9e2b6d8
 Create Date: 2026-08-20 17:11:45.411418
-
 """
 from typing import Sequence, Union
 

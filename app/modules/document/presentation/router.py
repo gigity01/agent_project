@@ -1,4 +1,12 @@
-"""文档模块 HTTP Router。"""
+"""文档模块 HTTP 路由注册与控制器实现。
+
+包含：
+- `/admin/documents`: 文档上传、详情、检索、流水线状态及四阶段处理命令（upload, process, build-chunks, index-vectors）。
+- `/admin/document-artifacts`: 派生产物检索接口。
+- `/admin/parent-blocks`: 父级语义块检索接口。
+- `/admin/child-chunks`: 可向量化子切块检索接口。
+- `/admin/knowledge-bases`: 知识库宏观统计接口。
+"""
 
 from typing import Annotated
 
@@ -46,8 +54,8 @@ from app.modules.document.application.use_cases.upload_document import (
 from app.modules.document.presentation.dependencies import (
     document_upload_form,
     get_build_chunks_use_case,
-    get_document_operation_context,
     get_document_chunk_statistics_use_case,
+    get_document_operation_context,
     get_document_pipeline_state_use_case,
     get_document_use_case,
     get_index_vectors_use_case,
@@ -80,7 +88,6 @@ from app.modules.document.presentation.schemas import (
     VectorIndexingResponse,
 )
 from app.shared.observability.correlation import DocumentOperationContext
-
 
 router = APIRouter(prefix="/admin/documents", tags=["documents"])
 artifact_router = APIRouter(
@@ -117,7 +124,7 @@ async def upload_document(
         get_document_operation_context
     ),
 ):
-    """接收原始文件并创建处于 uploaded 状态的文档记录。"""
+    """阶段 1：接收原始文件并创建处于 uploaded 状态的文档记录。"""
     return await use_case.execute(
         file=file,
         meta=meta,
@@ -147,7 +154,7 @@ def search_documents(
         get_search_documents_use_case
     ),
 ):
-    """按受限业务字段、状态轴和时间范围查询文档。"""
+    """按受限业务字段、状态轴和时间范围高级检索文档。"""
     return use_case.execute(request)
 
 
@@ -161,7 +168,7 @@ def get_document_pipeline_state(
         get_document_pipeline_state_use_case
     ),
 ):
-    """读取文档处理、切块与向量索引状态。"""
+    """读取文档流水线三阶段状态（处理/切块/向量索引）。"""
     return use_case.execute(document_id)
 
 
@@ -189,7 +196,7 @@ def get_document_chunk_statistics(
         get_document_chunk_statistics_use_case
     ),
 ):
-    """读取文档父块、子块和向量状态统计。"""
+    """读取文档父块、子块和向量状态统计指标。"""
     return use_case.execute(document_id)
 
 
@@ -206,7 +213,7 @@ def trigger_document_processing(
         get_document_operation_context
     ),
 ):
-    """触发指定文档的清洗或外部格式转换流程。"""
+    """阶段 2：触发指定文档的清洗或外部格式转换流程（推进至 processed）。"""
     return use_case.execute(
         document_id,
         operation_context=operation_context,
@@ -224,7 +231,7 @@ def trigger_build_chunks(
         get_document_operation_context
     ),
 ):
-    """基于已清洗的文本重建父块和子块。"""
+    """阶段 3：基于已清洗的文本重建父块和子块（推进至 chunked）。"""
     return use_case.execute(
         document_id,
         operation_context=operation_context,
@@ -242,7 +249,7 @@ def trigger_vector_indexing(
         get_document_operation_context
     ),
 ):
-    """为尚未索引的子块生成向量并写入向量库。"""
+    """阶段 4：为尚未索引的子块生成向量并写入 Qdrant 向量库（推进至 indexed）。"""
     return use_case.execute(
         document_id,
         operation_context=operation_context,
@@ -259,7 +266,7 @@ def search_document_artifacts(
         get_search_document_artifacts_use_case
     ),
 ):
-    """按产物类型、角色、状态和时间范围查询派生产物。"""
+    """按产物类型、角色、状态和时间范围高级检索派生产物。"""
     return use_case.execute(request)
 
 
@@ -273,7 +280,7 @@ def search_parent_blocks(
         get_list_parent_blocks_use_case
     ),
 ):
-    """按文档、知识库、章节路径和关键词查询父块。"""
+    """按文档、知识库、章节路径和关键词高级检索父级语义块。"""
     return use_case.execute(request)
 
 
@@ -287,7 +294,7 @@ def search_child_chunks(
         get_list_child_chunks_use_case
     ),
 ):
-    """按向量状态、章节路径和 CSV 行范围查询子块。"""
+    """按向量状态、章节路径和 CSV 行范围高级检索可向量化子块。"""
     return use_case.execute(request)
 
 
@@ -301,5 +308,5 @@ def get_knowledge_base_statistics(
         get_knowledge_base_statistics_use_case
     ),
 ):
-    """读取知识库文档、父子块和向量状态统计。"""
+    """读取知识库文档、父子块和向量状态宏观统计数据。"""
     return use_case.execute(kb_id)

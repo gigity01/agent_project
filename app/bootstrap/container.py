@@ -1,4 +1,9 @@
-"""应用级对象容器。"""
+"""应用级依赖注入对象容器模块。
+
+职责说明：
+- 定义集中持有应用生命周期内全局共享的外部客户端（Redis、DeepSeek）、Agent 运行时、领域 Service 与 Use Case 实例的 `AppContainer` 数据类。
+- 提供优雅关闭方法 `aclose()`，确保外部资源与连接池按依赖拓扑安全释放。
+"""
 
 from __future__ import annotations
 
@@ -105,7 +110,17 @@ if TYPE_CHECKING:
 
 @dataclass
 class AppContainer:
-    """集中持有应用生命周期内共享的外部客户端、Agent 运行时与 Use Case 对象。"""
+    """集中持有应用生命周期内共享的外部客户端、Agent 运行时与 Use Case 对象容器。
+
+    字段说明：
+    - 外部客户端：Redis 客户端、DeepSeek LLM Provider。
+    - Context 模块：路由 Agent、并发锁、热队列、ContextService 及只读用例。
+    - Operations 模块：日志与时间线查询服务及用例。
+    - Planning & Agent：Collector 集合、PlannerRunner、执行器集合、Planning 用例与 Replan 用例。
+    - Task Runtime & Messaging：任务运行时服务、Plan 结果聚合器、Outbox 发布器、事件分派器、澄清回答用例。
+    - Conversation 模块：用户消息编排用例、Turn 状态查询用例。
+    - Document 模块：上传、清洗处理、切块、向量索引及全量只读查询用例。
+    """
 
     # --- 基础客户端与外部提供者 ---
     redis_client: Redis
@@ -169,7 +184,7 @@ class AppContainer:
     get_knowledge_base_statistics: GetKnowledgeBaseStatisticsUseCase
 
     async def aclose(self) -> None:
-        """按依赖顺序优雅关闭外部客户端与连接池。"""
+        """按依赖倒序安全关闭外部客户端与底层连接池。"""
         try:
             if self.deepseek_provider is not None:
                 await self.deepseek_provider.aclose()

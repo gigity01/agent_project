@@ -1,4 +1,9 @@
-"""只调用 Planning Use Case 的 Planner Function Tools。"""
+"""只调用 Planning Use Case 的 Planner Function Tools。
+
+本模块实现了供 Commit Agent 调用的受限规划工具。所有工具通过 AgentToolContext
+获取关联的 Plan / Turn 边界，并在受控权限审计（execute_audited_tool_call）下
+执行具体的 Planning Use Case，返回标准结构化 PlanningToolOutput。
+"""
 
 from __future__ import annotations
 
@@ -34,6 +39,17 @@ PLANNING_WRITE_PERMISSION = "planning:write"
 def _planning_scope(
     context: AgentToolContext,
 ) -> tuple[PlanningToolServices, str, str]:
+    """从 Agent 运行上下文中提取 Planning 服务实例及关联的 Plan ID 与 Turn ID。
+
+    Args:
+        context: 当前 Agent 工具运行上下文。
+
+    Returns:
+        tuple[PlanningToolServices, str, str]: (规划服务包, plan_id, turn_id)
+
+    Raises:
+        PlanningApplicationError: 当未配置 Planning 服务或缺少 Plan/Turn 上下文时。
+    """
     if context.planning_services is None:
         raise PlanningApplicationError(
             503,
@@ -56,10 +72,22 @@ def _execute(
     success_result_code: str,
     operation: Callable[[PlanningToolServices, str, str], Any],
 ) -> tuple[Any | None, PlanningToolOutput | None]:
+    """在审计追踪和权限校验围栏下执行 Planning 操作。
+
+    Args:
+        ctx: Agents SDK 运行时上下文包装器。
+        tool_name: 当前工具名称。
+        success_result_code: 成功时记录的业务结果码。
+        operation: 实际执行的业务回调函数。
+
+    Returns:
+        tuple[Any | None, PlanningToolOutput | None]: 成功返回 (业务结果, None)，失败返回 (None, 错误输出)。
+    """
     resource_refs = [
         *([f"plan:{ctx.context.plan_id}"] if ctx.context.plan_id else []),
         *([f"turn:{ctx.context.turn_id}"] if ctx.context.turn_id else []),
     ]
+    # 执行受审计的工具调用并做权限拦截
     execution = execute_audited_tool_call(
         context=ctx.context,
         tool_name=tool_name,
@@ -77,6 +105,15 @@ def create_process_document_task_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: CreateProcessDocumentTaskToolInput,
 ) -> PlanningToolOutput:
+    """处理创建文档处理（Process Document）任务的工具调用。
+
+    Args:
+        ctx: Agents SDK 运行时上下文。
+        tool_input: 包含 document_id、sequence、task_ref 及依赖引用的参数。
+
+    Returns:
+        PlanningToolOutput: 包含创建成功的 Task ID、状态或失败信息的输出。
+    """
     result, error = _execute(
         ctx,
         tool_name="create_process_document_task",
@@ -119,6 +156,15 @@ def create_build_chunks_task_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: CreateBuildChunksTaskToolInput,
 ) -> PlanningToolOutput:
+    """处理创建文档切块（Build Document Chunks）任务的工具调用。
+
+    Args:
+        ctx: Agents SDK 运行时上下文。
+        tool_input: 包含 document_id、sequence、task_ref 及依赖引用的参数。
+
+    Returns:
+        PlanningToolOutput: 包含创建成功的 Task ID、状态或失败信息的输出。
+    """
     result, error = _execute(
         ctx,
         tool_name="create_build_chunks_task",
@@ -161,6 +207,15 @@ def create_index_vectors_task_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: CreateIndexVectorsTaskToolInput,
 ) -> PlanningToolOutput:
+    """处理创建文档向量索引（Index Document Vectors）任务的工具调用。
+
+    Args:
+        ctx: Agents SDK 运行时上下文。
+        tool_input: 包含 document_id、sequence、task_ref 及依赖引用的参数。
+
+    Returns:
+        PlanningToolOutput: 包含创建成功的 Task ID、状态或失败信息的输出。
+    """
     result, error = _execute(
         ctx,
         tool_name="create_index_vectors_task",
@@ -203,6 +258,19 @@ def finalize_plan_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: FinalizePlanToolInput,
 ) -> PlanningToolOutput:
+    """处理 Plan 校验与原子发布的工具调用。
+
+    对所有 draft 状态的任务进行 sequence 连续性与 DAG 拓扑校验，
+    校验通过后原子将 Plan 推进至 ready，并将任务设为 pending，
+    同时在单一事务内发布首个 runtime.plan_wakeup Outbox 事件。
+
+    Args:
+        ctx: Agents SDK 运行时上下文。
+        tool_input: Finalize 参数（空模型，上下文强制由 runtime 注入）。
+
+    Returns:
+        PlanningToolOutput: 发布后的 Plan ID 与包含的 Task ID 列表。
+    """
     _ = tool_input
     result, error = _execute(
         ctx,
@@ -242,6 +310,15 @@ def mark_plan_unsupported_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: MarkPlanUnsupportedToolInput,
 ) -> PlanningToolOutput:
+    """处理将当前 Plan 标记为不支持（Unsupported）的工具调用。
+
+    Args:
+        ctx: Agents SDK 运行时上下文。
+        tool_input: 包含不支持原因（reason）的参数。
+
+    Returns:
+        PlanningToolOutput: 标记完成后的 Plan 状态与信息。
+    """
     result, error = _execute(
         ctx,
         tool_name="mark_plan_unsupported",

@@ -1,4 +1,11 @@
-"""DocumentRepository 生命周期更新与行锁测试。"""
+"""DocumentRepository 生命周期状态更新与悲观行锁测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 行级排他锁（FOR UPDATE）：
+   - `get_by_id_for_update` 在事务中附加悲观行锁，防止并发执行者读取或修改脏状态。
+2. 三状态轴与哈希更新：
+   - `update_lifecycle_state` 在锁内安全更新 `lifecycle_status`、`storage_status`、`active_content_hash` 及相关时间戳，并保证仅执行 flush 而不越权 commit。
+"""
 
 from __future__ import annotations
 
@@ -28,6 +35,7 @@ REPOSITORY_PATH = (
 
 
 class _Field:
+    """测试用 SQLAlchemy Column 表达式替身。"""
     def __eq__(self, other):
         return ("eq", other)
 
@@ -36,6 +44,7 @@ class _Field:
 
 
 class _DocumentModel:
+    """测试用 Document ORM 字段定义替身。"""
     id = _Field()
     kb_id = _Field()
     active_content_hash = _Field()

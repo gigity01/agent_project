@@ -1,4 +1,9 @@
-"""记录文档切块领取、构建和登记事件。"""
+"""文档切块阶段结构化事件日志记录模块。
+
+职责说明：
+- 提供 `DocumentChunkLogger` 类，记录切块任务领取 (claim)、构建开始/完成 (execute)、入库持久化 (finalize) 与失败 (failed) 各阶段的 JSONL 事件。
+- 继承 `DocumentStageLogger`，自动附带文档关联上下文与耗时统计。
+"""
 
 from typing import Any
 
@@ -10,7 +15,7 @@ from app.shared.observability.logger import DocumentStageLogger
 
 
 class DocumentChunkLogger(DocumentStageLogger):
-    """提供切块阶段语义明确的结构化日志方法。"""
+    """文档切块阶段专用结构化日志记录器。"""
 
     def __init__(
         self,
@@ -18,6 +23,12 @@ class DocumentChunkLogger(DocumentStageLogger):
         document_id: int | None = None,
         operation_context: DocumentOperationContext | None = None,
     ) -> None:
+        """初始化切块日志记录器并绑定 chunk 日志输出目录。
+
+        参数:
+            document_id: 可选的文档 ID。
+            operation_context: 可选的文档操作关联上下文。
+        """
         super().__init__(
             stage="chunk",
             document_id=document_id,
@@ -29,6 +40,11 @@ class DocumentChunkLogger(DocumentStageLogger):
         )
 
     def bind_context(self, context: Any) -> None:
+        """绑定切块上下文对象（ClaimDocumentChunkContext）中的公共字段。
+
+        参数:
+            context: 领取成功的切块执行上下文。
+        """
         self.bind(
             document_id=context.document_id,
             doc_code=context.doc_code,
@@ -39,6 +55,11 @@ class DocumentChunkLogger(DocumentStageLogger):
         )
 
     def claimed(self, context: Any) -> None:
+        """记录切块任务领取成功并进入 chunking 状态。
+
+        参数:
+            context: 领取成功的切块执行上下文。
+        """
         self.bind_context(context)
         self.write(
             event="document_chunk_claimed",
@@ -52,6 +73,12 @@ class DocumentChunkLogger(DocumentStageLogger):
         )
 
     def build_started(self, context: Any, *, chunker: str) -> None:
+        """记录 Chunker 启动内存父子块拆分计算。
+
+        参数:
+            context: 切块执行上下文。
+            chunker: 使用的 Chunker 实现类名称。
+        """
         self.bind_context(context)
         self.write(
             event="document_chunk_build_started",
@@ -64,6 +91,12 @@ class DocumentChunkLogger(DocumentStageLogger):
         )
 
     def build_completed(self, result: Any, *, chunker: str) -> None:
+        """记录 Chunker 内存拆分计算完成及生成的父子块数量。
+
+        参数:
+            result: Chunker 输出的构建结果。
+            chunker: Chunker 实现类名称。
+        """
         parent_count = len(result.chunks.parents)
         child_count = sum(
             len(children)
@@ -80,6 +113,11 @@ class DocumentChunkLogger(DocumentStageLogger):
         )
 
     def completed(self, response: Any) -> None:
+        """记录父子块批量写入数据库完成，文档状态推进为 chunked。
+
+        参数:
+            response: 切块用例响应对象。
+        """
         self.write(
             event="document_chunk_completed",
             phase="finalize",
@@ -101,6 +139,16 @@ class DocumentChunkLogger(DocumentStageLogger):
         status_before: str | None = None,
         status_after: str | None = None,
     ) -> None:
+        """记录切块流程在指定阶段失败的详细错误信息与状态转移。
+
+        参数:
+            error: 捕获的异常对象。
+            phase: 发生失败的阶段（`claim`、`execute`、`finalize`）。
+            context: 可选的切块上下文。
+            state_updated: 文档状态是否已被更新为 failed。
+            status_before: 失败前状态。
+            status_after: 失败后状态。
+        """
         if context is not None:
             self.bind_context(context)
         self.write(

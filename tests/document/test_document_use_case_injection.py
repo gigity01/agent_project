@@ -1,4 +1,11 @@
-"""Document Router 从应用容器取得用例的测试。"""
+"""Document Router 依赖注入与 HTTP 请求头 OperationContext 传递测试。
+
+核心业务不变量：
+1. 依赖容器注入：
+   - 验证 FastAPI endpoint 正确通过依赖注入获取对应的 Application UseCase 实例并执行。
+2. 操作上下文头传递：
+   - 验证响应中正确返回由服务器端统一生成与规范化的 `X-Workflow-ID`、`X-Operation-ID`、`X-Operation-Attempt` 头。
+"""
 
 from __future__ import annotations
 
@@ -15,6 +22,7 @@ from app.modules.document.presentation.router import router
 
 
 class DocumentUseCaseInjectionTest(unittest.IsolatedAsyncioTestCase):
+    """验证 Document Router 的依赖解析与上下文透传。"""
     async def test_process_endpoint_uses_injected_use_case(self) -> None:
         app = FastAPI()
         app.include_router(router, prefix="/api")

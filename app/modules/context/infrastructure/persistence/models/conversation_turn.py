@@ -1,5 +1,7 @@
 """Conversation Turn 的 SQLAlchemy ORM 定义。"""
 
+from __future__ import annotations
+
 from datetime import datetime
 
 from sqlalchemy import DateTime, Index, JSON, String, Text
@@ -10,7 +12,13 @@ from app.infrastructure.database.base import Base
 
 
 class ConversationTurn(Base):
-    """保存一次完整用户输入及其唯一的助手处理结果。"""
+    """保存一次完整用户交互轮次（Turn）及其助手执行结果的 ORM 实体。
+
+    设计原则：
+    - 一次完整用户交互只创建一个 ConversationTurn。
+    - 若收到澄清追问回答（Clarification），通过更新 clarification_input 并入源 Turn，不创建新 Turn。
+    - 状态机（ContextTurnStatus）：ROUTING -> CONTEXT_READY -> PROCESSING -> COMPLETED / FAILED。
+    """
 
     __tablename__ = "conversation_turns"
 

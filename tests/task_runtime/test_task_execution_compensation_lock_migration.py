@@ -1,4 +1,10 @@
-"""TaskExecution 补偿锁定字段迁移与 ORM 对齐测试。"""
+"""TaskExecution 补偿超限锁定字段 Alembic 迁移（d8f2a4c6e9b1）与 ORM 模型对齐测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 补偿超限持久化锁定字段：
+   - 增加 `compensation_attempt_count`、`compensation_last_error`、`compensation_last_attempt_at`、`compensation_locked_at`、`compensation_lock_reason` 列。
+   - 当多次补偿调用持续失败达到上限后，TaskExecution 被正式标记为锁定，防止死循环补偿。
+"""
 
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ MIGRATION_PATH = (
 
 
 def _load_migration():
+    """动态加载 TaskExecution 补偿锁定迁移脚本。"""
     spec = importlib.util.spec_from_file_location(
         "task_execution_compensation_lock_migration_under_test",
         MIGRATION_PATH,
@@ -34,6 +41,7 @@ def _load_migration():
 
 
 class TaskExecutionCompensationLockMigrationTest(unittest.TestCase):
+    """验证 TaskExecution 补偿锁定列的添加与 ORM 模型对齐。"""
     def test_upgrade_adds_compensation_lock_columns(self) -> None:
         migration = _load_migration()
         operations = mock.Mock()

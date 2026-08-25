@@ -1,4 +1,8 @@
-"""文档模块 Docling HTTP 文件转 Markdown 客户端。"""
+"""文档模块 Docling 远程转换服务的 HTTP 客户端实现。
+
+负责将复杂的办公格式（PDF, DOC, DOCX, PPT, PPTX）通过 HTTP POST multipart/form-data
+调用外部 Docling 服务转换为标准化 Markdown 文本，并返回 MarkdownConvertResult 领域对象。
+"""
 
 from pathlib import Path
 from typing import Any
@@ -14,7 +18,8 @@ from app.modules.document.domain.models import MarkdownConvertResult
 
 
 class DoclingClient:
-    """封装 Docling 转换请求、响应校验和异常转换。"""
+    """封装 Docling 文件转 Markdown 远程调用、结果校验与异常处理的客户端。"""
+
     provider = "docling"
 
     def __init__(
@@ -22,7 +27,12 @@ class DoclingClient:
         convert_endpoint: str = DOCLING_CONVERT_ENDPOINT,
         timeout_seconds: int = DOCLING_TIMEOUT_SECONDS,
     ) -> None:
-        """配置转换服务地址与请求超时时间。"""
+        """初始化 Docling 客户端。
+
+        Args:
+            convert_endpoint: Docling 转换接口地址。
+            timeout_seconds: HTTP 请求超时秒数。
+        """
         self.convert_endpoint = convert_endpoint.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
@@ -34,7 +44,21 @@ class DoclingClient:
         do_ocr: bool = False,
         table_mode: str = "fast",
     ) -> MarkdownConvertResult:
-        """上传文件至 Docling，并返回非空的 Markdown 转换结果。"""
+        """上传本地文件至 Docling 远程服务并转换为 Markdown 文本。
+
+        Args:
+            source_path: 本地待转换源文件路径。
+            source_type: 源文件类型（如 'pdf', 'docx'）。
+            do_ocr: 是否启用 OCR 识别（默认 False）。
+            table_mode: 表格解析模式（'fast' 或 'accurate'，默认 'fast'）。
+
+        Returns:
+            MarkdownConvertResult: 转换成功的领域结果对象。
+
+        Raises:
+            FileNotFoundError: 源文件不存在。
+            RuntimeError: 服务调用超时、网络错误或转换结果为空/失败。
+        """
         self._validate_source_path(source_path)
 
         normalized_source_type = self._normalize_format(source_type)
@@ -47,7 +71,6 @@ class DoclingClient:
         )
 
         status = payload.get("status")
-
         if status not in {"success", "partial_success"}:
             errors = payload.get("errors") or payload.get("warnings")
             raise RuntimeError(
@@ -55,7 +78,6 @@ class DoclingClient:
             )
 
         markdown = payload.get("document", {}).get("md_content")
-
         if not markdown or not markdown.strip():
             warnings = payload.get("warnings")
             raise RuntimeError(
@@ -78,14 +100,14 @@ class DoclingClient:
         )
 
     def _request_convert(
-            self,
-            *,
-            source_path: Path,
-            source_format: str,
-            do_ocr: bool = False,
-            table_mode: str = "fast",
+        self,
+        *,
+        source_path: Path,
+        source_format: str,
+        do_ocr: bool = False,
+        table_mode: str = "fast",
     ) -> dict[str, Any]:
-        """发送 multipart 转换请求，并将网络或响应错误包装为运行时异常。"""
+        """发送 multipart/form-data POST 转换请求并解析 JSON 响应。"""
         url = self.convert_endpoint
 
         try:
@@ -127,11 +149,8 @@ class DoclingClient:
                 f"Docling response is not valid JSON. url={url}, source_format={source_format}"
             ) from exc
 
-
-
-
     def _validate_source_path(self, source_path: Path) -> None:
-        """确认待上传给转换服务的路径是存在的普通文件。"""
+        """校验待转换的源文件路径存在且为普通文件。"""
         if not source_path.exists():
             raise FileNotFoundError(f"源文件不存在: {source_path}")
 
@@ -139,5 +158,5 @@ class DoclingClient:
             raise ValueError(f"源路径不是有效文件: {source_path}")
 
     def _normalize_format(self, source_type: str) -> str:
-        """去除扩展名前导点并归一化大小写。"""
+        """归一化源文件格式（小写并去除前导点号）。"""
         return source_type.lower().lstrip(".")

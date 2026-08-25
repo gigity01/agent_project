@@ -45,6 +45,18 @@ def _conversation_scope(
     context: AgentToolContext,
     requested_conversation_id: str | None,
 ) -> str:
+    """校验并提取当前 Agent Tool 运行时的会话作用域。
+
+    Args:
+        context: AgentTool 上下文对象。
+        requested_conversation_id: 请求参数中声明的会话 ID（可选）。
+
+    Returns:
+        str: 校验通过的会话 ID。
+
+    Raises:
+        AgentToolScopeError: 缺少会话作用域或请求了非授权的其他会话。
+    """
     conversation_id = context.conversation_id
     if conversation_id is None:
         raise AgentToolScopeError("Context Tool 缺少 Conversation scope")
@@ -62,6 +74,19 @@ def _allowed_ids(
     allowed_ids: frozenset[str],
     resource_name: str,
 ) -> list[str]:
+    """过滤并校验请求的资源 ID 是否在授权允许集合范围内。
+
+    Args:
+        requested_ids: 请求查询的资源 ID 列表。
+        allowed_ids: 授权允许访问的资源 ID 集合。
+        resource_name: 资源类型名称（用于异常提示）。
+
+    Returns:
+        list[str]: 规范化去重后的合法资源 ID 列表。
+
+    Raises:
+        AgentToolScopeError: 请求了超出授权范围的资源 ID。
+    """
     normalized = list(dict.fromkeys(requested_ids))
     unknown = set(normalized) - allowed_ids
     if unknown:
@@ -77,6 +102,16 @@ def _require_allowed_id(
     allowed_ids: frozenset[str],
     resource_name: str,
 ) -> None:
+    """强校验单个资源 ID 是否在授权允许集合内。
+
+    Args:
+        value: 待校验的资源 ID。
+        allowed_ids: 授权允许访问的资源 ID 集合。
+        resource_name: 资源类型名称。
+
+    Raises:
+        AgentToolScopeError: 请求的 ID 不在授权集合中。
+    """
     if value not in allowed_ids:
         raise AgentToolScopeError(
             f"Context Tool 请求了未授权的 {resource_name}"
@@ -84,6 +119,17 @@ def _require_allowed_id(
 
 
 def _query_service(context: AgentToolContext) -> ContextQueryService:
+    """从 AgentToolContext 获取 ContextQueryService。
+
+    Args:
+        context: AgentTool 上下文对象。
+
+    Returns:
+        ContextQueryService: 上下文只读查询服务。
+
+    Raises:
+        ToolNotAvailableError: 查询服务未注入时抛出。
+    """
     service = context.context_services.query_service
     if service is None:
         raise ToolNotAvailableError("Context 查询服务未注入")
@@ -91,6 +137,15 @@ def _query_service(context: AgentToolContext) -> ContextQueryService:
 
 
 def _get_conversation_turn(context: AgentToolContext, turn_id: str):
+    """读取指定 Conversation Turn 详情。
+
+    Args:
+        context: AgentTool 上下文对象。
+        turn_id: Turn 唯一标识。
+
+    Returns:
+        ConversationTurnQueryResult | None: Turn 查询结果。
+    """
     _require_allowed_id(
         turn_id,
         allowed_ids=context.allowed_context_turn_ids,
@@ -103,6 +158,15 @@ def _get_conversation_turn(context: AgentToolContext, turn_id: str):
 
 
 def _list_conversation_turns(context: AgentToolContext, query):
+    """分页查询授权范围内的 Conversation Turn 列表。
+
+    Args:
+        context: AgentTool 上下文对象。
+        query: ConversationTurnSearchQuery 查询对象。
+
+    Returns:
+        ConversationTurnListResult: 分页列表结果。
+    """
     conversation_id = _conversation_scope(context, query.conversation_id)
     turn_ids = _allowed_ids(
         requested_ids=list(query.turn_ids),
@@ -122,6 +186,15 @@ def _list_conversation_turns(context: AgentToolContext, query):
 
 
 def _get_context_chain(context: AgentToolContext, chain_id: str):
+    """读取指定 Context Chain 详情。
+
+    Args:
+        context: AgentTool 上下文对象。
+        chain_id: Context Chain 唯一标识。
+
+    Returns:
+        ContextChainQueryResult | None: Chain 查询结果。
+    """
     _require_allowed_id(
         chain_id,
         allowed_ids=context.allowed_context_chain_ids,
@@ -134,6 +207,15 @@ def _get_context_chain(context: AgentToolContext, chain_id: str):
 
 
 def _list_context_chains(context: AgentToolContext, query):
+    """分页查询授权范围内的 Context Chain 列表。
+
+    Args:
+        context: AgentTool 上下文对象。
+        query: ContextChainSearchQuery 查询对象。
+
+    Returns:
+        ContextChainListResult: 分页列表结果。
+    """
     conversation_id = _conversation_scope(context, query.conversation_id)
     chain_ids = _allowed_ids(
         requested_ids=list(query.chain_ids),
@@ -157,6 +239,15 @@ def _list_context_chains(context: AgentToolContext, query):
 
 
 def _list_context_chain_nodes(context: AgentToolContext, query):
+    """分页查询授权范围内的 Context Chain Node 列表。
+
+    Args:
+        context: AgentTool 上下文对象。
+        query: ContextChainNodeSearchQuery 查询对象。
+
+    Returns:
+        ContextChainNodeListResult: 分页列表结果。
+    """
     conversation_id = _conversation_scope(context, query.conversation_id)
     requested_chain_ids = list(query.chain_ids)
     if query.chain_id is not None:
@@ -166,6 +257,7 @@ def _list_context_chain_nodes(context: AgentToolContext, query):
         allowed_ids=context.allowed_context_chain_ids,
         resource_name="Chain",
     )
+    # 历史节点只允许查询除当前活跃 Turn 之外的历史 Turn
     historical_turn_ids = frozenset(
         turn_id
         for turn_id in context.allowed_context_turn_ids
@@ -199,6 +291,15 @@ def _list_context_chain_nodes(context: AgentToolContext, query):
 
 
 def _list_context_chain_resources(context: AgentToolContext, query):
+    """分页查询授权范围内的 Context Chain 关联资源列表。
+
+    Args:
+        context: AgentTool 上下文对象。
+        query: ContextChainResourceSearchQuery 查询对象。
+
+    Returns:
+        ContextChainResourceListResult: 分页列表结果。
+    """
     conversation_id = _conversation_scope(context, query.conversation_id)
     requested_chain_ids = list(query.chain_ids)
     if query.chain_id is not None:
@@ -226,6 +327,15 @@ def _list_context_chain_resources(context: AgentToolContext, query):
 
 
 def _list_context_selection_records(context: AgentToolContext, query):
+    """分页查询当前 Turn 的上下文路由选择决策记录。
+
+    Args:
+        context: AgentTool 上下文对象。
+        query: ContextSelectionRecordSearchQuery 查询对象。
+
+    Returns:
+        ContextSelectionRecordListResult: 分页列表结果。
+    """
     conversation_id = _conversation_scope(context, query.conversation_id)
     if context.turn_id is None:
         raise AgentToolScopeError("Context Tool 缺少 Turn scope")
@@ -245,10 +355,20 @@ def _list_context_selection_records(context: AgentToolContext, query):
     return _query_service(context).list_context_selection_records(query)
 
 
+
 def get_conversation_turn_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: GetConversationTurnToolInput,
 ) -> GetConversationTurnToolOutput:
+    """读取指定 Conversation Turn 事实的工具处理函数。
+
+    Args:
+        ctx: OpenAI Agents SDK 运行时上下文包装器。
+        tool_input: 包含 turn_id 的输入模型。
+
+    Returns:
+        GetConversationTurnToolOutput: 包含 Turn 详细信息的工具执行结果 Envelope。
+    """
     resource_refs = [f"context_turn:{tool_input.turn_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -284,6 +404,15 @@ def list_conversation_turns_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListConversationTurnsToolInput,
 ) -> ListConversationTurnsToolOutput:
+    """分页查询 Conversation Turn 列表的工具处理函数。
+
+    Args:
+        ctx: OpenAI Agents SDK 运行时上下文包装器。
+        tool_input: 查询过滤与分页参数。
+
+    Returns:
+        ListConversationTurnsToolOutput: 包含 Turn 列表与分页计数的工具执行结果。
+    """
     resource_refs = (
         [f"conversation:{tool_input.conversation_id}"]
         if tool_input.conversation_id
@@ -332,6 +461,15 @@ def get_context_chain_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: GetContextChainToolInput,
 ) -> GetContextChainToolOutput:
+    """读取指定 Context Chain 状态的工具处理函数。
+
+    Args:
+        ctx: OpenAI Agents SDK 运行时上下文包装器。
+        tool_input: 包含 chain_id 的输入模型。
+
+    Returns:
+        GetContextChainToolOutput: 包含 Chain 信息的工具执行结果。
+    """
     resource_refs = [f"context_chain:{tool_input.chain_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -367,6 +505,15 @@ def list_context_chains_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListContextChainsToolInput,
 ) -> ListContextChainsToolOutput:
+    """分页查询 Context Chain 列表的工具处理函数。
+
+    Args:
+        ctx: OpenAI Agents SDK 运行时上下文包装器。
+        tool_input: 查询过滤与分页参数。
+
+    Returns:
+        ListContextChainsToolOutput: 包含 Chain 列表与分页计数的工具执行结果。
+    """
     resource_refs = (
         [f"conversation:{tool_input.conversation_id}"]
         if tool_input.conversation_id
@@ -413,6 +560,15 @@ def list_context_chain_nodes_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListContextChainNodesToolInput,
 ) -> ListContextChainNodesToolOutput:
+    """分页查询 Context Chain Node 列表的工具处理函数。
+
+    Args:
+        ctx: OpenAI Agents SDK 运行时上下文包装器。
+        tool_input: 查询过滤与分页参数。
+
+    Returns:
+        ListContextChainNodesToolOutput: 包含 Node 列表与分页计数的工具执行结果。
+    """
     resource_refs = (
         [f"context_chain:{tool_input.chain_id}"]
         if tool_input.chain_id
@@ -461,6 +617,15 @@ def list_context_chain_resources_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListContextChainResourcesToolInput,
 ) -> ListContextChainResourcesToolOutput:
+    """分页查询 Context Chain Resource 列表的工具处理函数。
+
+    Args:
+        ctx: OpenAI Agents SDK 运行时上下文包装器。
+        tool_input: 查询过滤与分页参数。
+
+    Returns:
+        ListContextChainResourcesToolOutput: 包含 Resource 列表与分页计数的工具执行结果。
+    """
     resource_refs = (
         [f"context_chain:{tool_input.chain_id}"]
         if tool_input.chain_id
@@ -512,6 +677,15 @@ def list_context_selection_records_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListContextSelectionRecordsToolInput,
 ) -> ListContextSelectionRecordsToolOutput:
+    """分页查询 Context SelectionRecord 列表的工具处理函数。
+
+    Args:
+        ctx: OpenAI Agents SDK 运行时上下文包装器。
+        tool_input: 查询过滤与分页参数。
+
+    Returns:
+        ListContextSelectionRecordsToolOutput: 包含 Selection 记录列表与分页计数的工具执行结果。
+    """
     resource_refs = (
         [f"conversation:{tool_input.conversation_id}"]
         if tool_input.conversation_id

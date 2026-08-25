@@ -1,4 +1,19 @@
-"""Document 查询 HTTP API 与 Application Use Case 复用测试。"""
+"""Document 模块只读查询 HTTP API 与 Application Use Cases 委托契约测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. HTTP 与 Application 分层防腐：
+   - HTTP presentation 层仅负责参数解析与响应序列化，所有查询逻辑 100% 委托给对应 Application Use Case。
+   - 覆盖接口：
+     * GET /api/admin/documents/{document_id}
+     * POST /api/admin/documents/search
+     * GET /api/admin/documents/{document_id}/pipeline-state
+     * GET /api/admin/documents/{document_id}/artifacts
+     * POST /api/admin/documents/artifacts/search
+     * GET /api/admin/documents/{document_id}/parent-blocks
+     * GET /api/admin/documents/{document_id}/child-chunks
+     * GET /api/admin/documents/{document_id}/chunk-statistics
+     * GET /api/admin/knowledge-bases/{kb_id}/statistics
+"""
 
 from __future__ import annotations
 

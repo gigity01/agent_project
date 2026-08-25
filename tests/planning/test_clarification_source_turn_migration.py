@@ -1,4 +1,11 @@
-"""Clarification source Turn 唯一约束迁移测试。"""
+"""Clarification source_turn_id 唯一约束 Alembic 迁移（9a7c5e3d1b2f）测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 一轮对话仅存在一个 Clarification 实体：
+   - 保证同一个 `source_turn_id` 在 `clarification_requests` 表中仅能存在唯一记录，创建 `uq_clarification_requests_source_turn` 唯一约束。
+2. 降级回退：
+   - 验证降级操作能够安全删除该唯一约束。
+"""
 
 from __future__ import annotations
 
@@ -24,6 +31,7 @@ MIGRATION_PATH = (
 
 
 def _load_migration():
+    """动态加载 Clarification source_turn 唯一约束迁移脚本。"""
     spec = importlib.util.spec_from_file_location(
         "clarification_source_turn_migration_under_test",
         MIGRATION_PATH,
@@ -36,6 +44,7 @@ def _load_migration():
 
 
 class ClarificationSourceTurnMigrationTest(unittest.TestCase):
+    """验证 uq_clarification_requests_source_turn 约束的创建、幂等降级与 ORM 映射。"""
     def test_upgrade_and_downgrade_manage_unique_constraint(self) -> None:
         migration = _load_migration()
         operations = mock.Mock()

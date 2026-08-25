@@ -34,18 +34,39 @@ from app.modules.context.infrastructure.persistence.models.conversation_turn imp
 
 
 class ContextRepository:
-    """集中处理 Turn、Chain、Node 和 Context Selection 的持久化。"""
+    """集中处理 Turn、Chain、Node、Resource 与 Context Selection 事实的持久化仓储。"""
 
     def __init__(self, db: Session) -> None:
+        """初始化 ContextRepository。
+
+        Args:
+            db: SQLAlchemy 数据库会话。
+        """
         self.db = db
 
     def create_turn(self, turn: ConversationTurn) -> ConversationTurn:
+        """创建并插入新的 ConversationTurn 记录。
+
+        Args:
+            turn: ConversationTurn ORM 实体。
+
+        Returns:
+            ConversationTurn: 持久化并刷新后的实体。
+        """
         self.db.add(turn)
         self.db.flush()
         self.db.refresh(turn)
         return turn
 
     def get_turn(self, turn_id: str) -> ConversationTurn | None:
+        """根据 turn_id 查询 Turn（无锁）。
+
+        Args:
+            turn_id: Turn ID。
+
+        Returns:
+            ConversationTurn | None: 命中的实体或 None。
+        """
         return (
             self.db.query(ConversationTurn)
             .filter(ConversationTurn.turn_id == turn_id)
@@ -56,6 +77,14 @@ class ContextRepository:
         self,
         filters: ConversationTurnSearchQuery,
     ) -> list[ConversationTurn]:
+        """分页筛选查询 ConversationTurn 列表。
+
+        Args:
+            filters: 过滤与分页参数。
+
+        Returns:
+            list[ConversationTurn]: 命中的实体列表。
+        """
         return (
             self._turn_search_query(filters)
             .order_by(
@@ -68,9 +97,18 @@ class ContextRepository:
         )
 
     def count_turns(self, filters: ConversationTurnSearchQuery) -> int:
+        """统计符合条件的 ConversationTurn 总数。
+
+        Args:
+            filters: 过滤参数。
+
+        Returns:
+            int: 匹配记录数。
+        """
         return self._turn_search_query(filters).count()
 
     def _turn_search_query(self, filters: ConversationTurnSearchQuery):
+        """构建 ConversationTurn 动态查询 Query。"""
         query = self.db.query(ConversationTurn)
         if filters.conversation_id is not None:
             query = query.filter(
@@ -101,6 +139,14 @@ class ContextRepository:
         return query
 
     def get_turn_for_update(self, turn_id: str) -> ConversationTurn | None:
+        """根据 turn_id 获取带行级排他锁的 Turn 实体。
+
+        Args:
+            turn_id: Turn ID。
+
+        Returns:
+            ConversationTurn | None: 锁定的实体或 None。
+        """
         return (
             self.db.query(ConversationTurn)
             .filter(ConversationTurn.turn_id == turn_id)
@@ -113,12 +159,28 @@ class ContextRepository:
         turn: ConversationTurn,
         status: str,
     ) -> ConversationTurn:
+        """更新 Turn 状态并 flush。
+
+        Args:
+            turn: ConversationTurn 实体。
+            status: 新状态字符串。
+
+        Returns:
+            ConversationTurn: 更新后的实体。
+        """
         turn.status = status
         self.db.flush()
         return turn
 
     def list_active_chains(self, conversation_id: str) -> list[ContextChain]:
-        """加载当前 Conversation 的全部未归档完整链。"""
+        """加载当前 Conversation 的全部未归档完整链（预加载节点与 Turn）。
+
+        Args:
+            conversation_id: 会话 ID。
+
+        Returns:
+            list[ContextChain]: 未归档上下文链列表（按 last_active_at 倒序排列）。
+        """
         return (
             self.db.query(ContextChain)
             .options(
@@ -141,6 +203,14 @@ class ContextRepository:
         self,
         chain_ids: Iterable[str],
     ) -> list[ContextChain]:
+        """根据链 ID 集合锁定并查询 ContextChain 列表（带行级排他锁）。
+
+        Args:
+            chain_ids: 上下文链 ID 迭代器。
+
+        Returns:
+            list[ContextChain]: 锁定的链实体列表。
+        """
         ordered_ids = sorted(set(chain_ids))
         if not ordered_ids:
             return []
@@ -157,7 +227,14 @@ class ContextRepository:
         self,
         chain_ids: Iterable[str],
     ) -> list[ContextChain]:
-        """按 ID 加载完整 Chain，不改变业务活跃时间。"""
+        """按 ID 加载完整 Chain 及其关联节点，不改变业务活跃时间。
+
+        Args:
+            chain_ids: 上下文链 ID 迭代器。
+
+        Returns:
+            list[ContextChain]: 链实体列表。
+        """
         ordered_ids = sorted(set(chain_ids))
         if not ordered_ids:
             return []
@@ -174,6 +251,14 @@ class ContextRepository:
         )
 
     def get_chain(self, chain_id: str) -> ContextChain | None:
+        """根据 chain_id 查询 ContextChain。
+
+        Args:
+            chain_id: 上下文链 ID。
+
+        Returns:
+            ContextChain | None: 命中的链或 None。
+        """
         return (
             self.db.query(ContextChain)
             .filter(ContextChain.chain_id == chain_id)
@@ -184,6 +269,14 @@ class ContextRepository:
         self,
         filters: ContextChainSearchQuery,
     ) -> list[ContextChain]:
+        """分页筛选查询 ContextChain 列表。
+
+        Args:
+            filters: 过滤与分页参数。
+
+        Returns:
+            list[ContextChain]: 命中的链实体列表。
+        """
         return (
             self._chain_search_query(filters)
             .order_by(
@@ -196,9 +289,18 @@ class ContextRepository:
         )
 
     def count_chains(self, filters: ContextChainSearchQuery) -> int:
+        """统计符合条件的 ContextChain 总数。
+
+        Args:
+            filters: 过滤参数。
+
+        Returns:
+            int: 匹配记录数。
+        """
         return self._chain_search_query(filters).count()
 
     def _chain_search_query(self, filters: ContextChainSearchQuery):
+        """构建 ContextChain 动态查询 Query。"""
         query = self.db.query(ContextChain)
         if filters.conversation_id is not None:
             query = query.filter(
@@ -215,6 +317,14 @@ class ContextRepository:
         return query
 
     def get_chain_for_update(self, chain_id: str) -> ContextChain | None:
+        """根据 chain_id 获取带行锁的 ContextChain。
+
+        Args:
+            chain_id: 上下文链 ID。
+
+        Returns:
+            ContextChain | None: 锁定的实体或 None。
+        """
         return (
             self.db.query(ContextChain)
             .filter(ContextChain.chain_id == chain_id)
@@ -223,6 +333,14 @@ class ContextRepository:
         )
 
     def create_chain(self, chain: ContextChain) -> ContextChain:
+        """创建并插入新的 ContextChain。
+
+        Args:
+            chain: ContextChain ORM 实体。
+
+        Returns:
+            ContextChain: 实体实例。
+        """
         self.db.add(chain)
         self.db.flush()
         return chain
@@ -231,6 +349,14 @@ class ContextRepository:
         self,
         selection_record: ContextSelectionRecord,
     ) -> ContextSelectionRecord:
+        """创建并插入 ContextSelectionRecord 路由决策记录。
+
+        Args:
+            selection_record: ContextSelectionRecord ORM 实体。
+
+        Returns:
+            ContextSelectionRecord: 实体实例。
+        """
         self.db.add(selection_record)
         self.db.flush()
         return selection_record
@@ -239,6 +365,14 @@ class ContextRepository:
         self,
         turn_id: str,
     ) -> ContextSelectionRecord | None:
+        """根据 turn_id 锁定并查询对应的 ContextSelectionRecord。
+
+        Args:
+            turn_id: Turn ID。
+
+        Returns:
+            ContextSelectionRecord | None: 锁定的实体或 None。
+        """
         return (
             self.db.query(ContextSelectionRecord)
             .filter(ContextSelectionRecord.current_turn_id == turn_id)
@@ -250,6 +384,14 @@ class ContextRepository:
         self,
         turn_id: str,
     ) -> ContextSelectionRecord | None:
+        """根据 turn_id 查询对应的 ContextSelectionRecord（无锁）。
+
+        Args:
+            turn_id: Turn ID。
+
+        Returns:
+            ContextSelectionRecord | None: 命中的实体或 None。
+        """
         return (
             self.db.query(ContextSelectionRecord)
             .filter(ContextSelectionRecord.current_turn_id == turn_id)
@@ -261,6 +403,15 @@ class ContextRepository:
         chain_id: str,
         turn_id: str,
     ) -> ContextChainNode | None:
+        """根据 chain_id 和 turn_id 查询对应的 ContextChainNode。
+
+        Args:
+            chain_id: 上下文链 ID。
+            turn_id: Turn ID。
+
+        Returns:
+            ContextChainNode | None: 命中的实体或 None。
+        """
         return (
             self.db.query(ContextChainNode)
             .filter(
@@ -274,6 +425,14 @@ class ContextRepository:
         self,
         filters: ContextChainNodeSearchQuery,
     ) -> list[ContextChainNode]:
+        """分页筛选查询 ContextChainNode 列表。
+
+        Args:
+            filters: 过滤与分页参数。
+
+        Returns:
+            list[ContextChainNode]: 命中的节点实体列表。
+        """
         return (
             self._node_search_query(filters)
             .order_by(
@@ -287,9 +446,18 @@ class ContextRepository:
         )
 
     def count_nodes(self, filters: ContextChainNodeSearchQuery) -> int:
+        """统计符合条件的 ContextChainNode 总数。
+
+        Args:
+            filters: 过滤参数。
+
+        Returns:
+            int: 匹配记录数。
+        """
         return self._node_search_query(filters).count()
 
     def _node_search_query(self, filters: ContextChainNodeSearchQuery):
+        """构建 ContextChainNode 动态查询 Query。"""
         query = self.db.query(ContextChainNode)
         if filters.conversation_id is not None:
             query = query.join(
@@ -321,6 +489,14 @@ class ContextRepository:
         return query
 
     def get_next_sequence(self, chain_id: str) -> int:
+        """获取指定链下一个递增的节点序号 sequence（从 0 开始）。
+
+        Args:
+            chain_id: 上下文链 ID。
+
+        Returns:
+            int: 下一个 sequence 序号。
+        """
         current = (
             self.db.query(func.max(ContextChainNode.sequence))
             .filter(ContextChainNode.chain_id == chain_id)
@@ -329,6 +505,14 @@ class ContextRepository:
         return 0 if current is None else current + 1
 
     def create_node(self, node: ContextChainNode) -> ContextChainNode:
+        """创建并插入新的 ContextChainNode。
+
+        Args:
+            node: ContextChainNode ORM 实体。
+
+        Returns:
+            ContextChainNode: 实体实例。
+        """
         self.db.add(node)
         self.db.flush()
         return node
@@ -338,6 +522,15 @@ class ContextRepository:
         chain_id: str,
         resource_key: str,
     ) -> ContextChainResource | None:
+        """根据 (chain_id, resource_key) 锁定并获取资源当前状态记录。
+
+        Args:
+            chain_id: 上下文链 ID。
+            resource_key: 资源规范 Key。
+
+        Returns:
+            ContextChainResource | None: 锁定的实体或 None。
+        """
         return (
             self.db.query(ContextChainResource)
             .filter(
@@ -360,7 +553,21 @@ class ContextRepository:
         turn_id: str,
         seen_at: datetime,
     ) -> tuple[ContextChainResource, bool]:
-        """刷新资源当前状态，返回资源记录以及是否为首次出现。"""
+        """刷新资源当前状态，返回资源记录以及是否为首次出现。
+
+        Args:
+            chain_id: 上下文链 ID。
+            resource_key: 资源规范 Key。
+            resource_type: 资源类型。
+            resource_id: 资源业务标识。
+            relation: 关系描述。
+            summary: 简要摘要。
+            turn_id: 当前关联 Turn ID。
+            seen_at: 活跃时间戳。
+
+        Returns:
+            tuple[ContextChainResource, bool]: (resource_entity, created_bool)。
+        """
         resource = self.get_chain_resource_for_update(
             chain_id,
             resource_key,
@@ -404,7 +611,16 @@ class ContextRepository:
         resource_key: str,
         removed_at: datetime,
     ) -> ContextChainResource | None:
-        """将资源标记为失效；历史记录和最后使用信息继续保留。"""
+        """将资源标记为失效（active=False）；历史记录和最后使用信息继续保留。
+
+        Args:
+            chain_id: 上下文链 ID。
+            resource_key: 资源规范 Key。
+            removed_at: 移除时间戳。
+
+        Returns:
+            ContextChainResource | None: 更新后的实体或 None。
+        """
         resource = self.get_chain_resource_for_update(
             chain_id,
             resource_key,
@@ -421,6 +637,14 @@ class ContextRepository:
         self,
         event: ContextChainResourceEvent,
     ) -> ContextChainResourceEvent:
+        """插入一条不可变的 ContextChainResourceEvent 资源历史事件。
+
+        Args:
+            event: ContextChainResourceEvent ORM 实体。
+
+        Returns:
+            ContextChainResourceEvent: 实体实例。
+        """
         self.db.add(event)
         self.db.flush()
         return event
@@ -431,7 +655,15 @@ class ContextRepository:
         *,
         limit: int,
     ) -> list[ContextChainResource]:
-        """按最近到最旧返回活跃资源，由 Service 反转为 FIFO 顺序。"""
+        """按最近到最旧返回活跃资源（active=True），供应用服务反转为 FIFO 顺序。
+
+        Args:
+            chain_id: 上下文链 ID。
+            limit: 数量限制。
+
+        Returns:
+            list[ContextChainResource]: 最近活跃资源列表。
+        """
         return (
             self.db.query(ContextChainResource)
             .filter(
@@ -450,6 +682,14 @@ class ContextRepository:
         self,
         filters: ContextChainResourceSearchQuery,
     ) -> list[ContextChainResource]:
+        """分页筛选查询 ContextChainResource 列表。
+
+        Args:
+            filters: 过滤与分页参数。
+
+        Returns:
+            list[ContextChainResource]: 命中的资源实体列表。
+        """
         return (
             self._resource_search_query(filters)
             .order_by(
@@ -465,12 +705,21 @@ class ContextRepository:
         self,
         filters: ContextChainResourceSearchQuery,
     ) -> int:
+        """统计符合条件的 ContextChainResource 总数。
+
+        Args:
+            filters: 过滤参数。
+
+        Returns:
+            int: 匹配记录数。
+        """
         return self._resource_search_query(filters).count()
 
     def _resource_search_query(
         self,
         filters: ContextChainResourceSearchQuery,
     ):
+        """构建 ContextChainResource 动态查询 Query。"""
         query = self.db.query(ContextChainResource)
         if filters.conversation_id is not None:
             query = query.join(
@@ -513,6 +762,14 @@ class ContextRepository:
         self,
         filters: ContextSelectionRecordSearchQuery,
     ) -> list[ContextSelectionRecord]:
+        """分页筛选查询 ContextSelectionRecord 列表。
+
+        Args:
+            filters: 过滤与分页参数。
+
+        Returns:
+            list[ContextSelectionRecord]: 命中的选择记录实体列表。
+        """
         return (
             self._selection_record_search_query(filters)
             .order_by(
@@ -528,12 +785,21 @@ class ContextRepository:
         self,
         filters: ContextSelectionRecordSearchQuery,
     ) -> int:
+        """统计符合条件的 ContextSelectionRecord 总数。
+
+        Args:
+            filters: 过滤参数。
+
+        Returns:
+            int: 匹配记录数。
+        """
         return self._selection_record_search_query(filters).count()
 
     def _selection_record_search_query(
         self,
         filters: ContextSelectionRecordSearchQuery,
     ):
+        """构建 ContextSelectionRecord 动态查询 Query。"""
         query = self.db.query(ContextSelectionRecord)
         if filters.conversation_id is not None:
             query = query.filter(
@@ -564,11 +830,27 @@ class ContextRepository:
         self,
         chain: ContextChain,
     ) -> int:
+        """将 ContextChain 的 resource_version 单调递增 1 并 flush。
+
+        Args:
+            chain: ContextChain 实体。
+
+        Returns:
+            int: 递增后的新版本号。
+        """
         chain.resource_version += 1
         self.db.flush()
         return chain.resource_version
 
     def list_linked_chain_ids(self, turn_id: str) -> list[str]:
+        """查询指定 Turn 已关联建立节点的所有 ContextChain ID 列表。
+
+        Args:
+            turn_id: Turn ID。
+
+        Returns:
+            list[str]: 关联的链 ID 列表。
+        """
         rows = (
             self.db.query(ContextChainNode.chain_id)
             .filter(ContextChainNode.turn_id == turn_id)
@@ -588,6 +870,20 @@ class ContextRepository:
         completed_at: datetime,
         status: str,
     ) -> ConversationTurn:
+        """回写完成字段并更新 Turn 终态。
+
+        Args:
+            turn: ConversationTurn 实体。
+            assistant_content: 助手完整文本。
+            assistant_compact: 紧凑摘要。
+            task_ids: 关联任务 ID 列表。
+            task_result_summary: 任务结果摘要。
+            completed_at: 完成时间戳。
+            status: 终态状态字符串（COMPLETED）。
+
+        Returns:
+            ConversationTurn: 更新后的实体。
+        """
         turn.assistant_content = assistant_content
         turn.assistant_compact = assistant_compact
         turn.task_ids = task_ids
@@ -603,6 +899,15 @@ class ContextRepository:
         *,
         last_active_at: datetime,
     ) -> ContextChain:
+        """更新上下文链的最后活跃时间并确保 archived 为 False。
+
+        Args:
+            chain: ContextChain 实体。
+            last_active_at: 活跃时间戳。
+
+        Returns:
+            ContextChain: 更新后的实体。
+        """
         chain.last_active_at = last_active_at
         chain.archived = False
         self.db.flush()

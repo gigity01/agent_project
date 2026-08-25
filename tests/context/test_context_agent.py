@@ -1,4 +1,16 @@
-"""Context Agent strict tool Schema、确定性分支与响应解析测试。"""
+"""Context Agent 结构化 Strict Tool 调用、确定性分支路由与响应解析测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 确定性短路与受限角色：
+   - 当 Conversation 不存在任何历史未归档链时，直接返回空选择决策（no_context），不触发 LLM 调用，降低开销与延迟。
+   - Context Agent 仅负责判断输入与已有上下文链的关联关系，不具备业务计划、Task 拆解、Service 选择或操作执行权限。
+2. Strict Tool Calling 契约：
+   - 强制使用单一 Strict Function Tool（CONTEXT_SELECTION_TOOL_NAME），parallel_tool_calls=False，temperature=0。
+   - Schema 不包含 $ref / minLength / maxLength，严格符合 OpenAI-compatible strict JSON Schema 规范。
+3. 校验重试与故障闭环：
+   - 非法或无法解析的模型输出最多重试 max_output_attempts 次，若仍无法形成合法调用则抛出 ContextAgentOutputError 快速失败。
+   - 可观测性（EventLogger）异常不破坏路由决策主流程。
+"""
 
 from __future__ import annotations
 
@@ -28,6 +40,7 @@ ContextAgentRouter = DeepSeekContextRouter
 
 
 def _existing_chain() -> ContextChain:
+    """构造测试用上下文链领域模型实例。"""
     return ContextChain(
         chain_id="chain-1",
         conversation_id="conversation-1",
@@ -39,6 +52,7 @@ def _existing_chain() -> ContextChain:
 
 
 def _agent_input(*, with_chain: bool = True) -> ContextAgentInput:
+    """构造 Context Agent 输入 DTO。"""
     return ContextAgentInput(
         conversation_id="conversation-1",
         current_turn_id="turn-1",
@@ -48,6 +62,7 @@ def _agent_input(*, with_chain: bool = True) -> ContextAgentInput:
 
 
 def _tool_response(arguments: dict[str, object]):
+    """构造符合 Strict Tool 规范的 LLM 模拟响应对象。"""
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
@@ -70,6 +85,7 @@ def _tool_response(arguments: dict[str, object]):
 
 
 def _invalid_response():
+    """构造缺少合法 tool_calls 的异常响应对象。"""
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
@@ -80,6 +96,7 @@ def _invalid_response():
 
 
 def _provider(create: mock.AsyncMock):
+    """构造注入 AsyncMock 的 DeepSeek LLM Provider 替身。"""
     return SimpleNamespace(
         strict_tool_client=SimpleNamespace(
             chat=SimpleNamespace(
@@ -91,6 +108,7 @@ def _provider(create: mock.AsyncMock):
 
 
 class _EventLogger:
+    """测试用内存事件收集器。"""
     def __init__(self) -> None:
         self.events: list[dict] = []
 
@@ -100,12 +118,16 @@ class _EventLogger:
 
 
 class _FailingEventLogger:
+    """模拟写入失败的可观测性 Logger 替身。"""
     def write(self, event: str, **fields) -> bool:
         raise OSError("metrics unavailable")
 
 
 class ContextSelectionToolSchemaTest(unittest.TestCase):
+    """验证 Context Selection Strict Tool Schema 的生成符合标准 OpenAI 严格模式。"""
+
     def test_schema_is_generated_from_pydantic_without_local_refs(self) -> None:
+        """验证生成的 Schema 无本地 $ref 引用、无 minLength 限制，且 additionalProperties 为 False。"""
         schema = build_context_selection_tool_schema()
 
         self.assertEqual(schema["type"], "object")
@@ -122,7 +144,10 @@ class ContextSelectionToolSchemaTest(unittest.TestCase):
 
 
 class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
+    """验证 DeepSeekContextRouter 的提示词隔离、短路逻辑、严格调用及重试机制。"""
+
     async def test_service_map_does_not_expand_context_authority(self) -> None:
+        """验证 System Prompt 中明确界定 Context Agent 仅负责路由，不扩大 Tool 操作权限。"""
         self.assertIn("Document Processing", CONTEXT_AGENT_INSTRUCTIONS)
         self.assertIn("Context Management", CONTEXT_AGENT_INSTRUCTIONS)
         self.assertIn("Operations", CONTEXT_AGENT_INSTRUCTIONS)
@@ -130,6 +155,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不扩大", CONTEXT_AGENT_INSTRUCTIONS)
 
     async def test_without_existing_chains_returns_empty_selection_without_llm(self) -> None:
+        """验证无历史链时直接确定性返回空列表，不产生任何 LLM API 请求。"""
         create = mock.AsyncMock()
         router = ContextAgentRouter(_provider(create))
 
@@ -143,6 +169,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         create.assert_not_awaited()
 
     async def test_forces_one_strict_tool_and_parses_arguments(self) -> None:
+        """验证在存在历史链时强制执行单一 Strict Tool 调用，并正确解析返回的参数。"""
         create = mock.AsyncMock(
             return_value=_tool_response(
                 {
@@ -170,6 +197,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(function["parameters"]["additionalProperties"])
 
     async def test_observability_failure_does_not_change_selection(self) -> None:
+        """验证当 EventLogger 抛出异常时，路由选择仍能正常返回结果，确保可观测性故障不中断主干业务。"""
         create = mock.AsyncMock(
             return_value=_tool_response(
                 {
@@ -188,6 +216,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.relevant_chain_ids, ["chain-1"])
 
     async def test_retries_once_after_invalid_tool_response(self) -> None:
+        """验证模型首次返回非法输出时触发一次重试，并在第二次返回合法结果后成功完成路由。"""
         create = mock.AsyncMock(
             side_effect=[
                 _invalid_response(),
@@ -234,6 +263,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_raises_after_output_attempts_are_exhausted(self) -> None:
+        """验证重试次数耗尽后抛出 ContextAgentOutputError 异常，执行快速失败。"""
         create = mock.AsyncMock(
             side_effect=[_invalid_response(), _invalid_response()]
         )
@@ -251,6 +281,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(create.await_count, 2)
 
     async def test_rejects_non_contract_tool_arguments(self) -> None:
+        """验证当模型返回包含契约外冗余字段的参数时被拒绝并触发异常。"""
         create = mock.AsyncMock(
             return_value=_tool_response(
                 {
@@ -269,6 +300,7 @@ class ContextAgentRouterTest(unittest.IsolatedAsyncioTestCase):
             await router.route(_agent_input())
 
     async def test_rejects_invalid_attempt_configuration(self) -> None:
+        """验证 max_output_attempts 参数小于 1 时在初始化阶段抛出 ValueError。"""
         create = mock.AsyncMock()
 
         with self.assertRaisesRegex(

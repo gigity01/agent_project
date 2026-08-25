@@ -1,4 +1,12 @@
-"""Outbox Publisher 的可靠发布状态测试。"""
+"""Outbox Publisher 可靠消息发布与状态推进测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 可靠事件事实（Transactional Outbox）：
+   - 业务操作（如 Plan 发布、Task 状态更新、Replan 请求）与 OutboxEvent 在同一数据库事务内提交，Outbox 是系统内持久化可靠事件事实。
+2. 扫描与投递：
+   - OutboxPublisher 轮询待发布事件（`status='pending'` 且 `available_at <= NOW()`），成功投递至传输层（Redis Stream）后将状态推进为 `published` 并记录 published_at。
+   - 投递失败时递增 attempts，并按指数退避计算下次 available_at 时间。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +25,7 @@ from app.modules.messaging.infrastructure.persistence.models import OutboxEvent
 
 
 class _Publisher:
+    """测试用传输层 Publisher 替身，捕获发布事件。"""
     def __init__(self) -> None:
         self.events = []
 
@@ -25,6 +34,7 @@ class _Publisher:
 
 
 class OutboxPublisherTest(unittest.IsolatedAsyncioTestCase):
+    """验证 OutboxPublisher 的事件扫描、单次投递与状态原子推进。"""
     async def asyncSetUp(self) -> None:
         load_all_models()
         self.engine = create_engine(

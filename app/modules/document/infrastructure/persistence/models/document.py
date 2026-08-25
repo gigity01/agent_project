@@ -1,4 +1,9 @@
-"""文档模块原始文档及其处理状态的 SQLAlchemy ORM 定义。"""
+"""文档主表（Document）的 SQLAlchemy ORM 实体定义。
+
+对应数据库表 `documents`。
+维护文档三状态轴（技术流水线状态 status、业务生命周期状态 lifecycle_status、底层存储状态 storage_status）、
+操作所有权 token（active_operation_id）、知识库内唯一内容哈希约束（uq_documents_kb_active_content_hash）以及关联的派生产物。
+"""
 
 from sqlalchemy import (
     BigInteger,
@@ -20,7 +25,8 @@ from app.modules.document.domain.enums import (
 
 
 class Document(Base):
-    """保存上传文件、清洗文件和文档生命周期元数据。"""
+    """文档主实体 ORM 模型。"""
+
     __tablename__ = "documents"
     __table_args__ = (
         UniqueConstraint(
@@ -30,53 +36,61 @@ class Document(Base):
         ),
     )
 
-    # 稳定业务编号用于文件名、审计日志和外部引用；数值主键仅用于数据库关联。
+    # 数据库自增主键
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # 稳定业务编码（格式形如 doc_xxx）
     doc_code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
 
     kb_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("knowledge_bases.id"), nullable=False)
     domain_code: Mapped[str] = mapped_column(String(100), nullable=False)
     business_scene: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # 文档显示标题
     title: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    # ``source_uri`` 指向原件，``cleaned_uri`` 指向可直接切块的标准化文本。
+    # 原始文件格式（如 'txt', 'md', 'pdf', 'docx', 'csv' 等）
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # 原始落盘文件路径 URI
     source_uri: Mapped[str] = mapped_column(String(500), nullable=False)
+    # 清洗/转换后的标准化文本文件路径 URI
     cleaned_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # 原始文件 SHA-256 哈希
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 活跃状态内容哈希（失效/软删除时置为 None 以释放知识库查重占用）
     active_content_hash: Mapped[str | None] = mapped_column(
         String(128),
         nullable=True,
     )
 
-    # status 只表示处理进度；业务有效性和文件存储位置由独立状态轴维护。
+    # 状态轴 2：业务生命周期状态（scheduled / active / expired / replaced / deleted）
     lifecycle_status: Mapped[str] = mapped_column(
         String(30),
         nullable=False,
         default=DocumentLifecycleStatus.ACTIVE.value,
     )
+    # 状态轴 3：底层物理存储状态（active / archiving / archived / deleted）
     storage_status: Mapped[str] = mapped_column(
         String(30),
         nullable=False,
         default=DocumentStorageStatus.ACTIVE.value,
     )
+    # 乐观锁版本号
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
-    # 状态由上传、处理、切块和索引服务推进；不要只依靠某个 URI 是否为空判断。
+    # 状态轴 1：流水线技术处理状态（uploaded -> processing -> processed -> chunking -> chunked -> indexing -> indexed）
     status: Mapped[str] = mapped_column(
         String(30),
         nullable=False,
         default=DocumentStatus.UPLOADED.value,
     )
-    # 执行中状态的所有权 token；只有持有同一 operation_id 的完成或补偿流程
-    # 才能推进或释放当前阶段。
+    # 操作所有权 Token（持有该 operation_id 的任务才可推进或补偿状态）
     active_operation_id: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
         index=True,
     )
+    # 替代当前文档的新文档 ID
     replaced_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     risk_level: Mapped[str | None] = mapped_column(String(30), nullable=True)
@@ -91,6 +105,7 @@ class Document(Base):
 
     mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # 关联的派生产物集合
     artifacts = relationship(
         "DocumentArtifact",
         back_populates="document",

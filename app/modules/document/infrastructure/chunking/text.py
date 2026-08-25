@@ -1,4 +1,11 @@
-"""文档模块将纯文本按段落构造父块和子块。"""
+"""文档模块纯文本（Plain Text）按段落构造父块和子块的切分器。
+
+处理策略：
+1. 依据双换行空行（split_paragraphs）切分自然段。
+2. 将每个段落按 4,000 字符限制聚合为 ParentBlockData（block_type='paragraph'）。
+3. 在父块内部按 600 字符限制切分为细粒度 ChildChunkData（chunk_type='text'）。
+4. 纯文本子块的 embedding_text 等同于 content（无 section_path 标题前缀）。
+"""
 
 from app.modules.document.infrastructure.chunking.base import (
     BaseChunker,
@@ -15,12 +22,23 @@ from app.modules.document.infrastructure.chunking.common import (
 
 
 class TextChunker(BaseChunker):
-    """纯文本切块策略。"""
+    """纯文本格式切块策略实现类。
+
+    以自然段落为基本语义边界，生成父级段落块与子切块。
+    """
+
     def build(
         self,
         input_data: ChunkBuildInput,
     ) -> ChunkBuildResult:
-        """按空行划分父块，并为每个段落生成可检索子块。"""
+        """读取纯文本 cleaned 文件并按段落构建父子切块。
+
+        Args:
+            input_data: 切块输入对象，包含 cleaned_path。
+
+        Returns:
+            ChunkBuildResult: 构建完成的父块与子块结果。
+        """
         text = input_data.cleaned_path.read_text(
             encoding="utf-8",
             errors="strict",
@@ -32,6 +50,7 @@ class TextChunker(BaseChunker):
         block_index = 0
 
         for semantic_group_index, paragraph in enumerate(paragraphs):
+            # 将段落按父块上限（4,000 字符）切分为片段
             parent_segments = split_text_to_parent_segments(paragraph)
 
             for segment_index, parent_content in enumerate(parent_segments):
@@ -46,6 +65,7 @@ class TextChunker(BaseChunker):
                 )
                 parents.append(parent)
 
+                # 将父块正文按子块上限（600 字符）切分
                 child_texts = split_text_to_child_chunks(parent_content)
                 children = [
                     ChildChunkData(

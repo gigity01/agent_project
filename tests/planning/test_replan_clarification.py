@@ -1,4 +1,14 @@
-"""Clarification 在源 Turn 回答并创建 Replan revision 的测试。"""
+"""澄清回答（AnswerClarificationUseCase）与 Replan（ReplanUseCase）事务及多 Revision 测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 澄清回答复用源 Turn（In-place Clarification Answer）：
+   - 在单事务内锁定源 Turn、ClarificationRequest 和 Plan；
+   - 将回答写入 `ConversationTurn.clarification_input`，请求标记为 `answered`，Turn 推进到 `processing`；
+   - 写入 `planning.replan_requested` Outbox 事件。
+2. 多 Revision 与状态继承：
+   - 新 Plan revision 复用同一 Turn、Context Selection 和 workflow_id；Planner 输入包含原始 `user_input` 与澄清补充；
+   - 同一 workflow 最多 3 个 revision，新 revision 创建前将旧 Plan 和未完成 Task 标记为 `superseded`。
+"""
 
 from __future__ import annotations
 
@@ -46,6 +56,7 @@ from app.modules.planning.infrastructure.persistence.models import (
 
 
 class _RunPlanning:
+    """测试用 Planner 执行替身。"""
     def __init__(self) -> None:
         self.calls = []
 

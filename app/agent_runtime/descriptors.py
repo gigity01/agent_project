@@ -1,4 +1,9 @@
-"""供 Planner 和 Catalog 读取的 Tool 能力描述。"""
+"""供 Planner 和 Catalog 读取的 Tool 能力描述模块。
+
+职责说明：
+- 提供与具体 Python 执行函数解耦的静态/动态元数据描述结构 `ToolDescriptor`。
+- 用于向 Agent、Planner 及 GapHandler 暴露工具的操作类型、副作用、幂等语义、权限要求与资源类型。
+"""
 
 from typing import Literal
 

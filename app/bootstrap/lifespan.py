@@ -1,4 +1,11 @@
-"""FastAPI 应用生命周期与对象装配。"""
+"""FastAPI 应用生命周期与全局依赖对象装配模块。
+
+职责说明：
+- 负责在服务启动时初始化 Redis 客户端、执行 PING 健康检查探测，构建 DeepSeek LLM Provider、MySQL 命名锁、Qdrant 向量库、Docling 解析器等基础设施客户端。
+- 装配各业务领域（Context、Document、Operations、Planning、Task Runtime、Messaging）的 Application Use Case、Ports 与 Agent 执行器。
+- 保证 Redis 故障时应用 fail-fast 启动失败，防止带着不可用的锁与缓存进入服务状态。
+- 通过 FastAPI `lifespan` 异步上下文管理器管理应用启动与优雅关闭流程。
+"""
 
 from __future__ import annotations
 
@@ -242,7 +249,24 @@ from app.shared.observability.context_logger import ContextEventLogger
 
 
 async def build_container() -> AppContainer:
-    """创建外部客户端并装配应用级共享对象。"""
+    """初始化底层客户端并装配应用级共享依赖对象容器。
+
+    执行步骤：
+    1. 创建 Redis 客户端并执行 PING 探测；若不可用则抛出异常阻止启动。
+    2. 创建 Context 领域组件（路由锁、热资源队列、ContextService）。
+    3. 创建 DeepSeek Model Provider（若配置了 API Key）及其对应的 Agent 路由与执行器。
+    4. 创建 Operations 日志仓储与查询服务。
+    5. 创建 Document 领域组件（存储、解析工厂、切块器、Embedding、Qdrant、MySQL 命名锁围栏）。
+    6. 装配 Planning 领域与 Task Runtime 领域用例。
+    7. 返回装配完成的 `AppContainer` 实例。
+
+    返回:
+        AppContainer: 全局应用容器。
+
+    异常:
+        RuntimeError: 当 Redis 连接失败或依赖装配异常时抛出。
+    """
+    # 1. 初始化 Redis 客户端并执行健康探测
     redis_client = create_redis_client(
         REDIS_URL,
         socket_connect_timeout_seconds=(
@@ -256,6 +280,7 @@ async def build_container() -> AppContainer:
         if not await ping_redis_client(redis_client):
             raise RuntimeError("Redis PING 未返回成功")
 
+        # 2. 装配 Context 领域组件
         context_event_logger = ContextEventLogger()
         route_lock_manager = ConversationRouteLockManager(
             redis_client,
@@ -275,6 +300,7 @@ async def build_container() -> AppContainer:
             uow_factory=SQLAlchemyUnitOfWork,
             record_factory=record_factory,
         )
+        # 3. 初始化 DeepSeek 提供者与 Context 智能路由
         deepseek_provider = (
             DeepSeekModelProvider.create()
             if DEEPSEEK_API_KEY is not None
@@ -300,6 +326,8 @@ async def build_container() -> AppContainer:
         context_query_service = ContextQueryService(
             uow_factory=SQLAlchemyUnitOfWork
         )
+
+        # 4. 装配 Operations 日志查询服务
         operations_query_service = OperationsQueryService(
             document_logs=JsonlLogRepository(
                 (
@@ -363,6 +391,8 @@ async def build_container() -> AppContainer:
         get_document_workflow_timeline = (
             GetDocumentWorkflowTimelineUseCase(operations_query_service)
         )
+
+        # 5. 构建 Collector Agent 集合
         collector_agents = (
             _build_collector_agents(deepseek_provider)
             if deepseek_provider is not None
@@ -379,6 +409,8 @@ async def build_container() -> AppContainer:
             integrity_error_type=IntegrityError,
         )
         planning_use_cases = build_planning_use_cases(planning_ports)
+
+        # 6. 装配 Document 领域 Ports 与 Use Cases
         document_ports = DocumentApplicationPorts(
             uow_factory=SQLAlchemyUnitOfWork,
             document_factory=Document,
@@ -481,6 +513,8 @@ async def build_container() -> AppContainer:
             build_chunks=build_chunks,
             index_vectors=index_vectors,
         )
+
+        # 7. 装配 Planner Agent Runner 与 RunPlanningUseCase
         planner_agent_runner = (
             _build_planner_agent(deepseek_provider, collector_agents)
             if deepseek_provider is not None and collector_agents is not None
@@ -522,6 +556,8 @@ async def build_container() -> AppContainer:
             if planner_agent_runner is not None
             else None
         )
+
+        # 8. 装配 Task 执行器（优先使用 Agent Executor，降级为确定性 Executor）与补偿器
         document_executor_agents = (
             _build_document_executor_agents(deepseek_provider)
             if deepseek_provider is not None
@@ -605,6 +641,8 @@ async def build_container() -> AppContainer:
                 )
             ),
         }
+
+        # 9. 装配 Task Runtime、事件发布分派与聚合
         task_runtime = TaskRuntimeService(
             ports=TaskRuntimePorts(
                 uow_factory=SQLAlchemyUnitOfWork,
@@ -705,6 +743,7 @@ async def build_container() -> AppContainer:
             index_vectors=index_vectors,
         )
     except Exception:
+        # 装配失败时确保释放已创建的资源
         try:
             if deepseek_provider is not None:
                 await deepseek_provider.aclose()
@@ -714,7 +753,14 @@ async def build_container() -> AppContainer:
 
 
 def _build_collector_agents(provider: DeepSeekModelProvider):
-    """仅在启用 Agent 时加载 Agents SDK Collector 定义。"""
+    """仅在启用 Agent 时加载 Agents SDK Collector 定义。
+
+    参数:
+        provider: DeepSeek 模型提供者。
+
+    返回:
+        CollectorAgentSet: 三个 Collector Agent 集合。
+    """
     from app.agents.collectors import build_collector_agents
 
     return build_collector_agents(
@@ -724,7 +770,15 @@ def _build_collector_agents(provider: DeepSeekModelProvider):
 
 
 def _build_planner_agent(provider, collectors):
-    """使用同一 DeepSeek Provider 装配 Planner 与并发 Tool 配置。"""
+    """使用同一 DeepSeek Provider 装配 Planner 与并发 Tool 配置。
+
+    参数:
+        provider: DeepSeek 模型提供者。
+        collectors: 取证 Collector 工具集合。
+
+    返回:
+        PlannerAgentRunner: Planner 运行器。
+    """
     from app.agents.planner import build_planner_agent
 
     return build_planner_agent(
@@ -735,7 +789,14 @@ def _build_planner_agent(provider, collectors):
 
 
 def _build_document_executor_agents(provider):
-    """使用同一 DeepSeek Provider 装配受限 Document Executor Agents。"""
+    """使用同一 DeepSeek Provider 装配受限 Document Executor Agents。
+
+    参数:
+        provider: DeepSeek 模型提供者。
+
+    返回:
+        DocumentExecutorAgentSet: 三个受限能力执行器集合。
+    """
     from app.agents.document_executors import (
         build_document_executor_agents,
     )
@@ -748,7 +809,14 @@ def _build_document_executor_agents(provider):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """创建统一容器，并在应用退出时释放其中的外部客户端。"""
+    """FastAPI 应用生命周期管理器。
+
+    启动时创建统一依赖容器并挂载至 `app.state.container`；
+    关闭时安全调用 `container.aclose()` 释放外部连接。
+
+    参数:
+        app: FastAPI 应用对象。
+    """
     container = await build_container()
     app.state.container = container
 

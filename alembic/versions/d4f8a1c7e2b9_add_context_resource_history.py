@@ -1,9 +1,19 @@
-"""增加 Context Chain 资源事实表和资源版本。
+"""将 Context 资源管理从粗粒度 JSON 字段升级为结构化事实表（context_chain_resources）与追加式事件表（context_chain_resource_events）。
+
+业务背景与设计规范：
+1. 资源状态表 `context_chain_resources`：
+   - 记录每条链中各资源（如 document, plan, task 等）的当前激活状态、首次/末次出现轮次、使用频次计数（use_count）。
+   - 通过 `uq_context_chain_resources_chain_resource (chain_id, resource_key)` 保证链内资源事实的唯一性。
+2. 资源历史事件表 `context_chain_resource_events`：
+   - 追加保存资源生命周期动作（seen / refreshed / removed / invalidated）与关联关系，保证审计追溯不随缓存淘汰丢失。
+3. 链模型扩展 `context_chains.resource_version`：
+   - 递增版本号用于与 Redis 热资源队列进行原子 CAS 与版本一致性校验（版本不一致时触发数据库全量预热）。
+4. 迁移回填 `_backfill_legacy_resources()`：
+   - 解析旧 `context_chains.resources` JSON 数据并转换为正式资源事实与首发事件，赋予初始 resource_version=1。
 
 Revision ID: d4f8a1c7e2b9
 Revises: b6d9a2e4c8f1
 Create Date: 2026-07-26 00:00:00.000000
-
 """
 import json
 import re

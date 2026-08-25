@@ -1,4 +1,8 @@
-"""Document 查询 Function Tools。"""
+"""Document 只读查询 Function Tools。
+
+通过 execute_audited_tool_call 包装应用层 UseCase 调用，记录工具审计日志并进行权限拦截。
+提供文档详情查询、高级多条件过滤、流水线进度快照、派生产物列表与检索、父子切块明细及知识库统计能力。
+"""
 
 from agents import RunContextWrapper, function_tool
 
@@ -43,7 +47,7 @@ from app.modules.document.application.dto import (
     ParentBlockSearchQuery,
 )
 
-
+# 文档只读查询权限标识
 DOCUMENT_READ_PERMISSION = "document:read"
 
 
@@ -51,7 +55,15 @@ def get_document_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: GetDocumentToolInput,
 ) -> GetDocumentToolOutput:
-    """获取指定文档。"""
+    """获取指定文档详情的审计包装处理函数。
+
+    Args:
+        ctx: 包含 Agent 运行上下文与服务容器的 RunContextWrapper。
+        tool_input: 包含 document_id 的输入参数。
+
+    Returns:
+        GetDocumentToolOutput: 格式化的工具调用输出。
+    """
     resource_refs = [f"document:{tool_input.document_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -86,7 +98,15 @@ def list_documents_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListDocumentsToolInput,
 ) -> ListDocumentsToolOutput:
-    """筛选并分页列出文档。"""
+    """按知识库与基本状态筛选文档列表的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含 kb_id、status、source_type 等过滤字段的输入。
+
+    Returns:
+        ListDocumentsToolOutput: 文档列表工具输出。
+    """
     resource_refs = [f"knowledge_base:{tool_input.kb_id}"]
     query = DocumentListQuery.model_validate(tool_input.model_dump())
     execution = execute_audited_tool_call(
@@ -134,7 +154,15 @@ def search_documents_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: SearchDocumentsToolInput,
 ) -> SearchDocumentsToolOutput:
-    """按受限高级条件查询文档。"""
+    """按受限高级多条件检索文档的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 高级检索参数输入。
+
+    Returns:
+        SearchDocumentsToolOutput: 文档高级检索输出。
+    """
     resource_refs = [
         *(f"knowledge_base:{kb_id}" for kb_id in tool_input.kb_ids),
         *(f"document:{doc_id}" for doc_id in tool_input.document_ids),
@@ -187,7 +215,15 @@ def get_document_pipeline_state_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: GetDocumentPipelineStateToolInput,
 ) -> GetDocumentPipelineStateToolOutput:
-    """获取文档流水线状态。"""
+    """获取文档流水线三状态轴与切块/向量进度的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含 document_id 的输入。
+
+    Returns:
+        GetDocumentPipelineStateToolOutput: 流水线状态输出。
+    """
     resource_refs = [f"document:{tool_input.document_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -228,7 +264,15 @@ def list_document_artifacts_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListDocumentArtifactsToolInput,
 ) -> ListDocumentArtifactsToolOutput:
-    """列出文档产物。"""
+    """列出文档关联全部派生产物的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含 document_id 的输入。
+
+    Returns:
+        ListDocumentArtifactsToolOutput: 产物列表输出。
+    """
     resource_refs = [f"document:{tool_input.document_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -277,7 +321,15 @@ def search_document_artifacts_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: SearchDocumentArtifactsToolInput,
 ) -> SearchDocumentArtifactsToolOutput:
-    """按受限条件查询派生产物。"""
+    """按受限多条件检索派生产物的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 产物检索参数输入。
+
+    Returns:
+        SearchDocumentArtifactsToolOutput: 产物检索输出。
+    """
     resource_refs = [
         f"document:{document_id}"
         for document_id in tool_input.document_ids
@@ -334,7 +386,15 @@ def list_parent_blocks_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListParentBlocksToolInput,
 ) -> ListParentBlocksToolOutput:
-    """查询父级语义块明细。"""
+    """查询父级语义块明细的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 父块检索条件输入。
+
+    Returns:
+        ListParentBlocksToolOutput: 父块列表输出。
+    """
     resource_refs = [
         *(f"document:{doc_id}" for doc_id in tool_input.document_ids),
         *(f"knowledge_base:{kb_id}" for kb_id in tool_input.kb_ids),
@@ -385,7 +445,15 @@ def list_child_chunks_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ListChildChunksToolInput,
 ) -> ListChildChunksToolOutput:
-    """查询可向量化子块明细。"""
+    """查询可向量化子块明细的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 子块检索条件输入。
+
+    Returns:
+        ListChildChunksToolOutput: 子块列表输出。
+    """
     resource_refs = []
     if tool_input.document_id is not None:
         resource_refs.append(f"document:{tool_input.document_id}")
@@ -442,7 +510,15 @@ def get_document_chunk_statistics_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: GetDocumentChunkStatisticsToolInput,
 ) -> GetDocumentChunkStatisticsToolOutput:
-    """读取文档父子块和向量状态统计。"""
+    """读取文档切块与向量状态统计的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含 document_id 的输入。
+
+    Returns:
+        GetDocumentChunkStatisticsToolOutput: 切块统计输出。
+    """
     resource_refs = [f"document:{tool_input.document_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -485,7 +561,15 @@ def get_knowledge_base_statistics_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: GetKnowledgeBaseStatisticsToolInput,
 ) -> GetKnowledgeBaseStatisticsToolOutput:
-    """读取知识库整体统计。"""
+    """读取知识库整体统计的审计包装处理函数。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含 kb_id 的输入。
+
+    Returns:
+        GetKnowledgeBaseStatisticsToolOutput: 知识库统计输出。
+    """
     resource_refs = [f"knowledge_base:{tool_input.kb_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,

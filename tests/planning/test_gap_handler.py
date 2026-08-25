@@ -1,4 +1,14 @@
-"""Planner GapHandler 决策、补查上限与 Application 路由测试。"""
+"""Planner 证据图编排中的 GapHandler 决策、定向补查与 LangGraph 图流转测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 进程内 LangGraph 状态图与补查上限：
+   - 编排流程：第一轮 Evidence -> 首次 Gap 判断 -> 最多 1 次定向补查 -> 最终 Gap 判断 -> Commit。
+   - 若首次取证后仍有证据缺口（gaps）且未达到补查上限，触发 targeted_collect；
+   - 补查后若依然存在缺口，则根据意图明确程度分派至澄清（clarify）、不支持（unsupported）或继续由 Commit Agent 尝试。
+2. 架构防腐隔离：
+   - GapHandler 和 Commit Agent 不直接执行任何副作用命令；
+   - Collector 结果与 ToolRegistry/BusinessDocs 路由严格分离。
+"""
 
 from __future__ import annotations
 

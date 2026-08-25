@@ -1,4 +1,7 @@
-"""Task 的 SQLAlchemy ORM 定义。"""
+"""Task 的 SQLAlchemy ORM 定义。
+
+映射 `tasks` 数据表，记录 Planner 生成的单项具体能力执行任务及其实时状态。
+"""
 
 from datetime import datetime
 
@@ -20,7 +23,28 @@ from app.modules.planning.domain.enums import TaskStatus
 
 
 class Task(Base):
-    """保存 Planner 生成的一项可执行能力调用。"""
+    """保存 Planner 生成的一项可执行能力调用实体。
+
+    Attributes:
+        task_id: 任务全局唯一标识，主键。
+        plan_id: 所属 Plan ID 外键。
+        turn_id: 所属 ConversationTurn 外键。
+        task_ref: Plan 内唯一的任务局部引用标识（如 task_1）。
+        capability_code: 目标领域能力编码（如 process_document）。
+        input_json: 任务执行输入参数 JSON 字典。
+        sequence: 任务在 Plan 内的执行序号，从 1 开始严格连续递增。
+        status: 任务生命周期状态（TaskStatus）。
+        attempt_count: 已尝试执行次数。
+        max_attempts: 允许的最大尝试次数（默认为 3）。
+        output_json: 任务执行成功后的输出结果 JSON 字典。
+        last_error_code: 最近一次执行失败的错误分类码。
+        last_error_message: 最近一次执行失败的错误详细信息。
+        started_at: 任务首次被 Claim 开始执行的时间。
+        completed_at: 任务终态完成时间。
+        created_at: 任务创建时间。
+        updated_at: 任务更新时间。
+        plan: 与所属 Plan 实体的反向关系。
+    """
 
     __tablename__ = "tasks"
     __table_args__ = (

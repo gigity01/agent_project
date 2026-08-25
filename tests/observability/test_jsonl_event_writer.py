@@ -1,4 +1,11 @@
-"""JSONL Writer 的非阻断写入与输入隔离测试。"""
+"""JSONL 结构化日志写入器（JsonlEventWriter）单元测试。
+
+核心业务不变量：
+1. 入参不可变性与 UTC 日期分文件：
+   - 写入时追加 `created_at` 字段而不改变原始入参字典；按 UTC 日期归档至 `events-YYYY-MM-DD.jsonl` 文件。
+2. 非阻断故障安全（Non-blocking Failure Handling）：
+   - 文件系统只读或 I/O 错误时记录异常并返回 False，绝不向外冒泡异常破坏主业务流程。
+"""
 
 import json
 import tempfile
@@ -11,6 +18,7 @@ from app.shared.observability.jsonl_writer import JsonlEventWriter
 
 
 class JsonlEventWriterTest(unittest.TestCase):
+    """验证 JsonlEventWriter 的不可变写入、日期切分与异常安全。"""
     def test_write_adds_created_at_without_mutating_input(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             writer = JsonlEventWriter(Path(temp_dir), "events")

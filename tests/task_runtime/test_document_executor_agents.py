@@ -1,4 +1,13 @@
-"""受限 Document Executor Agent 与 Task 结果适配测试。"""
+"""Document Executor Agent 工具范围隔离、StopAtTools 拦截与确定性适配器测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. Capability 级别工具范围隔离与单写约束：
+   - 每个 Executor Agent（process, build_chunks, index_vectors）只能看到查询 Tool 与当前 Capability 的唯一定向写命令 Tool。
+   - `parallel_tool_calls=False` 且 `max_function_tool_concurrency=1`。
+2. StopAtTools 与确定性判定：
+   - 命令 Tool 执行后通过 `StopAtTools` 直接将结构化 Tool Output 交给确定性适配器（Adapter），LLM 的自然语言文本输出不能决定 Task 的成败。
+   - 命令 `succeeded` 映射为 Task Output，`rejected` 映射为 blocked 终态，`failed` 保留 retryable 标记。
+"""
 
 from __future__ import annotations
 
@@ -40,6 +49,7 @@ from app.modules.task_runtime.infrastructure.executors import (
 
 
 class _AuditWriter:
+    """测试用审计日志写入器。"""
     def __init__(self) -> None:
         self.events: list[dict] = []
 

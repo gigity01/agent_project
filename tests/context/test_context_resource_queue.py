@@ -1,4 +1,17 @@
-"""Context Redis 刷新式 FIFO 队列和客户端工厂的离线测试。"""
+"""Context Redis 刷新式 FIFO 资源队列与工厂配置离线测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 刷新式 FIFO 队列语义：
+   - 每条 Chain 在 Redis 中维护 List、Hash、Version 三个 Key。
+   - 新资源或再次引用的资源先从旧位置移除，再追加进入队尾（MRU）。
+   - 超出容量（capacity）时，从队头淘汰最久未再次引用的资源（LRU），同时清理 Hash 中的序列化数据。
+2. Lua 脚本原子性与 CAS 版本一致性：
+   - `REFRESH_QUEUE_LUA`：原子执行队列刷新、数据清理与版本更新。
+   - 增量刷新前强校验 Redis 当前版本是否等于预期前序版本（expected_previous_version == database_version - 1）。
+   - 版本缺失、不一致或跳号时拒绝增量更新（返回 -1 / False），触发全量预热。
+3. 显式删除与失效：
+   - 明确移除的资源（removed_resource_keys）从 List 和 Hash 中彻底删除。
+"""
 
 from __future__ import annotations
 
@@ -29,6 +42,7 @@ MIGRATION_PATH = (
 
 
 def _load_migration_module():
+    """动态加载 Context Resource Alembic 迁移脚本模块。"""
     spec = importlib.util.spec_from_file_location(
         "context_resource_migration_under_test",
         MIGRATION_PATH,
@@ -41,6 +55,8 @@ def _load_migration_module():
 
 
 class _RedisClient:
+    """测试用内存 Redis 客户端替身，模拟 List、Hash、String 及 Lua 脚本执行逻辑。"""
+
     def __init__(self) -> None:
         self.strings = {}
         self.lists = {}
@@ -139,6 +155,7 @@ def _resource(
     *,
     seen_at: datetime,
 ) -> ContextResourceRef:
+    """构造测试用 ContextResourceRef 领域对象。"""
     return ContextResourceRef(
         resource_key=f"document:{resource_id}",
         resource_type="document",
@@ -152,9 +169,12 @@ def _resource(
 class ContextResourceQueueRepositoryTest(
     unittest.IsolatedAsyncioTestCase
 ):
+    """验证 Redis 热资源队列的刷新、淘汰、移除与版本校验行为。"""
+
     async def test_refreshes_existing_item_to_tail_and_trims_head(
         self,
     ) -> None:
+        """验证再次使用的资源移到队尾，超出容量上限时从队头淘汰最旧资源。"""
         client = _RedisClient()
         repository = ContextResourceQueueRepository(client, capacity=4)
         now = datetime.now()
@@ -214,6 +234,7 @@ class ContextResourceQueueRepositoryTest(
     async def test_removes_resource_and_version_mismatch_misses(
         self,
     ) -> None:
+        """验证显式移除资源生效，以及版本不匹配时缓存未命中（get 返回 None）。"""
         client = _RedisClient()
         repository = ContextResourceQueueRepository(client, capacity=2)
         now = datetime.now()
@@ -255,6 +276,7 @@ class ContextResourceQueueRepositoryTest(
     async def test_rejects_incremental_refresh_when_previous_cache_missing(
         self,
     ) -> None:
+        """验证在缓存中缺失前序版本时拒绝增量更新（返回 False），迫使调用方进行全量回填。"""
         client = _RedisClient()
         repository = ContextResourceQueueRepository(client, capacity=4)
 
@@ -280,9 +302,12 @@ class ContextResourceQueueRepositoryTest(
 
 
 class RedisClientFactoryTest(unittest.IsolatedAsyncioTestCase):
+    """验证 Redis 异步客户端工厂的连接参数与解码配置。"""
+
     async def test_creates_decoded_async_client_without_connecting(
         self,
     ) -> None:
+        """验证客户端工厂正确解析连接字符串与超时配置，且开启 decode_responses。"""
         client = create_redis_client(
             "redis://127.0.0.1:6379/3",
             socket_connect_timeout_seconds=4,
@@ -301,9 +326,12 @@ class RedisClientFactoryTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ContextResourceMigrationTest(unittest.TestCase):
+    """验证 Context 资源 Alembic 迁移脚本的历史快照解析逻辑。"""
+
     def test_converts_legacy_resource_snapshot_without_duplicates(
         self,
     ) -> None:
+        """验证 _legacy_resource_pairs 正确将旧 JSON 结构转换为去重的 (type, id) 事实对。"""
         migration = _load_migration_module()
         pairs = migration._legacy_resource_pairs(
             {

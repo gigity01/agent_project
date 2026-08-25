@@ -1,4 +1,11 @@
-"""Document Application 查询用例测试。"""
+"""Document 领域 10 个独立只读查询用例（Query Use Cases）单元测试。
+
+核心业务不变量：
+1. 用例职责单一化与 DTO 映射：
+   - 每个查询用例（如 GetDocumentUseCase, ListDocumentsUseCase, SearchDocumentsUseCase, GetDocumentPipelineStateUseCase 等）独立封装特定查询边界，将仓储模型安全转化为只读 DTO。
+2. 异常隔离：
+   - 资源不存在时安全抛出 DocumentApplicationError(404)，参数非法时返回 DocumentApplicationError(400)。
+"""
 
 from __future__ import annotations
 

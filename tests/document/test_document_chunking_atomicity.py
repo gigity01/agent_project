@@ -1,4 +1,13 @@
-"""BuildChunks finalize 的真实 SQLAlchemy 事务原子性测试。"""
+"""BuildChunks 分块完成阶段（finalize）的数据库事务原子性与失败补偿测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 分块事务原子性：
+   - 重建切块时，在同一短事务内：复核 Document 三状态轴与 operation ownership -> 删除旧 child chunks -> 删除旧 parent blocks -> 写入新 blocks & chunks -> 将 Document 推进为 chunked。
+   - 若子块批量插入中途发生异常，事务必须完全回滚，旧 parent/child 记录不受破坏，Document 状态保留为 chunking 且保持 ownership。
+2. 确定性补偿器行为（Compensator Invariants）：
+   - UseCase 失败时不自作主张释放 ownership，由 Runtime 驱动 BuildChunksCompensator 介入。
+   - Compensator 校验相同的 operation_id，幂等将 Document 推进为 failed 并安全释放 active_operation_id 所有权。
+"""
 
 from __future__ import annotations
 
@@ -41,10 +50,13 @@ from app.modules.document.infrastructure.persistence.models.parent_block import 
 
 @compiles(MEDIUMTEXT, "sqlite")
 def _compile_mediumtext_for_sqlite(_type, compiler, **kwargs):
+    """为 SQLite 测试环境将 MySQL MEDIUMTEXT 方言类型重定向编译为标准 Text 类型。"""
     return compiler.process(Text(), **kwargs)
 
 
 class _FailingChildCreateUnitOfWork(SQLAlchemyUnitOfWork):
+    """模拟在插入第二个 ChildChunk 时突发异常的 UnitOfWork 替身。"""
+
     def __enter__(self):
         uow = super().__enter__()
         repository = uow.child_chunks
@@ -58,7 +70,10 @@ class _FailingChildCreateUnitOfWork(SQLAlchemyUnitOfWork):
 
 
 class DocumentChunkingAtomicityTest(unittest.TestCase):
+    """验证分块写入失败时的事务完整回滚及后续补偿器的幂等修复能力。"""
+
     def setUp(self) -> None:
+        """初始化内存 SQLite 数据库，建立知识库、文档及旧父子块记录。"""
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -76,6 +91,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
         ]
         Base.metadata.create_all(self.engine, tables=self.tables)
         with self.session_factory() as session:
+            # 1. 创建测试知识库
             session.add(
                 KnowledgeBase(
                     id=1,
@@ -86,6 +102,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
                     vector_collection="test-vectors",
                 )
             )
+            # 2. 创建处于 chunking 状态的文档，持有 operation-atomic 令牌
             session.add(
                 Document(
                     id=1,
@@ -102,6 +119,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
                     active_operation_id="operation-atomic",
                 )
             )
+            # 3. 创建旧父块
             session.add(
                 ParentBlock(
                     id=10,
@@ -116,6 +134,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
                     segment_index=0,
                 )
             )
+            # 4. 创建旧子块
             session.add(
                 ChildChunk(
                     id=20,
@@ -131,6 +150,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
             session.commit()
 
     def tearDown(self) -> None:
+        """清理测试表并销毁数据库引擎。"""
         Base.metadata.drop_all(
             self.engine,
             tables=list(reversed(self.tables)),
@@ -138,6 +158,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
         self.engine.dispose()
 
     def test_partial_child_insert_rolls_back_then_compensates(self) -> None:
+        """验证部分子块写入失败时事务完全回滚，随后由 Compensator 幂等置为 failed 并释放令牌。"""
         parent_ids = iter((101,))
         child_ids = iter((201, 202))
         failing_ports = type(
@@ -208,9 +229,11 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
             ),
         )
 
+        # 1. 验证完成切块过程中抛出异常
         with self.assertRaisesRegex(RuntimeError, "create child failed"):
             _complete_chunking(result, ports=failing_ports)
 
+        # 2. 验证事务已完整回滚：状态仍为 chunking，旧数据完整保留，新数据未残留
         with self.session_factory() as session:
             document = session.get(Document, 1)
             parents = session.query(ParentBlock).all()
@@ -222,6 +245,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
             self.assertEqual([child.id for child in children], [20])
             self.assertEqual([child.content for child in children], ["old child"])
 
+        # 3. 运行 BuildChunksCompensator 验证补偿器幂等执行
         compensator = BuildChunksCompensator(
             ports=type(
                 "CompensatorPorts",
@@ -239,6 +263,7 @@ class DocumentChunkingAtomicityTest(unittest.TestCase):
                 operation_id="operation-atomic",
             )
 
+        # 4. 验证补偿后文档状态变为 failed，operation_id 成功释放
         with self.session_factory() as session:
             document = session.get(Document, 1)
             self.assertEqual(document.status, DocumentStatus.FAILED.value)

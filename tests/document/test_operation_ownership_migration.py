@@ -1,4 +1,11 @@
-"""Document operation ownership migration 与 ORM 对齐测试。"""
+"""Document active_operation_id 操作所有权 Alembic 迁移（b1c3d5e7f9a2）与 ORM 模型对齐测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 迁移 DDL 结构：
+   - 验证迁移脚本为 documents 表新增 `active_operation_id VARCHAR(100) NULL` 列及普通索引 `ix_documents_active_operation_id`。
+2. ORM 模型对齐：
+   - 验证 Document ORM 实体字段定义与迁移结构严格匹配。
+"""
 
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ MIGRATION_PATH = (
 
 
 def _load_migration():
+    """动态加载 Operation Ownership Alembic 迁移脚本。"""
     spec = importlib.util.spec_from_file_location(
         "operation_ownership_migration_under_test",
         MIGRATION_PATH,
@@ -34,6 +42,7 @@ def _load_migration():
 
 
 class OperationOwnershipMigrationTest(unittest.TestCase):
+    """验证 active_operation_id 迁移脚本升级与 ORM 映射。"""
     def test_upgrade_adds_nullable_indexed_operation_owner(self) -> None:
         migration = _load_migration()
         operations = mock.Mock()

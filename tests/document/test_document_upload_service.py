@@ -1,4 +1,14 @@
-"""上传前置校验和存储准备进入日志异常边界的测试。"""
+"""文档上传用例（UploadDocumentUseCase）前置校验、分块落盘与失败清理测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 上传校验与分块流式落盘：
+   - 校验文件名、扩展名和客户端声明的 Content-Type 白名单。
+   - 以 1 MiB 分块流式读取与落盘，严格限制最大文件大小为 20 MiB。
+2. 同知识库 SHA-256 查重：
+   - 计算文件真实 SHA-256 内容哈希并在同知识库内查重，重复时抛出 409 冲突。
+3. 失败尽力清理（Best-effort Cleanup）：
+   - 当入库事务或处理前置步骤失败时，尽力删除已经落盘的 raw 原件，避免孤儿文件残留。
+"""
 
 from __future__ import annotations
 
@@ -24,6 +34,7 @@ SERVICE_PATH = (
 
 
 class _HTTPException(Exception):
+    """测试用 HTTP 异常替身。"""
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)
         self.status_code = status_code

@@ -1,4 +1,12 @@
-"""Planner 从 context_ready Turn 到 ready Plan 的单条闭环测试。"""
+"""Planner 从 context_ready Turn 状态到发布 ready Plan 的全流程规划闭环测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 物理隔离的双阶段 Planner（Evidence Run vs Commit Run）：
+   - Evidence Run 仅暴露只读 Collector Agent-as-Tool 取证；
+   - Commit Run 仅暴露 Planning Tools（create_process_document_task, create_build_chunks_task, create_index_vectors_task, finalize_plan）与 Clarification Handoff，单线程串行执行。
+2. Plan 发布原子事务：
+   - 同一数据库事务内原子创建 Plan、Task（sequence 从 1 连续）、TaskDependency 依赖边、更新 Turn 为 processing，并写入首个 `runtime.plan_wakeup` Outbox 事件。
+"""
 
 from __future__ import annotations
 
@@ -58,6 +66,11 @@ from app.modules.planning.agent_tools.schemas import (
     FinalizePlanToolInput,
 )
 from app.modules.planning.application.dto import (
+    CreateBuildChunksTaskInput,
+    CreateIndexVectorsTaskInput,
+    CreatePlanInput,
+    CreateProcessDocumentTaskInput,
+    FinalizePlanInput,
     PlannerContextInput,
     RunPlanningInput,
 )

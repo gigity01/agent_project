@@ -1,4 +1,16 @@
-"""ChildChunkRepository 索引领取、行锁和状态批量更新测试。"""
+"""ChildChunkRepository 向量索引候选筛选、行级排他锁与批量状态更新测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 索引候选子集筛选（Claim 阶段）：
+   - `list_indexable_by_doc_id` 仅查询 `status=active` 且 `vector_status in (pending, failed)` 的子块，
+     已成功索引的子块绝不重复生成向量。
+   - 按 `(parent_id ASC, chunk_index ASC)` 稳定排序，保证分块处理顺序确定性。
+2. 悲观行锁防并发（Lock 阶段）：
+   - `list_by_ids_for_update` 使用 `with_for_update()` 执行 SELECT ... FOR UPDATE，
+     按 `id ASC` 排序并去重，避免死锁并防止并发 Worker 重复索引相同 Chunk。
+3. 状态与 Point ID 映射：
+   - `mark_indexed_many` 将子块 `vector_status` 推进为 `indexed`，并将 `qdrant_point_id` 与 `child_chunks.id` 一一对应绑定。
+"""
 
 from __future__ import annotations
 
@@ -23,6 +35,8 @@ REPOSITORY_PATH = (
 
 
 class _Field:
+    """测试用 SQLAlchemy Column 表达式替身，支持条件过滤与排序操作。"""
+
     def __init__(self, name: str) -> None:
         self.name = name
 
@@ -40,6 +54,8 @@ class _Field:
 
 
 class _ChildChunkModel:
+    """测试用 ChildChunk ORM 实体字段定义替身。"""
+
     id = _Field("id")
     doc_id = _Field("doc_id")
     parent_id = _Field("parent_id")
@@ -49,12 +65,15 @@ class _ChildChunkModel:
 
 
 class _Func:
+    """测试用 SQLAlchemy func 聚合函数替身。"""
+
     @staticmethod
     def count(field):
         return ("count", field.name)
 
 
 def _load_repository_module():
+    """动态加载 ChildChunkRepository 模块并注入测试用轻量 SQLAlchemy 替身。"""
     sqlalchemy_module = types.ModuleType("sqlalchemy")
     sqlalchemy_module.String = object
     sqlalchemy_module.cast = lambda value, _type: value
@@ -93,6 +112,8 @@ def _load_repository_module():
 
 
 class _Query:
+    """测试用 SQLAlchemy Query 替身，捕获 filter, order_by, group_by 与 with_for_update 调用。"""
+
     def __init__(self, result) -> None:
         self.result = result
         self.filters = []
@@ -127,6 +148,8 @@ class _Query:
 
 
 class _Session:
+    """测试用 SQLAlchemy Session 替身，记录 query 模型与 flush 次数。"""
+
     def __init__(self, query: _Query) -> None:
         self.query_result = query
         self.queried_models = []
@@ -141,11 +164,14 @@ class _Session:
 
 
 class ChildChunkRepositoryIndexingTest(unittest.TestCase):
+    """验证 ChildChunkRepository 中支持向量索引流水线的查询与批量更新方法。"""
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.repository_module = _load_repository_module()
 
     def test_list_indexable_uses_active_pending_failed_and_stable_order(self) -> None:
+        """验证 list_indexable_by_doc_id 严格限定 active 且待索引/失败状态，并按 parent_id, chunk_index 稳定排序。"""
         chunks = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
         query = _Query(chunks)
         repository = self.repository_module.ChildChunkRepository(_Session(query))
@@ -166,6 +192,7 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
         )
 
     def test_list_by_ids_sorts_deduplicates_scopes_and_locks(self) -> None:
+        """验证 list_by_ids_for_update 对传入 ID 列表去重、按 id 排序并附加 FOR UPDATE 排他行锁。"""
         chunks = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
         query = _Query(chunks)
         repository = self.repository_module.ChildChunkRepository(_Session(query))
@@ -182,6 +209,7 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
         self.assertEqual(query.with_for_update_count, 1)
 
     def test_list_by_ids_does_not_query_empty_input(self) -> None:
+        """验证传入空 ID 列表时直接返回空列表，不产生任何数据库查询。"""
         query = _Query([])
         session = _Session(query)
         repository = self.repository_module.ChildChunkRepository(session)
@@ -190,6 +218,7 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
         self.assertEqual(session.queried_models, [])
 
     def test_exists_by_doc_id_and_vector_status_scopes_active_chunks(self) -> None:
+        """验证 exists_by_doc_id_and_vector_status 仅在 active 激活态分块中检查指定向量状态。"""
         query = _Query([SimpleNamespace(id=1)])
         repository = self.repository_module.ChildChunkRepository(_Session(query))
 
@@ -201,6 +230,7 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
         self.assertIn(("eq", "vector_status", "indexing"), query.filters)
 
     def test_count_active_not_indexed_scopes_document_and_status(self) -> None:
+        """验证 count_active_not_indexed_by_doc_id 正确统计尚未完成索引的活跃子块数量。"""
         query = _Query([SimpleNamespace(id=1), SimpleNamespace(id=2)])
         repository = self.repository_module.ChildChunkRepository(_Session(query))
 
@@ -212,6 +242,7 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
         self.assertIn(("ne", "vector_status", "indexed"), query.filters)
 
     def test_count_by_vector_status_groups_active_chunks(self) -> None:
+        """验证 count_by_vector_status_for_document 按 vector_status 分组聚合各状态的活跃分块计数。"""
         query = _Query([("pending", 2), ("indexed", 3)])
         repository = self.repository_module.ChildChunkRepository(
             _Session(query)
@@ -228,6 +259,7 @@ class ChildChunkRepositoryIndexingTest(unittest.TestCase):
         )
 
     def test_batch_indexed_and_failed_updates_only_flush(self) -> None:
+        """验证 mark_indexed_many 与 mark_failed 正确批量更新状态，且仅执行 session.flush() 不越权 commit。"""
         session = _Session(_Query([]))
         repository = self.repository_module.ChildChunkRepository(session)
         indexed_chunks = [

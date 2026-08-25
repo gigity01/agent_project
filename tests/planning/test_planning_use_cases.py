@@ -1,4 +1,12 @@
-"""Planning 持久化状态流转的两个关键行为测试。"""
+"""Planning 持久化用例（CreatePlan, CreateTask, FinalizePlan）核心业务不变量测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. Plan 与 Task 约束：
+   - 每个 Plan 包含 1~10 个 Task；`sequence` 必须从 1 开始严格递增连续且唯一。
+   - Task 依赖仅通过 `task_ref` 和 `depends_on_task_refs` 表达，发布时持久化依赖边并校验无环有向图（DAG），最大深度限制为 3。
+2. 状态机流转与不可伪造原则：
+   - 包含标记 needs_clarification、unsupported、retry_pending 等状态转换；模型输出不能冒充数据库事实。
+"""
 
 from __future__ import annotations
 
@@ -37,6 +45,7 @@ from app.modules.clarification.infrastructure.persistence.models import Clarific
 
 
 class _TrackingUnitOfWork(SQLAlchemyUnitOfWork):
+    """测试用追踪 commit 调用次数的 UnitOfWork 替身。"""
     def __init__(self, session_factory) -> None:
         super().__init__(session_factory)
         self.commit_calls = 0
@@ -47,6 +56,7 @@ class _TrackingUnitOfWork(SQLAlchemyUnitOfWork):
 
 
 class _UnitOfWorkFactory:
+    """测试用 UnitOfWork 工厂替身。"""
     def __init__(self, session_factory) -> None:
         self._session_factory = session_factory
         self.instances: list[_TrackingUnitOfWork] = []
@@ -58,6 +68,7 @@ class _UnitOfWorkFactory:
 
 
 class PlanningUseCasesTest(unittest.TestCase):
+    """验证 Planning 用例的 DAG 校验、Task 依赖持久化、原子事务与状态机流转。"""
     def setUp(self) -> None:
         load_all_models()
         self.engine = create_engine(

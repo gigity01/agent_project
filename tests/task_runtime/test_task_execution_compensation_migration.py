@@ -1,4 +1,10 @@
-"""TaskExecution 补偿终态迁移与 ORM 对齐测试。"""
+"""TaskExecution blocked 终态字段 Alembic 迁移（c2d4e6f8a0b1）与 ORM 模型对齐测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 迁移 DDL 结构：
+   - 为 task_executions 表新增 `blocked BOOLEAN NOT NULL DEFAULT 0` 列。
+   - 当任务命令被业务策略直接拒绝（rejected）时标记 blocked，指示无需重试且需要 Replan。
+"""
 
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ MIGRATION_PATH = (
 
 
 def _load_migration():
+    """动态加载 TaskExecution blocked 字段迁移脚本。"""
     spec = importlib.util.spec_from_file_location(
         "task_execution_compensation_migration_under_test",
         MIGRATION_PATH,
@@ -34,6 +41,7 @@ def _load_migration():
 
 
 class TaskExecutionCompensationMigrationTest(unittest.TestCase):
+    """验证 TaskExecution blocked 字段迁移升级与 ORM 模型对齐。"""
     def test_upgrade_adds_non_nullable_blocked_disposition(self) -> None:
         migration = _load_migration()
         operations = mock.Mock()

@@ -1,5 +1,7 @@
 """Context Chain 资源历史事件的 SQLAlchemy ORM 定义。"""
 
+from __future__ import annotations
+
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text
@@ -10,7 +12,12 @@ from app.infrastructure.database.base import Base
 
 
 class ContextChainResourceEvent(Base):
-    """追加保存资源在某条 Chain 中的完整变化历史。"""
+    """追加保存资源在某条 Chain 中的完整变化历史事件（seen, refreshed, removed, invalidated）的 ORM 实体。
+
+    设计原则：
+    - 作为不可变追加日志事实，记录每一次资源交互（首次发现、刷新活跃、移除停用或失效）。
+    - 即使 Redis 缓存发生驱逐或失效，数据库内的全量事件记录永久保留。
+    """
 
     __tablename__ = "context_chain_resource_events"
 

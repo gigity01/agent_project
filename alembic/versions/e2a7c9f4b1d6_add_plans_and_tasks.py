@@ -1,9 +1,17 @@
-"""增加 Plan 与 Task 规划持久化表。
+"""创建任务规划（plans）与任务执行实体（tasks）持久化表。
+
+业务背景与设计规范：
+1. `plans` 表：
+   - 记录 Plan 实例与会话轮次（turn_id）的关联。
+   - 通过 `uq_plans_turn_revision (turn_id, revision)` 保证同一轮次内 Plan revision 版本递增唯一，支持 Replan 重新生成。
+2. `tasks` 表：
+   - 记录 Task 实例、所属 Plan、关联轮次、能力标识（capability_code，如 process_document / build_document_chunks / index_document_vectors）、
+     结构化输入参数（input_json）、顺序（sequence）与任务执行状态（status）。
+   - 建立针对 `(plan_id, status, sequence)` 的索引支持按序领取可执行 Task。
 
 Revision ID: e2a7c9f4b1d6
 Revises: d4f8a1c7e2b9
 Create Date: 2026-08-05 00:00:00.000000
-
 """
 from typing import Sequence, Union
 
@@ -11,6 +19,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
+# revision identifiers, used by Alembic.
 revision: str = "e2a7c9f4b1d6"
 down_revision: Union[str, Sequence[str], None] = "d4f8a1c7e2b9"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -18,7 +27,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """创建规划记录和暂不包含依赖边的 Task。"""
+    """创建 plans 与 tasks 基础表及其索引与外键约束。"""
     op.create_table(
         "plans",
         sa.Column("plan_id", sa.String(length=100), nullable=False),

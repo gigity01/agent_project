@@ -1,5 +1,7 @@
 """Context Selection 的 SQLAlchemy ORM 定义。"""
 
+from __future__ import annotations
+
 from datetime import datetime
 
 from sqlalchemy import (
@@ -18,7 +20,13 @@ from app.infrastructure.database.base import Base
 
 
 class ContextSelectionRecord(Base):
-    """保存经确定性校验的 Planner 历史 Context Read Set。"""
+    """保存经确定性校验的 Planner 历史 Context Read Set 决策记录的 ORM 实体。
+
+    设计原则：
+    - (current_turn_id) 唯一约束：确保每个 Turn 仅产生一条经过合法性校验的 Context Selection 事实。
+    - relevant_chain_ids: 记录路由命中的所有历史链 ID。
+    - selection_mode: 确定性推导的路由模式（如 single_match, multi_match, new_chain 等）。
+    """
 
     __tablename__ = "context_selection_records"
     __table_args__ = (

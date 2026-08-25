@@ -1,4 +1,10 @@
-"""文档上传拒绝与前置异常的事实语义测试。"""
+"""文档上传阶段异常日志（DocumentUploadLogger）与事实准确性测试。
+
+核心业务不变量：
+1. 异常阶段语义事实准确性（No False Invariants）：
+   - 上传校验失败（validate 阶段）或存储准备失败（prepare_storage 阶段）时，未进入数据库落盘阶段，
+     日志中必须标记 `document_created=False`，`status_after=None`，严禁伪造不存在的数据库文档状态。
+"""
 
 import unittest
 from types import SimpleNamespace
@@ -7,6 +13,7 @@ from app.shared.observability.document_upload_logger import DocumentUploadLogger
 
 
 class _MemoryWriter:
+    """测试用内存日志写入器。"""
     def __init__(self) -> None:
         self.events: list[dict] = []
 
@@ -16,6 +23,7 @@ class _MemoryWriter:
 
 
 class _HTTPException(Exception):
+    """测试用 HTTP 异常替身。"""
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)
         self.status_code = status_code
@@ -23,6 +31,7 @@ class _HTTPException(Exception):
 
 
 class DocumentUploadLoggerTest(unittest.TestCase):
+    """验证 DocumentUploadLogger 在各类上传异常下的日志事实准确性。"""
     def setUp(self) -> None:
         self.upload_logger = DocumentUploadLogger()
         self.upload_logger.writer = _MemoryWriter()

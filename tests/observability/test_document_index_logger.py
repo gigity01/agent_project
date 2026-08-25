@@ -1,4 +1,11 @@
-"""文档索引批次、失败和补偿事件测试。"""
+"""文档向量索引阶段批次事件、敏感信息脱敏与补偿日志（DocumentIndexLogger）测试。
+
+核心业务不变量：
+1. 向量批次度量与敏感信息保护：
+   - 记录向量生成与 Qdrant upsert 的批次索引、分批大小、耗时与维度，严禁将原始 embedding 文本或 API Key 序列化落入日志。
+2. 补偿事件结构化记录：
+   - 记录补偿开始与完成时的删除 Point 数量及耗时。
+"""
 
 import json
 import unittest
@@ -8,6 +15,7 @@ from app.shared.observability.document_index_logger import DocumentIndexLogger
 
 
 class _MemoryWriter:
+    """测试用内存日志写入器。"""
     def __init__(self) -> None:
         self.events: list[dict] = []
 
@@ -17,6 +25,7 @@ class _MemoryWriter:
 
 
 def _context():
+    """构造测试用 IndexingContext 替身。"""
     return SimpleNamespace(
         document_id=13,
         doc_code="DOC_013",
@@ -32,6 +41,7 @@ def _context():
 
 
 class DocumentIndexLoggerTest(unittest.TestCase):
+    """验证 DocumentIndexLogger 的批次统计、敏感信息屏蔽与补偿追踪。"""
     def setUp(self) -> None:
         self.index_logger = DocumentIndexLogger(document_id=13)
         self.index_logger.writer = _MemoryWriter()

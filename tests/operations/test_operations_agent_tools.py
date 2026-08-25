@@ -1,4 +1,11 @@
-"""Operations 只读 Agent Tool 测试。"""
+"""Operations 运维领域只读 Agent Function Tools（Collector Tools）适配与权限测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 纯只读 Collector 工具集：
+   - Operations Tools 仅提供只读查询能力（get_document_operation_timeline, get_document_workflow_timeline, get_task_tool_timeline, query_document_business_logs, query_document_log_events），严禁包含副作用操作。
+2. 权限与审计拦截：
+   - 强校验 `operations:read` 权限，未授权调用返回结构化 permission_denied 拒绝响应。
+"""
 
 from __future__ import annotations
 
@@ -43,6 +50,7 @@ NOW = datetime(2026, 8, 3, 12, 0, 0)
 
 
 class _Writer:
+    """测试用审计日志写入器。"""
     def write(self, _event: dict) -> bool:
         return True
 

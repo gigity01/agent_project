@@ -1,4 +1,15 @@
-"""ORM Schema 对账迁移的结构与安全顺序测试。"""
+"""以 ORM 模型为基准的数据库结构对账 Alembic 迁移（4ce8fd45dde4）结构与安全顺序测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 外键支撑索引先行保护（FK Index Preservation）：
+   - 在删除旧冗余复合索引（`idx_chunk_kb_status`）之前，必须先创建单列外键支持索引（`idx_child_chunks_kb_id`），防止 MySQL 抛出外键缺失索引约束错误（errno: 150）。
+2. 列与表清理安全顺序：
+   - 增加 ConversationTurn ORM 模型中的 `clarification_input` 列。
+   - 重命名遗留的索引名称与 ORM 命名约定对齐。
+   - 最后安全 drop 未在 ORM 声明的遗留旧表（`domains`）。
+3. 破坏性数据变更单向性：
+   - 降级操作抛出 RuntimeError 拒绝非受控回退。
+"""
 
 from __future__ import annotations
 
@@ -27,6 +38,7 @@ MIGRATION_PATH = (
 
 
 def _load_migration():
+    """动态加载 ORM Schema 对账 Alembic 迁移脚本。"""
     spec = importlib.util.spec_from_file_location(
         "orm_schema_reconciliation_migration_under_test",
         MIGRATION_PATH,
@@ -39,6 +51,7 @@ def _load_migration():
 
 
 class OrmSchemaReconciliationMigrationTest(unittest.TestCase):
+    """验证 ORM 对账迁移的索引保留顺序、新列增加与不可逆保护。"""
     def test_upgrade_preserves_fk_index_before_removing_legacy_indexes(self) -> None:
         migration = _load_migration()
         operations = mock.Mock()

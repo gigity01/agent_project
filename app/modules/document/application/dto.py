@@ -1,4 +1,7 @@
-"""文档应用层命令与结果 DTO。"""
+"""文档应用层数据传输对象（DTO）定义。
+
+包含用例输入命令、查询参数、执行结果以及用于 API/Agent 交互的数据结构。
+"""
 
 from datetime import datetime
 from typing import Any, Literal
@@ -7,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
 
 class DocumentResult(BaseModel):
-    """上传或生命周期操作返回的完整文档视图。"""
+    """上传、查询或生命周期状态变更操作返回的完整文档详情视图。"""
 
     id: int
     doc_code: str
@@ -39,6 +42,8 @@ class DocumentResult(BaseModel):
 
 
 class ProcessDocumentResult(BaseModel):
+    """文档文本清洗与格式转换（Process）用例的执行结果。"""
+
     document_id: int
     doc_code: str
     source_type: str
@@ -48,6 +53,8 @@ class ProcessDocumentResult(BaseModel):
 
 
 class BuildChunksResult(BaseModel):
+    """文档切块（Build Chunks）用例的执行结果。"""
+
     document_id: int
     doc_code: str
     source_type: str
@@ -57,6 +64,8 @@ class BuildChunksResult(BaseModel):
 
 
 class IndexVectorsResult(BaseModel):
+    """文档向量生成与 Qdrant 写入（Index Vectors）用例的执行结果。"""
+
     document_id: int
     total_chunks: int
     indexed_chunks: int
@@ -65,18 +74,18 @@ class IndexVectorsResult(BaseModel):
 
 
 class DocumentListQuery(BaseModel):
-    """文档列表查询条件。"""
+    """基础文档列表查询条件参数。"""
 
-    kb_id: int = Field(..., gt=0)
-    status: str | None = None
-    source_type: str | None = None
-    lifecycle_status: str | None = None
-    limit: int = Field(default=50, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
+    kb_id: int = Field(..., gt=0, description="归属知识库 ID")
+    status: str | None = Field(default=None, description="流水线技术状态过滤")
+    source_type: str | None = Field(default=None, description="源文件格式过滤")
+    lifecycle_status: str | None = Field(default=None, description="业务生命周期状态过滤")
+    limit: int = Field(default=50, ge=1, le=100, description="每页条数限制")
+    offset: int = Field(default=0, ge=0, description="分页偏移量")
 
 
 class DocumentListItem(BaseModel):
-    """列表场景所需的稳定文档摘要。"""
+    """文档列表查询中的单条文档摘要视图。"""
 
     id: int
     doc_code: str
@@ -95,7 +104,7 @@ class DocumentListItem(BaseModel):
 
 
 class ListDocumentsResult(BaseModel):
-    """带总数和稳定分页信息的文档列表。"""
+    """基础文档列表查询的稳定分页结果。"""
 
     items: list[DocumentListItem]
     total: int
@@ -104,45 +113,49 @@ class ListDocumentsResult(BaseModel):
 
 
 class DocumentSearchQuery(BaseModel):
-    """Agent 可控字段受限的文档高级查询条件。"""
+    """Agent 与管理端文档高级多条件检索查询参数。
 
-    kb_ids: list[PositiveInt] = Field(default_factory=list)
-    document_ids: list[PositiveInt] = Field(default_factory=list)
-    doc_codes: list[str] = Field(default_factory=list)
-    domain_codes: list[str] = Field(default_factory=list)
-    business_scenes: list[str] = Field(default_factory=list)
-    statuses: list[str] = Field(default_factory=list)
-    lifecycle_statuses: list[str] = Field(default_factory=list)
-    storage_statuses: list[str] = Field(default_factory=list)
-    source_types: list[str] = Field(default_factory=list)
-    risk_levels: list[str] = Field(default_factory=list)
-    keyword: str | None = None
-    original_filename: str | None = None
-    created_by_actor_code: str | None = None
-    created_from: datetime | None = None
-    created_to: datetime | None = None
-    updated_from: datetime | None = None
-    updated_to: datetime | None = None
-    indexed_from: datetime | None = None
-    indexed_to: datetime | None = None
-    effective_at_before: datetime | None = None
-    expired_at_before: datetime | None = None
-    has_cleaned_output: bool | None = None
-    has_active_content_hash: bool | None = None
-    replaced_by: int | None = Field(default=None, gt=0)
+    支持多知识库、多状态、多标签、时间范围与关键字综合过滤。
+    """
+
+    kb_ids: list[PositiveInt] = Field(default_factory=list, description="知识库 ID 列表")
+    document_ids: list[PositiveInt] = Field(default_factory=list, description="文档 ID 列表")
+    doc_codes: list[str] = Field(default_factory=list, description="文档业务编码列表")
+    domain_codes: list[str] = Field(default_factory=list, description="业务领域编码列表")
+    business_scenes: list[str] = Field(default_factory=list, description="业务场景列表")
+    statuses: list[str] = Field(default_factory=list, description="流水线状态列表")
+    lifecycle_statuses: list[str] = Field(default_factory=list, description="生命周期状态列表")
+    storage_statuses: list[str] = Field(default_factory=list, description="存储状态列表")
+    source_types: list[str] = Field(default_factory=list, description="文件类型列表")
+    risk_levels: list[str] = Field(default_factory=list, description="风险等级列表")
+    keyword: str | None = Field(default=None, description="标题或关键字模糊搜索")
+    original_filename: str | None = Field(default=None, description="原始文件名过滤")
+    created_by_actor_code: str | None = Field(default=None, description="创建人编码")
+    created_from: datetime | None = Field(default=None, description="创建时间起")
+    created_to: datetime | None = Field(default=None, description="创建时间止")
+    updated_from: datetime | None = Field(default=None, description="更新时间起")
+    updated_to: datetime | None = Field(default=None, description="更新时间止")
+    indexed_from: datetime | None = Field(default=None, description="索引时间起")
+    indexed_to: datetime | None = Field(default=None, description="索引时间止")
+    effective_at_before: datetime | None = Field(default=None, description="生效时间早于")
+    expired_at_before: datetime | None = Field(default=None, description="过期时间早于")
+    has_cleaned_output: bool | None = Field(default=None, description="是否已有清洗产物")
+    has_active_content_hash: bool | None = Field(default=None, description="是否已有激活内容哈希")
+    replaced_by: int | None = Field(default=None, gt=0, description="被替换的文档 ID")
     sort_by: Literal[
         "id",
         "created_at",
         "updated_at",
         "indexed_at",
         "title",
-    ] = "id"
-    sort_order: Literal["asc", "desc"] = "desc"
-    limit: int = Field(default=50, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
+    ] = Field(default="id", description="排序字段")
+    sort_order: Literal["asc", "desc"] = Field(default="desc", description="排序方向")
+    limit: int = Field(default=50, ge=1, le=100, description="返回条数限制")
+    offset: int = Field(default=0, ge=0, description="偏移量")
 
     @model_validator(mode="after")
     def validate_time_ranges(self) -> "DocumentSearchQuery":
+        """校验起止时间范围的合法性，防止起始时间晚于截止时间。"""
         for start_name, end_name in (
             ("created_from", "created_to"),
             ("updated_from", "updated_to"),
@@ -156,11 +169,11 @@ class DocumentSearchQuery(BaseModel):
 
 
 class SearchDocumentsResult(ListDocumentsResult):
-    """文档高级查询的稳定分页结果。"""
+    """文档高级多条件查询的分页返回结果。"""
 
 
 class DocumentPipelineStateResult(BaseModel):
-    """文档三状态轴及切块、向量进度的只读快照。"""
+    """文档三状态轴及切块、向量索引进度的综合只读快照。"""
 
     document_id: int
     doc_code: str
@@ -177,7 +190,7 @@ class DocumentPipelineStateResult(BaseModel):
 
 
 class DocumentArtifactResult(BaseModel):
-    """Agent 可读取的文档产物元数据。"""
+    """文档派生产物（Artifact）详情视图。"""
 
     id: int
     document_id: int
@@ -205,7 +218,7 @@ class DocumentArtifactResult(BaseModel):
 
 
 class ListDocumentArtifactsResult(BaseModel):
-    """指定文档的全部派生产物。"""
+    """指定文档关联的全部派生产物列表视图。"""
 
     document_id: int
     source_uri: str
@@ -215,23 +228,24 @@ class ListDocumentArtifactsResult(BaseModel):
 
 
 class DocumentArtifactSearchQuery(BaseModel):
-    """派生产物多条件查询。"""
+    """派生产物多条件检索查询参数。"""
 
-    document_ids: list[PositiveInt] = Field(default_factory=list)
-    artifact_types: list[str] = Field(default_factory=list)
-    artifact_roles: list[str] = Field(default_factory=list)
-    artifact_formats: list[str] = Field(default_factory=list)
-    statuses: list[str] = Field(default_factory=list)
-    providers: list[str] = Field(default_factory=list)
-    processors: list[str] = Field(default_factory=list)
-    created_from: datetime | None = None
-    created_to: datetime | None = None
-    active_only: bool | None = None
-    limit: int = Field(default=50, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
+    document_ids: list[PositiveInt] = Field(default_factory=list, description="文档 ID 列表")
+    artifact_types: list[str] = Field(default_factory=list, description="产物类型列表")
+    artifact_roles: list[str] = Field(default_factory=list, description="产物角色列表")
+    artifact_formats: list[str] = Field(default_factory=list, description="产物格式列表")
+    statuses: list[str] = Field(default_factory=list, description="产物状态列表")
+    providers: list[str] = Field(default_factory=list, description="提供方列表")
+    processors: list[str] = Field(default_factory=list, description="处理程序列表")
+    created_from: datetime | None = Field(default=None, description="创建时间起")
+    created_to: datetime | None = Field(default=None, description="创建时间止")
+    active_only: bool | None = Field(default=None, description="是否仅查询 active 状态产物")
+    limit: int = Field(default=50, ge=1, le=100, description="条数限制")
+    offset: int = Field(default=0, ge=0, description="偏移量")
 
     @model_validator(mode="after")
     def validate_created_range(self) -> "DocumentArtifactSearchQuery":
+        """校验产物创建起止时间范围。"""
         if (
             self.created_from is not None
             and self.created_to is not None
@@ -242,6 +256,8 @@ class DocumentArtifactSearchQuery(BaseModel):
 
 
 class SearchDocumentArtifactsResult(BaseModel):
+    """派生产物多条件检索的分页返回结果。"""
+
     items: list[DocumentArtifactResult]
     total: int
     limit: int
@@ -249,20 +265,22 @@ class SearchDocumentArtifactsResult(BaseModel):
 
 
 class ParentBlockSearchQuery(BaseModel):
-    """父级语义块受限字段查询。"""
+    """父级语义块（Parent Block）检索查询参数。"""
 
-    document_ids: list[PositiveInt] = Field(default_factory=list)
-    parent_ids: list[PositiveInt] = Field(default_factory=list)
-    kb_ids: list[PositiveInt] = Field(default_factory=list)
-    block_types: list[str] = Field(default_factory=list)
-    statuses: list[str] = Field(default_factory=list)
-    section_path_contains: str | None = None
-    keyword: str | None = None
-    limit: int = Field(default=50, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
+    document_ids: list[PositiveInt] = Field(default_factory=list, description="所属文档 ID 列表")
+    parent_ids: list[PositiveInt] = Field(default_factory=list, description="父块 ID 列表")
+    kb_ids: list[PositiveInt] = Field(default_factory=list, description="知识库 ID 列表")
+    block_types: list[str] = Field(default_factory=list, description="父块类型列表")
+    statuses: list[str] = Field(default_factory=list, description="状态列表")
+    section_path_contains: str | None = Field(default=None, description="章节路径包含关键字")
+    keyword: str | None = Field(default=None, description="父块正文关键字搜索")
+    limit: int = Field(default=50, ge=1, le=100, description="返回条数")
+    offset: int = Field(default=0, ge=0, description="偏移量")
 
 
 class ParentBlockResult(BaseModel):
+    """父级语义块实体详情视图。"""
+
     id: int
     parent_code: str
     kb_id: int
@@ -286,6 +304,8 @@ class ParentBlockResult(BaseModel):
 
 
 class ListParentBlocksResult(BaseModel):
+    """父级语义块检索的分页返回结果。"""
+
     items: list[ParentBlockResult]
     total: int
     limit: int
@@ -293,23 +313,24 @@ class ListParentBlocksResult(BaseModel):
 
 
 class ChildChunkSearchQuery(BaseModel):
-    """可向量化子块受限字段查询。"""
+    """可向量化子块（Child Chunk）检索查询参数。"""
 
-    document_id: int | None = Field(default=None, gt=0)
-    parent_id: int | None = Field(default=None, gt=0)
-    kb_id: int | None = Field(default=None, gt=0)
-    vector_statuses: list[str] = Field(default_factory=list)
-    statuses: list[str] = Field(default_factory=list)
-    section_path_contains: str | None = None
-    source_row_from: int | None = Field(default=None, ge=0)
-    source_row_to: int | None = Field(default=None, ge=0)
-    has_vector_id: bool | None = None
-    keyword: str | None = None
-    limit: int = Field(default=50, ge=1, le=100)
-    offset: int = Field(default=0, ge=0)
+    document_id: int | None = Field(default=None, gt=0, description="所属文档 ID")
+    parent_id: int | None = Field(default=None, gt=0, description="所属父块 ID")
+    kb_id: int | None = Field(default=None, gt=0, description="所属知识库 ID")
+    vector_statuses: list[str] = Field(default_factory=list, description="向量化状态过滤")
+    statuses: list[str] = Field(default_factory=list, description="子块活跃状态过滤")
+    section_path_contains: str | None = Field(default=None, description="章节路径匹配")
+    source_row_from: int | None = Field(default=None, ge=0, description="表格起始行号")
+    source_row_to: int | None = Field(default=None, ge=0, description="表格截止行号")
+    has_vector_id: bool | None = Field(default=None, description="是否已有 Qdrant point ID")
+    keyword: str | None = Field(default=None, description="正文关键字搜索")
+    limit: int = Field(default=50, ge=1, le=100, description="返回条数")
+    offset: int = Field(default=0, ge=0, description="偏移量")
 
     @model_validator(mode="after")
     def validate_source_row_range(self) -> "ChildChunkSearchQuery":
+        """校验表格源行号起止范围。"""
         if (
             self.source_row_from is not None
             and self.source_row_to is not None
@@ -320,6 +341,8 @@ class ChildChunkSearchQuery(BaseModel):
 
 
 class ChildChunkResult(BaseModel):
+    """可向量化子块实体详情视图。"""
+
     id: int
     chunk_code: str
     parent_id: int
@@ -346,6 +369,8 @@ class ChildChunkResult(BaseModel):
 
 
 class ListChildChunksResult(BaseModel):
+    """可向量化子块检索的分页返回结果。"""
+
     items: list[ChildChunkResult]
     total: int
     limit: int
@@ -353,6 +378,8 @@ class ListChildChunksResult(BaseModel):
 
 
 class DocumentChunkStatisticsResult(BaseModel):
+    """单篇文档的切块与向量状态统计结果视图。"""
+
     document_id: int
     doc_code: str
     parent_count: int
@@ -366,6 +393,8 @@ class DocumentChunkStatisticsResult(BaseModel):
 
 
 class KnowledgeBaseStatisticsResult(BaseModel):
+    """知识库全局宏观统计视图（包含文档总数、状态分布、父子块与向量统计）。"""
+
     kb_id: int
     kb_code: str
     name: str
@@ -383,7 +412,7 @@ class KnowledgeBaseStatisticsResult(BaseModel):
 
 
 class DocumentArtifactCreate(BaseModel):
-    """创建文档派生产物所需的持久化字段。"""
+    """创建并持久化文档派生产物所需的输入模型。"""
 
     document_id: int
     artifact_code: str

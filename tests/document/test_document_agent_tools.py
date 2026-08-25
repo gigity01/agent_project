@@ -1,4 +1,18 @@
-"""Document Agent Function Tool 的适配、权限、审计与 Catalog 测试。"""
+"""Document 领域 Agent Function Tool 的分发、权限、审计与 Catalog 隔离测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. Collector 与 Executor Catalog 严格隔离：
+   - Document Collector 仅包含只读查询 Tool（get_document, search_documents, list_parent_blocks, list_child_chunks 等），严禁包含写命令。
+   - 三个 capability-scoped Document Executor Agent 分别只能看到查询 Tool 和当前 Capability 的唯一 Command Tool：
+     * `document.process` 仅包含 `process_document`
+     * `document.build_chunks` 仅包含 `build_document_chunks`
+     * `document.index_vectors` 仅包含 `index_document_vectors`
+2. 权限与上下文注入：
+   - 命令 Tool 强校验对应权限（如 `document:process`），并自动透传 `workflow_id`、`execution_id`、`operation_id` 与 `attempt` 到 OperationContext。
+   - 业务冲突（DocumentApplicationError 409）返回结构化 rejected，不重试；超时抛错返回结构化 failed，标记 retryable=True。
+3. 结构化审计：
+   - 每次 Tool 执行记录成对的 `agent_tool_invocation_started` 与 `agent_tool_invocation_succeeded` 事件。
+"""
 
 from __future__ import annotations
 
@@ -57,6 +71,7 @@ NOW = datetime(2026, 8, 2, 12, 0, 0)
 
 
 class _AuditWriter:
+    """测试用审计日志事件收集器。"""
     def __init__(self) -> None:
         self.events: list[dict] = []
 
@@ -66,6 +81,7 @@ class _AuditWriter:
 
 
 def _service(result=None, error=None):
+    """构造模拟 UseCase 执行服务。"""
     service = mock.Mock()
     if error is not None:
         service.execute.side_effect = error
@@ -75,6 +91,7 @@ def _service(result=None, error=None):
 
 
 def _document_result() -> DocumentResult:
+    """构造测试用 DocumentResult DTO 实例。"""
     return DocumentResult(
         id=7,
         doc_code="DOC_7",
@@ -111,6 +128,7 @@ def _context(
     process_result=None,
     process_error=None,
 ) -> tuple[AgentToolContext, DocumentToolServices]:
+    """构造注入了 DocumentToolServices、审计日志及完整执行标识的 AgentToolContext。"""
     services = DocumentToolServices(
         get_document=_service(_document_result()),
         list_documents=_service(),
@@ -164,7 +182,10 @@ def _context(
 
 
 class DocumentAgentToolsTest(unittest.TestCase):
+    """验证 Document Agent Tools 的查询、命令映射、权限校验、审计关联与 Catalog 隔离。"""
+
     def test_query_tool_calls_use_case_and_maps_result(self) -> None:
+        """验证 get_document 正常委托底层用例并映射 DocumentResult。"""
         writer = _AuditWriter()
         context, services = _context(
             permissions=frozenset({"document:read"}),

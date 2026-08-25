@@ -1,4 +1,8 @@
-"""文档业务日志和 Agent Tool 审计的查询用例。"""
+"""文档业务日志和 Agent Tool 审计的查询服务。
+
+组合文档日志与 Tool 审计日志的底层 JsonlLogQueryPort，
+提供多维筛选、时序重构、时间线聚合（Execution / Operation / Workflow / Failure / Tool Timeline）及 DTO 转换。
+"""
 
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ from app.modules.operations.application.dto import (
 from app.modules.operations.application.ports import JsonlLogQueryPort
 
 
+# 文档事件通用顶层字段集合，其余额外字段将被归入 details 字典
 DOCUMENT_EVENT_COMMON_FIELDS = {
     "schema_version",
     "event_id",
@@ -56,7 +61,10 @@ DOCUMENT_EVENT_COMMON_FIELDS = {
 
 
 class OperationsQueryService:
-    """组合受控 JSONL Repository，提供确定性筛选和时间线。"""
+    """运维查询核心服务。
+
+    组合受控 JSONL Repository，提供确定性筛选和时间线聚合。
+    """
 
     def __init__(
         self,
@@ -64,6 +72,12 @@ class OperationsQueryService:
         document_logs: JsonlLogQueryPort,
         agent_tool_logs: JsonlLogQueryPort,
     ) -> None:
+        """初始化 Operations 查询服务。
+
+        Args:
+            document_logs: 文档业务流水日志查询端口。
+            agent_tool_logs: Agent Tool 调用审计日志查询端口。
+        """
         self._document_logs = document_logs
         self._agent_tool_logs = agent_tool_logs
 
@@ -71,6 +85,14 @@ class OperationsQueryService:
         self,
         query: DocumentBusinessLogQuery,
     ) -> DocumentBusinessLogPage:
+        """根据多维查询条件检索文档业务日志。
+
+        Args:
+            query: 文档业务日志多维查询参数。
+
+        Returns:
+            DocumentBusinessLogPage: 分页文档业务日志结果集。
+        """
         predicate = self._document_predicate(query)
         page = self._document_logs.scan(
             predicate=predicate,
@@ -88,6 +110,14 @@ class OperationsQueryService:
         self,
         query: DocumentTimelineQuery,
     ) -> DocumentExecutionTimelineResult:
+        """按时间升序重构单篇文档从上传到索引的完整生命周期执行时间线。
+
+        Args:
+            query: 文档生命周期时间线查询条件。
+
+        Returns:
+            DocumentExecutionTimelineResult: 包含按时间升序排序的事件序列与截断标志。
+        """
         page = self._document_logs.scan(
             predicate=lambda event: event.get("document_id")
             == query.document_id,
@@ -106,6 +136,14 @@ class OperationsQueryService:
         self,
         query: DocumentTimelineQuery,
     ) -> DocumentFailureTimelineResult:
+        """按时间升序提取单篇文档发生过的所有失败事件与错误摘要。
+
+        Args:
+            query: 文档失败时间线查询条件。
+
+        Returns:
+            DocumentFailureTimelineResult: 包含失败事件序列与截断标志。
+        """
         page = self._document_logs.scan(
             predicate=lambda event: (
                 event.get("document_id") == query.document_id
@@ -126,6 +164,14 @@ class OperationsQueryService:
         self,
         query: DocumentOperationTimelineQuery,
     ) -> DocumentOperationTimelineResult:
+        """按 operation_id 提取单次阶段操作的完整事件时间线。
+
+        Args:
+            query: 单次操作时间线查询条件。
+
+        Returns:
+            DocumentOperationTimelineResult: 包含该操作内部事件流及关联 workflow_id 和 attempt。
+        """
         page = self._document_logs.scan(
             predicate=lambda event: self._operation_id(event)
             == query.operation_id,
@@ -148,6 +194,14 @@ class OperationsQueryService:
         self,
         query: DocumentWorkflowTimelineQuery,
     ) -> DocumentWorkflowTimelineResult:
+        """按 workflow_id 提取跨阶段、跨重试的完整工作流事件时间线。
+
+        Args:
+            query: 工作流时间线查询条件。
+
+        Returns:
+            DocumentWorkflowTimelineResult: 包含完整工作流事件流与截断标志。
+        """
         page = self._document_logs.scan(
             predicate=lambda event: event.get("workflow_id")
             == query.workflow_id,
@@ -166,6 +220,14 @@ class OperationsQueryService:
         self,
         query: AgentToolAuditQuery,
     ) -> AgentToolAuditPage:
+        """按多维条件检索 Agent Tool 审计日志。
+
+        Args:
+            query: Tool 审计多维查询参数。
+
+        Returns:
+            AgentToolAuditPage: 分页 Tool 审计事件结果集。
+        """
         page = self._agent_tool_logs.scan(
             predicate=self._audit_predicate(query),
             created_from=query.created_from,
@@ -182,6 +244,14 @@ class OperationsQueryService:
         self,
         query: ToolTimelineQuery,
     ) -> ToolTimelineResult:
+        """按 task_id 获取该任务执行过程中的 Tool 调用聚合时间线。
+
+        Args:
+            query: Tool 时间线查询条件（identifier 为 task_id）。
+
+        Returns:
+            ToolTimelineResult: 包含聚合配对后的 Tool 调用条目列表。
+        """
         return self._tool_timeline(
             query,
             identifier_field="task_id",
@@ -191,6 +261,14 @@ class OperationsQueryService:
         self,
         query: ToolTimelineQuery,
     ) -> ToolTimelineResult:
+        """按 agent_run_id 获取该 Agent 运行会话中的 Tool 调用聚合时间线。
+
+        Args:
+            query: Tool 时间线查询条件（identifier 为 agent_run_id）。
+
+        Returns:
+            ToolTimelineResult: 包含聚合配对后的 Tool 调用条目列表。
+        """
         return self._tool_timeline(
             query,
             identifier_field="agent_run_id",
@@ -202,6 +280,17 @@ class OperationsQueryService:
         *,
         identifier_field: str,
     ) -> ToolTimelineResult:
+        """通用 Tool 时间线聚合扫描实现。
+
+        根据指定标识字段（如 task_id 或 agent_run_id）扫描并聚合工具调用。
+
+        Args:
+            query: 查询条件。
+            identifier_field: 标识符在日志中的字段名称。
+
+        Returns:
+            ToolTimelineResult: 聚合配对后的结果。
+        """
         def predicate(event: dict) -> bool:
             if event.get(identifier_field) != query.identifier:
                 return False
@@ -232,6 +321,14 @@ class OperationsQueryService:
     def _document_predicate(
         query: DocumentBusinessLogQuery,
     ) -> Callable[[dict], bool]:
+        """构建文档业务流水日志的内存过滤断言。
+
+        Args:
+            query: 文档业务日志多维查询对象。
+
+        Returns:
+            Callable[[dict], bool]: 断言函数。
+        """
         document_ids = set(query.document_ids)
         doc_codes = set(query.doc_codes)
         kb_ids = set(query.kb_ids)
@@ -244,6 +341,7 @@ class OperationsQueryService:
         attempts = set(query.attempts)
 
         def predicate(event: dict) -> bool:
+            # 1. 集合多值精确匹配检查
             checks = (
                 (workflow_ids, event.get("workflow_id")),
                 (operation_ids, OperationsQueryService._operation_id(event)),
@@ -258,10 +356,14 @@ class OperationsQueryService:
             )
             if any(values and actual not in values for values, actual in checks):
                 return False
+
+            # 2. 单值标量匹配检查
             if query.trace_id is not None and event.get("trace_id") != query.trace_id:
                 return False
             if query.task_id is not None and event.get("task_id") != query.task_id:
                 return False
+
+            # 3. 失败日志专属过滤
             return not query.failed_only or OperationsQueryService._is_failure(
                 event
             )
@@ -272,12 +374,21 @@ class OperationsQueryService:
     def _audit_predicate(
         query: AgentToolAuditQuery,
     ) -> Callable[[dict], bool]:
+        """构建 Agent Tool 审计日志的内存过滤断言。
+
+        Args:
+            query: Tool 审计查询对象。
+
+        Returns:
+            Callable[[dict], bool]: 断言函数。
+        """
         agent_names = set(query.agent_names)
         tool_names = set(query.tool_names)
         result_codes = set(query.result_codes)
         events = set(query.events)
 
         def predicate(event: dict) -> bool:
+            # 1. 单值标量匹配检查
             scalar_filters = (
                 ("trace_id", query.trace_id),
                 ("agent_run_id", query.agent_run_id),
@@ -291,6 +402,8 @@ class OperationsQueryService:
                 for field, expected in scalar_filters
             ):
                 return False
+
+            # 2. 集合多值过滤检查
             if agent_names and event.get("agent_name") not in agent_names:
                 return False
             if tool_names and event.get("tool_name") not in tool_names:
@@ -310,6 +423,14 @@ class OperationsQueryService:
 
     @staticmethod
     def _is_failure(event: dict) -> bool:
+        """判定一条日志事件是否代表失败状态。
+
+        Args:
+            event: 原始事件字典。
+
+        Returns:
+            bool: True 表示代表失败，False 表示正常。
+        """
         name = str(event.get("event") or "")
         level = str(event.get("level") or "").lower()
         return (
@@ -320,6 +441,16 @@ class OperationsQueryService:
 
     @staticmethod
     def _document_event(event: dict[str, Any]) -> DocumentBusinessLogEvent:
+        """将原始文档日志字典转换为结构化 DocumentBusinessLogEvent DTO。
+
+        提取未在顶层显式声明的字段放置于 details 字典中。
+
+        Args:
+            event: 原始事件字典。
+
+        Returns:
+            DocumentBusinessLogEvent: 转换后的数据对象。
+        """
         details = {
             key: value
             for key, value in event.items()
@@ -354,11 +485,26 @@ class OperationsQueryService:
 
     @staticmethod
     def _operation_id(event: dict[str, Any]) -> str | None:
-        """兼容读取 schema v1 的 run_id，新日志只写 operation_id。"""
+        """兼容读取 schema v1 的 run_id，新日志只写 operation_id。
+
+        Args:
+            event: 原始事件字典。
+
+        Returns:
+            str | None: 提取的操作 ID。
+        """
         return event.get("operation_id") or event.get("run_id")
 
     @staticmethod
     def _failure_event(event: dict[str, Any]) -> DocumentFailureEvent:
+        """将原始事件字典转换为精简的 DocumentFailureEvent DTO。
+
+        Args:
+            event: 原始事件字典。
+
+        Returns:
+            DocumentFailureEvent: 转换后的失败事件对象。
+        """
         mapped = OperationsQueryService._document_event(event)
         return DocumentFailureEvent(
             event_id=mapped.event_id,
@@ -375,6 +521,14 @@ class OperationsQueryService:
 
     @staticmethod
     def _audit_event(event: dict[str, Any]) -> AgentToolAuditEvent:
+        """将原始 Tool 审计字典转换为 AgentToolAuditEvent DTO。
+
+        Args:
+            event: 原始审计事件字典。
+
+        Returns:
+            AgentToolAuditEvent: 转换后的审计实体对象。
+        """
         return AgentToolAuditEvent(
             event_id=str(event.get("event_id") or ""),
             invocation_id=str(event.get("invocation_id") or ""),
@@ -398,6 +552,14 @@ class OperationsQueryService:
     def _aggregate_invocations(
         events: list[dict[str, Any]],
     ) -> list[ToolInvocationTimelineItem]:
+        """将分散的 Tool started / terminal 事件按 invocation_id 配对聚合为完整的生命周期条目。
+
+        Args:
+            events: 原始审计事件列表。
+
+        Returns:
+            list[ToolInvocationTimelineItem]: 按 started_at 时间升序排序的完整调用条目列表。
+        """
         grouped: dict[str, dict[str, Any]] = {}
         for event in events:
             invocation_id = str(event.get("invocation_id") or "")

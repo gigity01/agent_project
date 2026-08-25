@@ -1,4 +1,13 @@
-"""DeepSeek Agent 配置与模型 Provider 的离线单元测试。"""
+"""DeepSeek Agent 配置、OpenAI Agents SDK Model Provider 与 FastAPI Lifespan 离线测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 客户端配置与 Provider 装配：
+   - DeepSeekModelProvider 基于 AsyncOpenAI 配置 base_url、strict_tool_base_url（/beta 端点）、max_retries 与 timeout。
+   - 默认 model_settings：max_tokens=512, parallel_tool_calls=False, extra_body={"thinking": {"type": "disabled"}}。
+2. 优雅降级与 Lifespan 健壮性：
+   - 未配置 `DEEPSEEK_API_KEY` 时，应用容器允许 DeepSeek Provider 为 None，不阻断服务启动，此时自动回退到确定性 Executor。
+   - Redis 客户端连接失败（PING 失败）时应用启动必须抛错失败，杜绝带着不可用的并发锁启动服务。
+"""
 
 from __future__ import annotations
 

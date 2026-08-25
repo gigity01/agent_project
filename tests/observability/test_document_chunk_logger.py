@@ -1,4 +1,10 @@
-"""文档切块阶段语义事件测试。"""
+"""文档切块阶段结构化语义事件（DocumentChunkLogger）测试。
+
+核心业务不变量：
+1. 阶段生命周期事件对齐：
+   - 记录 `document_chunk_claimed`、`document_chunk_build_started`、`document_chunk_build_completed` 与 `document_chunk_completed` 事件。
+   - 统计并上报父块数量、子块数量与切块器类型（MarkdownChunker, TextChunker, CsvChunker）。
+"""
 
 import unittest
 from pathlib import Path
@@ -8,6 +14,7 @@ from app.shared.observability.document_chunk_logger import DocumentChunkLogger
 
 
 class _MemoryWriter:
+    """测试用内存日志写入器。"""
     def __init__(self) -> None:
         self.events: list[dict] = []
 
@@ -17,6 +24,7 @@ class _MemoryWriter:
 
 
 def _context():
+    """构造测试用 ChunkingContext 替身。"""
     return SimpleNamespace(
         document_id=13,
         doc_code="DOC_013",
@@ -31,6 +39,7 @@ def _context():
 
 
 class DocumentChunkLoggerTest(unittest.TestCase):
+    """验证 DocumentChunkLogger 的阶段事件上报与父子块数量统计。"""
     def test_build_and_finalize_events_report_chunk_counts(self) -> None:
         chunk_logger = DocumentChunkLogger(document_id=13)
         chunk_logger.writer = _MemoryWriter()

@@ -1,5 +1,7 @@
 """Context Chain 资源当前状态的 SQLAlchemy ORM 定义。"""
 
+from __future__ import annotations
+
 from datetime import datetime
 
 from sqlalchemy import (
@@ -19,7 +21,13 @@ from app.infrastructure.database.base import Base
 
 
 class ContextChainResource(Base):
-    """保存一条 Chain 历史资源的当前有效状态和使用统计。"""
+    """保存一条 Chain 历史资源的当前有效状态和使用统计的 ORM 实体。
+
+    设计原则：
+    - 作为全量事实层，采用 `UNIQUE(chain_id, resource_key)` 约束保证每条链对同一资源只有一条当前状态记录。
+    - 记录资源的首次与最近引用 Turn（first_seen_turn_id, last_seen_turn_id）、活跃时间戳与使用频次（use_count）。
+    - 显式停用时置 `active=False` 并记录 `removed_at`，不物理删除历史事实。
+    """
 
     __tablename__ = "context_chain_resources"
     __table_args__ = (

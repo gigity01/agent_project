@@ -1,4 +1,14 @@
-"""Context 只读查询 Repository 与 Application Service 测试。"""
+"""Context 只读查询服务（ContextQueryService）与用例层测试。
+
+核心业务不变量：
+1. 只读不变量：
+   - 所有查询方法（get/list turns, chains, nodes, resources, selection_records）绝不修改底层数据库状态。
+2. 过滤与排序语义：
+   - 链查询支持按 archived 状态过滤。
+   - 轮次查询支持按状态（turn_statuses）筛选。
+3. 领域用例轻量委托：
+   - 7 个具名查询 UseCase 仅作为薄委托层，保持接口纯粹与依赖倒置。
+"""
 
 from __future__ import annotations
 
@@ -48,7 +58,10 @@ NOW = datetime(2026, 8, 3, 12, 0, 0)
 
 
 class ContextQueryServiceTest(unittest.TestCase):
+    """验证 Context 只读查询服务的各种组合查询、多维过滤及 7 个具名 UseCase 的委托正确性。"""
+
     def setUp(self) -> None:
+        """创建内存 SQLite 数据库，建立表结构并插入初始测试数据。"""
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(
             self.engine,
@@ -68,9 +81,11 @@ class ContextQueryServiceTest(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        """销毁数据库引擎并释放资源。"""
         self.engine.dispose()
 
     def _seed(self) -> None:
+        """在数据库中插入包含 completed / context_ready 轮次、激活/归档链、选择记录、节点与资源的事实数据。"""
         with Session(self.engine) as session:
             session.add_all(
                 [
@@ -164,6 +179,7 @@ class ContextQueryServiceTest(unittest.TestCase):
             session.commit()
 
     def test_get_and_list_turns_without_mutation(self) -> None:
+        """验证单条获取与条件分页查询 Turn 时不产生任何写操作，并准确过滤状态。"""
         turn = self.service.get_conversation_turn("turn-1")
         result = self.service.list_conversation_turns(
             ConversationTurnSearchQuery(
@@ -177,6 +193,7 @@ class ContextQueryServiceTest(unittest.TestCase):
         self.assertEqual(result.items[0].turn_id, "turn-1")
 
     def test_chain_queries_respect_archived_filter(self) -> None:
+        """验证链查询正确应用 archived 过滤条件。"""
         chain = self.service.get_context_chain("chain-active")
         result = self.service.list_context_chains(
             ContextChainSearchQuery(
@@ -189,6 +206,7 @@ class ContextQueryServiceTest(unittest.TestCase):
         self.assertEqual([item.chain_id for item in result.items], ["chain-active"])
 
     def test_node_resource_and_selection_queries_map_facts(self) -> None:
+        """验证链节点、资源事实与上下文选择记录的查询能够正确还原数据库字段。"""
         nodes = self.service.list_context_chain_nodes(
             ContextChainNodeSearchQuery(
                 conversation_id="conversation-1",
@@ -218,6 +236,7 @@ class ContextQueryServiceTest(unittest.TestCase):
         )
 
     def test_seven_named_query_use_cases_delegate_without_writes(self) -> None:
+        """验证 7 个独立的具名查询 UseCase 均正确调用底层服务且保持零副作用。"""
         turns = ListConversationTurnsUseCase(self.service).execute(
             ConversationTurnSearchQuery(conversation_id="conversation-1")
         )

@@ -1,4 +1,11 @@
-"""文档处理阶段统一事件字段测试。"""
+"""文档处理阶段结构化日志（DocumentProcessLogger）与重试隔离测试。
+
+核心业务不变量：
+1. 统一处理事件字段：
+   - 记录 `document_process_claimed` 与 `document_process_completed` 等事件，包含输入格式、处理后格式及 cleaned_uri。
+2. 重试生成新 Operation 令牌：
+   - 每次重试（attempt 递增）必须生成全新的 `operation_id`，保证 staging 目录和锁围栏隔离。
+"""
 
 import unittest
 from types import SimpleNamespace
@@ -8,6 +15,7 @@ from app.shared.observability.correlation import DocumentOperationContext
 
 
 class _MemoryWriter:
+    """测试用内存日志写入器。"""
     def __init__(self) -> None:
         self.events: list[dict] = []
 
@@ -17,6 +25,7 @@ class _MemoryWriter:
 
 
 def _context():
+    """构造测试用 ProcessContext 替身。"""
     return SimpleNamespace(
         document_id=13,
         doc_code="DOC_013",
@@ -29,6 +38,7 @@ def _context():
 
 
 class DocumentProcessLoggerTest(unittest.TestCase):
+    """验证 DocumentProcessLogger 的事件生成与重试隔离。"""
     def test_operation_id_is_stable_and_retry_gets_new_operation(self) -> None:
         first_context = DocumentOperationContext.create(
             workflow_id="workflow-1",

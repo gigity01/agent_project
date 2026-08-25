@@ -1,18 +1,25 @@
-"""文档模块本地文件校验与内容哈希工具。"""
+"""文档模块本地文件路径校验、白名单扩展名过滤与 SHA-256 流式哈希计算工具。"""
 
-from pathlib import Path
 import hashlib
+from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
 
 from app.config.settings import (
-    ALLOWED_EXTENSIONS,
     ALLOWED_CONTENT_TYPES,
+    ALLOWED_EXTENSIONS,
 )
 
 
 def validate_filename(filename: str) -> None:
-    """拒绝空文件名及可能导致路径穿越的危险字符。"""
+    """校验上传文件名合法性，严格防御路径穿越与空文件名。
+
+    Args:
+        filename: 待检查的文件名字符串。
+
+    Raises:
+        HTTPException: 空文件名或包含 '..', '/', '\\', '\\x00' 危险字符时抛出 400。
+    """
     if not filename:
         raise HTTPException(status_code=400, detail="文件名不能为空")
 
@@ -26,7 +33,17 @@ def validate_filename(filename: str) -> None:
 
 
 def get_safe_extension(filename: str) -> str:
-    """验证文件名后返回已在白名单中的小写扩展名。"""
+    """校验文件名并提取规范化的小写扩展名（校验 ALLOWED_EXTENSIONS 白名单）。
+
+    Args:
+        filename: 文件名字符串。
+
+    Returns:
+        str: 不含前导点号的小写扩展名（如 'pdf', 'docx', 'txt', 'csv'）。
+
+    Raises:
+        HTTPException: 文件名无扩展名或扩展名不在允许白名单中抛出 400。
+    """
     validate_filename(filename)
 
     if "." not in filename:
@@ -44,7 +61,14 @@ def get_safe_extension(filename: str) -> str:
 
 
 def validate_content_type(file: UploadFile) -> None:
-    """校验客户端声明的 Content-Type 是否处于允许范围。"""
+    """校验客户端声明的 Content-Type 是否在允许的白名单范围内。
+
+    Args:
+        file: FastAPI 上传文件对象。
+
+    Raises:
+        HTTPException: Content-Type 不在白名单时抛出 400。
+    """
     if file.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=400,
@@ -53,7 +77,14 @@ def validate_content_type(file: UploadFile) -> None:
 
 
 def calculate_file_hash(file_path: Path) -> str:
-    """以流式读取方式计算文件 SHA-256，避免大文件占满内存。"""
+    """以 1 MiB 分块流式读取并计算本地文件的 SHA-256 16进制摘要。
+
+    Args:
+        file_path: 本地文件绝对路径。
+
+    Returns:
+        str: 64 位小写 SHA-256 哈希十六进制字符串。
+    """
     sha256 = hashlib.sha256()
 
     with file_path.open("rb") as f:
@@ -64,8 +95,14 @@ def calculate_file_hash(file_path: Path) -> str:
 
 
 def cleanup_file(path: Path) -> bool:
-    """尽力删除文件；删除失败由调用方决定是否记录。"""
+    """尽力删除指定的本地文件（忽略文件不存在异常）。
 
+    Args:
+        path: 待删除的文件路径。
+
+    Returns:
+        bool: 删除成功返回 True，不存在返回 False。
+    """
     try:
         path.unlink(missing_ok=True)
         return True

@@ -1,4 +1,14 @@
-"""文档处理领取、事务外执行和结果登记的短事务测试。"""
+"""文档处理与清洗用例（ProcessDocumentUseCase）领取、事务外执行与产物登记测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 三段式短事务与 staging 隔离：
+   - 领取阶段（Claim）：在行锁内校验前置状态（uploaded/failed），提交 `processing` 状态与 `active_operation_id` 令牌后立即结束事务。
+   - 准备与转换阶段（Execution）：根据格式选择本地文本清洗或 Docling 转换，生成的 Docling secondary 与 cleaned 产物先写入 operation-scoped 的 staging 目录：`storage/staging/{operation_id}/`。
+   - 登记阶段（Finalize）：短事务复核 ownership，将 active 产物登记至 `document_artifacts` 并回写 Document 的 cleaned_uri 与 status='processed'。
+2. 并发隔离与补偿围栏（MySQL Named Lock）：
+   - 文件生成/提升与补偿清理共用 `document:process:{document_id}` 命名锁围栏，进入副作用区后复核 Document 状态与 ownership。
+   - 失败时保留 staging 目录由 Runtime Compensator 校验 ownership 后安全清理。
+"""
 
 from __future__ import annotations
 
@@ -37,6 +47,7 @@ SERVICE_PATH = (
 
 
 class _HTTPException(Exception):
+    """测试用 HTTP 异常替身。"""
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)
         self.status_code = status_code

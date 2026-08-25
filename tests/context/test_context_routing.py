@@ -1,4 +1,17 @@
-"""Context Selection、Turn Attribution 与完成事务的离线测试。"""
+"""Context Selection 路由决策、Turn Attribution 链归属与完成事务集成测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 路由阶段与只读事实：
+   - 普通完整用户输入创建处于 `context_ready` 状态的 `ConversationTurn` 与 `ContextSelectionRecord`。
+   - 路由阶段绝不预先创建正式 `ContextChainNode` 或修改资源历史事实；链节点仅在下游完成（complete_turn）时原子提交。
+   - 路由锁保证同一 Conversation 的路由请求串行化。
+2. 完成阶段与原子事务：
+   - 完成 Turn 时提交 `TurnAttribution`（归属于已有链或新建链）及增量 `chain_updates`。
+   - 数据库事务内原子完成：标记 Turn 为 completed、创建 Node、追加资源事实与事件、递增 resource_version 并更新 last_active_at。
+   - 幂等性：重复提交同一完成请求保证幂等且不重复创建 Node。
+3. 跨存储一致性与缓存隔离：
+   - 数据库提交后刷新 Redis 热队列；Redis 故障不能回滚已提交的 MySQL 事实，降级为删除热队列 Key 触发后续预热。
+"""
 
 from __future__ import annotations
 
@@ -77,6 +90,7 @@ with (
 
 
 class _AgentRouter:
+    """测试用固定决策路由替身。"""
     def __init__(self, decision: ContextSelectionDecision) -> None:
         self.decision = decision
         self.inputs = []
@@ -87,6 +101,7 @@ class _AgentRouter:
 
 
 class _RouteLockManager:
+    """测试用内存路由串行化锁管理器替身。"""
     def __init__(self) -> None:
         self.conversation_ids: list[str] = []
 
@@ -206,7 +221,10 @@ def _domain_chain(
 
 
 class ContextSelectionValidationTest(unittest.TestCase):
+    """验证 ContextSelectionDecision 的去重、模式推导与异常检测规则。"""
+
     def test_deduplicates_ids_and_derives_multi_context(self) -> None:
+        """验证多链选择时自动去重并推导 selection_mode 为 multi_context。"""
         chains = [_domain_chain("chain-a"), _domain_chain("chain-b")]
         decision = validate_context_selection(
             ContextSelectionDecision(
@@ -224,6 +242,7 @@ class ContextSelectionValidationTest(unittest.TestCase):
         )
 
     def test_unknown_chain_is_rejected(self) -> None:
+        """验证选择不存在的 unknown chain_id 时抛出 ValueError。"""
         with self.assertRaisesRegex(ValueError, "selected unknown chain"):
             validate_context_selection(
                 ContextSelectionDecision(
@@ -235,6 +254,7 @@ class ContextSelectionValidationTest(unittest.TestCase):
             )
 
     def test_archived_chain_is_rejected(self) -> None:
+        """验证选择已归档的 chain 时抛出 ValueError。"""
         with self.assertRaisesRegex(ValueError, "selected archived chain"):
             validate_context_selection(
                 ContextSelectionDecision(
@@ -247,7 +267,10 @@ class ContextSelectionValidationTest(unittest.TestCase):
 
 
 class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
+    """验证 ContextService 消息发送路由、上下文选择持久化、Turn 完成及跨存储事务。"""
+
     def setUp(self) -> None:
+        """初始化内存数据库、路由锁、资源服务、固定路由代理及事件收集器。"""
         self.engine = create_engine(
             "sqlite+pysqlite://",
             connect_args={"check_same_thread": False},
@@ -371,6 +394,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_selection_persists_read_set_without_chain_or_node(self) -> None:
+        """验证路由选择阶段仅持久化 ContextSelectionRecord 并置 Turn 状态为 context_ready，绝不创建链或节点。"""
         package = await self._select([])
 
         with self.session_factory() as session:
@@ -394,6 +418,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("context_selection_total_duration", event)
 
     async def test_observability_failure_does_not_change_selection(self) -> None:
+        """验证可观测性记录异常不会改变路由选择结果或影响 Turn 状态推进。"""
         class _FailingEventLogger:
             def write(self, event: str, **fields) -> bool:
                 raise OSError("metrics unavailable")
@@ -408,6 +433,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.status, ContextTurnStatus.CONTEXT_READY.value)
 
     async def test_current_turn_is_not_in_complete_historical_chain(self) -> None:
+        """验证传递给 Agent 的历史链中不包含当前未完成的 Turn 节点（未决 Turn 不作为历史节点注入）。"""
         self._insert_historical_chain()
         package = await self._select(["chain-history"])
 
@@ -429,6 +455,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_no_context_does_not_force_latest_chain(self) -> None:
+        """验证当路由决策为 no_context 时，即使存在活跃历史链也不会强制关联最新链。"""
         now = datetime.now()
         self._insert_chain("chain-old", last_active_at=now)
         self._insert_chain(
@@ -444,6 +471,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session.query(ContextChainModel).count(), 2)
 
     async def test_complete_multi_attribution_creates_two_nodes(self) -> None:
+        """验证多链归属（multi_attribution）时在数据库中原子创建对应的两条链节点（同一 Turn 挂载多链）。"""
         self._insert_chain("chain-a")
         self._insert_chain("chain-b")
         package = await self._select(["chain-a", "chain-b"])
@@ -469,6 +497,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([node.chain_id for node in nodes], ["chain-a", "chain-b"])
 
     async def test_attribution_can_differ_from_context_read_set(self) -> None:
+        """验证下游完成时提交的归属链（Attribution）可以独立于路由阶段的只读候选集（Read Set）。"""
         self._insert_chain("chain-read")
         self._insert_chain("chain-write")
         package = await self._select(["chain-read"])
@@ -488,6 +517,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node.chain_id, "chain-write")
 
     async def test_complete_without_attribution_auto_creates_chain_and_node(self) -> None:
+        """验证未显式指定归属时，Service 自动创建新链并建立关联节点。"""
         package = await self._select([])
 
         response = await self.service.complete_turn(
@@ -506,6 +536,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.status, ContextTurnStatus.COMPLETED.value)
 
     async def test_new_chain_node_and_resources_are_committed_together(self) -> None:
+        """验证新建链、链节点、资源状态（ContextChainResource）与历史事件在单数据库事务内原子提交。"""
         package = await self._select([])
         new_chain_id = "chain-new"
 
@@ -551,6 +582,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_node_creation_failure_rolls_back_entire_completion(self) -> None:
+        """验证多节点创建中途失败时，整个完成事务回滚，Turn 保持原状且不残留孤立节点。"""
         self._insert_chain("chain-a")
         self._insert_chain("chain-b")
         package = await self._select(["chain-a", "chain-b"])
@@ -586,6 +618,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node_count, 0)
 
     async def test_repeated_complete_is_idempotent(self) -> None:
+        """验证重复调用 complete_turn 具有幂等性，不重复插入节点与资源。"""
         package = await self._select([])
         command = CompleteTurnCommand(
             attribution=TurnAttribution(
@@ -603,6 +636,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session.query(ContextChainNodeModel).count(), 1)
 
     async def test_completed_turn_without_node_is_rejected_as_corrupt(self) -> None:
+        """验证已完成但缺失链节点的异常状态轮次被拒绝并抛出 ContextConflictError。"""
         package = await self._select([])
         with self.session_factory() as session:
             turn = session.get(ConversationTurnModel, package.turn_id)
@@ -616,6 +650,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_selection_persistence_failure_marks_turn_failed(self) -> None:
+        """验证路由选择记录持久化失败时将 Turn 推进到 failed 终态。"""
         with mock.patch.object(
             self.record_factory,
             "context_selection_record",
@@ -634,6 +669,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session.query(ContextChainNodeModel).count(), 0)
 
     async def test_chain_update_must_be_inside_attribution(self) -> None:
+        """验证 chain_updates 中指定的 chain_id 必须包含在 Attribution 授权范围内，越界抛出 ContextValidationError。"""
         self._insert_chain("chain-a")
         self._insert_chain("chain-b")
         package = await self._select(["chain-a"])
@@ -653,6 +689,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_redis_refresh_failure_keeps_committed_resource_facts(self) -> None:
+        """验证 Redis 缓存刷新失败时保留已提交的 MySQL 数据库事实，并主动从缓存中失效该链。"""
         package = await self._select([])
         self.queue_repository.fail_refresh = True
 
@@ -693,6 +730,7 @@ class ContextServiceTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_resource_history_refresh_and_removal_are_preserved(self) -> None:
+        """验证资源的多轮刷新（use_count 累加）与显式移除（active=False，action=removed）历史完整保留。"""
         first = await self._select([])
         await self.service.complete_turn(
             first.turn_id,

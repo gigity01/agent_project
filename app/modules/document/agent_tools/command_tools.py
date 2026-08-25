@@ -1,4 +1,11 @@
-"""Document 状态守卫型命令 Function Tools。"""
+"""Document 状态守卫型变更命令 Function Tools。
+
+各 Capability 的 Document Executor Agent 独占其对应的 Command Tool。
+命令执行具有副作用，受到如下严格约束：
+1. Task Document Scope 守卫：执行前必须复核 tool_input.document_id 与 Task Context 中的 task_document_id 一致。
+2. DocumentOperationContext 关联：将 workflow_id, operation_id, attempt 贯穿至应用层与底层存储审计。
+3. 权限拦截与审计：通过 execute_audited_tool_call 校验特定权限并记录执行耗时与成败。
+"""
 
 from collections.abc import Callable
 from typing import Any
@@ -18,13 +25,14 @@ from app.modules.document.agent_tools.schemas import (
 )
 from app.shared.observability.correlation import DocumentOperationContext
 
-
+# 阶段 2、3、4 对应的命令工具权限常量
 DOCUMENT_PROCESS_PERMISSION = "document:process"
 DOCUMENT_BUILD_CHUNKS_PERMISSION = "document:chunks:build"
 DOCUMENT_INDEX_VECTORS_PERMISSION = "document:vectors:index"
 
 
 def _operation_context(context: AgentToolContext) -> DocumentOperationContext:
+    """从 AgentToolContext 构建贯穿全链路的 DocumentOperationContext 上下文。"""
     return DocumentOperationContext.create(
         workflow_id=context.workflow_id,
         operation_id=context.operation_id,
@@ -36,6 +44,11 @@ def _require_task_document_scope(
     context: AgentToolContext,
     document_id: int,
 ) -> None:
+    """校验命令工具操作的 document_id 与当前 Task 授权的目标文档一致。
+
+    Raises:
+        AgentToolScopeError: 当操作超出当前 Task 授权范围时抛出。
+    """
     if (
         context.task_document_id is not None
         and context.task_document_id != document_id
@@ -48,6 +61,7 @@ def _execute_in_task_scope(
     document_id: int,
     operation: Callable[[], Any],
 ) -> Any:
+    """在 Task Scope 守卫校验通过后执行具体用例操作。"""
     _require_task_document_scope(context, document_id)
     return operation()
 
@@ -56,7 +70,17 @@ def process_document_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: ProcessDocumentToolInput,
 ) -> ProcessDocumentToolOutput:
-    """调用现有 ProcessDocumentUseCase。"""
+    """执行文档清洗转换命令的审计包装处理函数。
+
+    调用 ProcessDocumentUseCase，并在 operation_id 与命名锁围栏内完成处理。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含待处理 document_id 的输入参数。
+
+    Returns:
+        ProcessDocumentToolOutput: 工具执行结果输出。
+    """
     resource_refs = [f"document:{tool_input.document_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -103,7 +127,17 @@ def build_document_chunks_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: BuildDocumentChunksToolInput,
 ) -> BuildDocumentChunksToolOutput:
-    """调用现有 BuildChunksUseCase。"""
+    """执行文档父子切块构建命令的审计包装处理函数。
+
+    调用 BuildChunksUseCase，按文档格式选择 Chunker 构建父级语义块与子块。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含待切块 document_id 的输入参数。
+
+    Returns:
+        BuildDocumentChunksToolOutput: 切块结果输出。
+    """
     resource_refs = [f"document:{tool_input.document_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,
@@ -151,7 +185,17 @@ def index_document_vectors_handler(
     ctx: RunContextWrapper[AgentToolContext],
     tool_input: IndexDocumentVectorsToolInput,
 ) -> IndexDocumentVectorsToolOutput:
-    """调用现有 IndexVectorsUseCase。"""
+    """执行文档向量生成与写入命令的审计包装处理函数。
+
+    调用 IndexVectorsUseCase，在命名锁围栏内批量调用 Embedding API 并写入 Qdrant。
+
+    Args:
+        ctx: Agent 运行上下文。
+        tool_input: 包含待索引 document_id 的输入参数。
+
+    Returns:
+        IndexDocumentVectorsToolOutput: 向量索引结果输出。
+    """
     resource_refs = [f"document:{tool_input.document_id}"]
     execution = execute_audited_tool_call(
         context=ctx.context,

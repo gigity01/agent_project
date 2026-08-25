@@ -1,4 +1,19 @@
-"""HTTP、Outbox、Redis Stream、Runtime 与 Aggregation 的离线端到端测试。"""
+"""HTTP、Outbox、Redis Stream、Runtime Worker 与 Aggregation 端到端闭环集成测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 异步任务编排与可靠消息闭环：
+   - HTTP Message 接入 -> Context 路由选择 -> Planner 发布 Plan、Task DAG 与 Outbox Event (`runtime.plan_wakeup`)。
+   - Outbox Publisher 扫描 Outbox 投递至 Redis Stream；
+   - 独立 Runtime Worker Consumer 从 Redis Stream 消费事件，通过 Inbox 去重保证 Exactly-Once 语义。
+2. Task 执行与三段式短事务边界：
+   - Claim 阶段：严格按 DAG 依赖关系领取 Task，写入 execution 快照与 operation ownership；
+   - 事务外 Executor：分派至 capability-scoped Agent Executor 或 deterministic 后备 Executor；
+   - Completion 阶段：更新 Task 为 succeeded，并在最后一个 Task 完成时触发 `runtime.plan_completed` 事件。
+3. 结果聚合与上下文回写（Aggregation）：
+   - Aggregator 消费聚合事件，基于已完成 Task 结果生成确定性执行摘要，调用 ContextService 完成 Turn 并原子更新链节点与资源队列。
+4. 澄清与 Replan（Clarification / Replan）：
+   - 澄清触发生成 ClarificationRequest -> 用户携带 source_turn_id 回复 -> 触发 Replan 并发布新 revision Plan -> 聚合后 Clarification 转为 resolved。
+"""
 
 from __future__ import annotations
 

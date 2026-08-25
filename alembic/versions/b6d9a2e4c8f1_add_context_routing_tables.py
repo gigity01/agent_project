@@ -1,9 +1,15 @@
-"""增加 Context Agent 路由、链与唯一 Turn 数据表。
+"""创建 Context 子系统核心数据表：会话轮次、上下文链、链节点与路由决策。
+
+业务背景与设计规范：
+1. `conversation_turns`：记录单轮用户输入、任务 ID 列表、执行结果摘要及轮次生命周期状态。
+2. `context_chains`：维护对话中的上下文链，包含链关联的资源快照、最后活跃时间（last_active_at）和归档状态。
+3. `context_chain_nodes`：上下文链与会话轮次的多对多关联节点表，通过 `uq_context_chain_nodes_chain_sequence` 保证链内顺序唯一，
+   通过 `uq_context_chain_nodes_chain_turn` 保证同一轮次在单链内只挂载一次。
+4. `context_route_decisions`：记录 Context Agent 的路由决策（单链匹配/多链匹配/新链创建/同时关联新旧链/回退最新未归档链）。
 
 Revision ID: b6d9a2e4c8f1
 Revises: e7b3c2d4a9f1
 Create Date: 2026-07-25 00:00:00.000000
-
 """
 from typing import Sequence, Union
 
@@ -19,7 +25,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """创建 Context 子系统的四张持久化表。"""
+    """创建 conversation_turns、context_chains、context_chain_nodes 和 context_route_decisions 四张持久化表及其外键与索引约束。"""
     op.create_table(
         "conversation_turns",
         sa.Column("turn_id", sa.String(length=100), nullable=False),

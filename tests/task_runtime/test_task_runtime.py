@@ -1,4 +1,14 @@
-"""Task Runtime 同 Plan 串行与三段式状态流转测试。"""
+"""Task Runtime 任务领取（Claim）、事务外执行、完成/失败推进与确定性补偿恢复测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 单 Plan 串行度与 DAG 拓扑感知（Claim）：
+   - 同一 Plan 并发度固定为 1；只有所有依赖 Task 均已成功的 Task 才可被领取。
+   - 领取时持久化输入快照、attempt、execution_id 与 active_operation_id。
+2. 三段式状态机与副作用补偿（Claim -> Executor -> Completion/Compensate）：
+   - 执行失败时进入 `compensation_required -> begin attempt COMMIT -> 事务外 Compensator -> compensated`。
+   - 只有补偿成功才进入 retry 或 replan；若补偿多次失败达到上限则进入 `compensation_locked`，禁止新 attempt 接管。
+   - 全部 Task 完成时触发 `runtime.plan_completed` 事件，交由 Aggregator 处理。
+"""
 
 from __future__ import annotations
 

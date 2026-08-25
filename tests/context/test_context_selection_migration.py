@@ -1,4 +1,14 @@
-"""Context Selection 语义迁移与 ORM 对齐测试。"""
+"""Context Selection 数据库迁移与 ORM 实体字段对齐测试。
+
+核心业务不变量：
+1. 迁移操作语义验证：
+   - 验证迁移脚本正确将 `context_route_decisions` 重命名为 `context_selection_records`。
+   - 验证列更名（route_id -> selection_id, selected_chain_ids -> relevant_chain_ids, route_mode -> selection_mode）。
+   - 验证删除旧架构多余列（create_new_chain, new_chain_id）并清理未完成轮次的非事实占位节点与空链。
+   - 验证迁移的单向性（不可逆，downgrade 抛出 RuntimeError）。
+2. ORM 模型对齐：
+   - 确保 ContextSelectionRecord ORM 实体表名与列定义与迁移后的数据库物理 Schema 完全一致。
+"""
 
 from __future__ import annotations
 
@@ -22,6 +32,7 @@ MIGRATION_PATH = (
 
 
 def _load_migration():
+    """动态加载 Context Selection Alembic 迁移脚本。"""
     spec = importlib.util.spec_from_file_location(
         "context_selection_migration_under_test",
         MIGRATION_PATH,
@@ -34,7 +45,10 @@ def _load_migration():
 
 
 class ContextSelectionMigrationTest(unittest.TestCase):
+    """验证 Context Selection 迁移升级/降级逻辑及 ORM 模型列定义。"""
+
     def test_upgrade_renames_contract_and_removes_placeholders(self) -> None:
+        """验证 upgrade 执行了表重命名、列重命名、索引就地重命名及脏数据清理。"""
         migration = _load_migration()
         operations = mock.Mock()
         migration.op = operations
@@ -87,12 +101,14 @@ class ContextSelectionMigrationTest(unittest.TestCase):
     def test_downgrade_fails_closed_because_attribution_is_not_recoverable(
         self,
     ) -> None:
+        """验证 downgrade 抛出不可逆异常，防止非结构化回退损坏归属事实。"""
         migration = _load_migration()
 
         with self.assertRaisesRegex(RuntimeError, "irreversible"):
             migration.downgrade()
 
     def test_orm_exposes_only_selection_fields(self) -> None:
+        """验证 ContextSelectionRecord ORM 实体字段集合严格与新架构定义匹配。"""
         columns = ContextSelectionRecord.__table__.c
 
         self.assertEqual(

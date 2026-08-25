@@ -1,4 +1,13 @@
-"""文档模块将外部 CSV 规范化为稳定的标准 CSV。"""
+"""文档模块 CSV 表格文件编码嗅探、方言检测与标准化清洗处理器。
+
+处理流程：
+1. 自动嗅探字符编码（utf-8-sig, utf-8, gb18030）。
+2. 使用 csv.Sniffer 自动识别分隔符（逗号、分号、制表符、竖线）。
+3. 严格校验表头：去除多余空白、拒绝空列名、拒绝重复列名。
+4. 流式逐行清洗数据单元格（移除 NUL 字符、统一 \\n 换行、去除两端空白）。
+5. 过滤全空白行并校验每行字段列数与表头严格一致。
+6. 原子写入标准 UTF-8、逗号分隔、带双引号转义的 cleaned CSV 文件。
+"""
 
 import codecs
 import csv
@@ -13,38 +22,47 @@ from app.modules.document.infrastructure.parsing.base import (
 
 
 class CsvProcessError(ValueError):
-    """CSV 文件无法安全完成标准化处理。"""
+    """CSV 文件处理异常，表示文件无法安全完成标准化清洗。"""
 
 
 class _CharacterCountingWriter:
-    """代理文本流的 write 方法，并统计实际写出的 Unicode 字符数。"""
+    """包装文本流 write 方法并累计 Unicode 字符数的辅助写入流。"""
 
     def __init__(self, stream: TextIO) -> None:
+        """初始化计数写入流。
+
+        Args:
+            stream: 底层文件写入流。
+        """
         self._stream = stream
         self.char_count = 0
 
     def write(self, value: str) -> int:
+        """写入字符串并累加字符计数。"""
         written = self._stream.write(value)
         self.char_count += written
         return written
 
 
 class CsvProcessor(BaseProcessor):
-    """流式校验并标准化 CSV，同时返回可靠的表结构元信息。"""
+    """CSV 表格数据清洗与标准化处理器实现。"""
 
     source_type = "csv"
 
+    # 候选解码编码列表（优先级从高到低）
     CANDIDATE_ENCODINGS = (
         "utf-8-sig",
         "utf-8",
         "gb18030",
     )
+    # 支持嗅探的分隔符
     SUPPORTED_DELIMITERS = (
         ",",
         ";",
         "\t",
         "|",
     )
+    # 编码与方言嗅探样本大小（64 KiB）
     SAMPLE_SIZE = 64 * 1024
 
     def process(
@@ -52,18 +70,31 @@ class CsvProcessor(BaseProcessor):
         source_path: Path,
         cleaned_path: Path,
     ) -> ProcessResult:
-        """流式读取源 CSV，严格校验后原子写入标准 cleaned CSV。"""
+        """流式读取源 CSV，完成编码检测、方言识别、表头校验及清洗并写入 cleaned 文件。
+
+        Args:
+            source_path: 原始 CSV 文件路径。
+            cleaned_path: 清洗后输出的标准 CSV 目标路径。
+
+        Returns:
+            ProcessResult: 包含表头元数据、行列数统计的处理结果。
+
+        Raises:
+            CsvProcessError: 格式损坏、表头非法或行列数不匹配时抛出。
+        """
         source_path = self.validate_source_path(source_path)
         cleaned_path = self.prepare_cleaned_path(cleaned_path)
 
         if source_path.stat().st_size == 0:
             raise CsvProcessError("CSV 文件为空")
 
+        # 1. 嗅探编码与方言
         source_encoding = self._detect_encoding(source_path)
         sample = self._read_decoded_sample(source_path, source_encoding)
         dialect = self._detect_dialect(sample)
         source_delimiter = dialect.delimiter
 
+        # 2. 创建临时文件写入流
         temporary_path = cleaned_path.with_name(f"{cleaned_path.name}.tmp")
         row_count = 0
         blank_row_count = 0
@@ -101,6 +132,7 @@ class CsvProcessor(BaseProcessor):
                     )
                     writer.writerow(headers)
 
+                    # 3. 逐行清洗与校验
                     for data_record_number, row in enumerate(reader, start=1):
                         cleaned_row = [self._clean_cell(cell) for cell in row]
 
@@ -118,6 +150,7 @@ class CsvProcessor(BaseProcessor):
                         writer.writerow(cleaned_row)
                         row_count += 1
 
+            # 4. 原子重命名生效
             temporary_path.replace(cleaned_path)
         except UnicodeDecodeError as exc:
             temporary_path.unlink(missing_ok=True)
@@ -161,12 +194,12 @@ class CsvProcessor(BaseProcessor):
         )
 
     def _detect_encoding(self, source_path: Path) -> str:
-        """用小样本选择候选编码；完整文件仍在正式读取时严格解码。"""
+        """读取文件前 64 KiB 字节嗅探匹配的编码格式。"""
         with source_path.open("rb") as source_stream:
             sample = source_stream.read(self.SAMPLE_SIZE)
 
         for encoding in self.CANDIDATE_ENCODINGS:
-            # utf-8-sig 在无 BOM 时也能解码普通 UTF-8，需先明确区分二者。
+            # utf-8-sig 在无 BOM 时也能解码普通 UTF-8，需优先校验 BOM
             if encoding == "utf-8-sig" and not sample.startswith(codecs.BOM_UTF8):
                 continue
 
@@ -182,7 +215,7 @@ class CsvProcessor(BaseProcessor):
         raise CsvProcessError(f"无法识别 CSV 编码，已尝试: {attempted}")
 
     def _read_decoded_sample(self, source_path: Path, encoding: str) -> str:
-        """按已识别编码解码分隔符检测样本，允许样本末尾是不完整字符。"""
+        """按已确定的编码解码样本字节，用于方言嗅探。"""
         with source_path.open("rb") as source_stream:
             sample = source_stream.read(self.SAMPLE_SIZE)
 
@@ -190,7 +223,7 @@ class CsvProcessor(BaseProcessor):
         return decoder.decode(sample, final=False)
 
     def _detect_dialect(self, sample: str) -> csv.Dialect:
-        """识别受支持的分隔符；识别失败时使用标准逗号方言。"""
+        """识别 CSV 分隔符方言；嗅探失败时回退至标准逗号 Excel 方言。"""
         normalized_sample = sample.replace("\x00", "")
         samples_to_sniff = [normalized_sample]
         first_non_blank_line = next(
@@ -212,7 +245,7 @@ class CsvProcessor(BaseProcessor):
         return csv.get_dialect("excel")
 
     def _normalize_headers(self, headers: list[str]) -> list[str]:
-        """低风险规范表头空白，并拒绝空字段和重复字段。"""
+        """规范化表头列名：压缩空白、校验非空与查重。"""
         if not headers:
             raise CsvProcessError("CSV 表头为空")
 
@@ -241,7 +274,7 @@ class CsvProcessor(BaseProcessor):
         return normalized_headers
 
     def _clean_cell(self, value: str) -> str:
-        """移除 NUL、统一换行并裁剪首尾空白，不改变业务值类型。"""
+        """剔除 NUL、统一 \\n 换行并去除单元格两端空白。"""
         return (
             value.replace("\x00", "")
             .replace("\r\n", "\n")
@@ -250,5 +283,5 @@ class CsvProcessor(BaseProcessor):
         )
 
     def _is_blank_row(self, row: list[str]) -> bool:
-        """判断记录是否在清理后不含任何有效字段。"""
+        """检查整行是否全为空单元格。"""
         return all(not cell for cell in row)

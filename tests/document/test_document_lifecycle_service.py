@@ -1,4 +1,13 @@
-"""统一文档失效事务的业务不变量测试。"""
+"""统一文档失效与生命周期变更用例（ChangeDocumentLifecycleUseCase）业务不变量测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 生命周期状态与哈希清空：
+   - 当文档生命周期变更为 `expired`、`replaced`、`deleted` 等非活跃状态时，必须同步将 `active_content_hash` 置为 NULL，释放知识库内的内容唯一哈希槽位。
+   - `DocumentStatus` 不再承担业务过期语义，仅表达处理流水线技术状态；生命周期语义由 `lifecycle_status` 独立承载。
+2. 关联替换与软删除：
+   - 标记为 `replaced` 时必须提供 `replaced_by` 指向新文档 ID，并校验新文档的合法性。
+   - 标记为 `deleted` 时同步将 `storage_status` 推进为 `soft_deleted`。
+"""
 
 from __future__ import annotations
 
@@ -30,6 +39,7 @@ SERVICE_PATH = (
 
 
 class _HTTPException(Exception):
+    """测试用 HTTP 异常替身。"""
     def __init__(self, status_code: int, detail: str) -> None:
         super().__init__(detail)
         self.status_code = status_code

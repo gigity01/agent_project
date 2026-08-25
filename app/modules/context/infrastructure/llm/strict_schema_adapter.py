@@ -1,4 +1,4 @@
-"""DeepSeek strict Tool JSON Schema 兼容转换。"""
+"""DeepSeek strict Tool JSON Schema 兼容转换适配器。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,25 @@ from app.modules.context.domain.models import ContextSelectionDecision
 
 
 class ContextAgentOutputError(RuntimeError):
-    """DeepSeek 未按约定提交唯一且合法的 Context Selection。"""
+    """DeepSeek 未按约定提交唯一且合法的 Context Selection 时抛出。"""
 
 
 def resolve_local_schema_refs(
     value: Any,
     definitions: dict[str, Any],
 ) -> Any:
-    """展开 Pydantic 生成的本地 ``$defs`` 引用。"""
+    """递归展开 Pydantic 生成的本地 ``$defs`` 引用（避免模型工具参数 schema 解析失败）。
+
+    Args:
+        value: 原始 Schema 节点（字典、列表或基本类型）。
+        definitions: 包含定义字典的 $defs 集合。
+
+    Returns:
+        Any: 展开 $ref 引用后的 Schema 节点。
+
+    Raises:
+        ContextAgentOutputError: 引用了不存在的 definition 名称时抛出。
+    """
     if isinstance(value, list):
         return [
             resolve_local_schema_refs(item, definitions)
@@ -51,7 +62,19 @@ def resolve_local_schema_refs(
 
 
 def normalize_strict_tool_schema(value: Any) -> Any:
-    """转换为 DeepSeek strict tool 当前支持的 JSON Schema 子集。"""
+    """转换为 DeepSeek strict tool 当前支持的标准 JSON Schema 子集。
+
+    转换规则：
+    1. 移除 DeepSeek strict 模式不支持或仅用于展示的约束关键字（如 title, default, minLength, maxLength 等）。
+    2. 将 object 类型的 additionalProperties 固定设为 False。
+    3. 将 object 类型的 properties 键全量加入 required 必填字段数组。
+
+    Args:
+        value: 原始或已展开 $ref 的 Schema 节点。
+
+    Returns:
+        Any: 归一化后的 Schema 节点。
+    """
     if isinstance(value, list):
         return [normalize_strict_tool_schema(item) for item in value]
     if not isinstance(value, dict):
@@ -79,7 +102,14 @@ def normalize_strict_tool_schema(value: Any) -> Any:
 
 
 def build_context_selection_tool_schema() -> dict[str, Any]:
-    """从 Pydantic 契约生成 DeepSeek strict tool 参数 Schema。"""
+    """从 ContextSelectionDecision Pydantic 契约生成 DeepSeek strict tool 参数 Schema。
+
+    Returns:
+        dict[str, Any]: 符合 DeepSeek strict 规范的 JSON Schema 字典。
+
+    Raises:
+        ContextAgentOutputError: 生成结果不是有效 JSON 对象时抛出。
+    """
     raw_schema = ContextSelectionDecision.model_json_schema()
     definitions = raw_schema.get("$defs", {})
     resolved = resolve_local_schema_refs(raw_schema, definitions)

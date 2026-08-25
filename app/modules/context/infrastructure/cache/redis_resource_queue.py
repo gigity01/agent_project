@@ -90,15 +90,38 @@ return item_count
 
 
 def _as_text(value: str | bytes | int) -> str:
+    """将 Redis 返回的字符串、字节串或数值转换为 utf-8 字符串。
+
+    Args:
+        value: Redis 原始返回值。
+
+    Returns:
+        str: 转换后的字符串。
+    """
     if isinstance(value, bytes):
         return value.decode("utf-8")
     return str(value)
 
 
 class ContextResourceQueueRepository:
-    """使用 Redis List、Hash 和版本 Key 保存有界热资源队列。"""
+    """使用 Redis List、Hash 和版本 Key 保存有界热资源队列的基础设施仓储。
+
+    缓存键结构规范：
+    - List (`{prefix}:queue`): 保存 resource_key 的双向列表，队头（Index 0）为最久未再次使用的资源，队尾为最新活跃资源。
+    - Hash (`{prefix}:data`): 保存 resource_key 到 ContextResourceRef JSON 字符串的映射。
+    - String (`{prefix}:version`): 保存当前缓存对应的数据库 resource_version。
+    """
 
     def __init__(self, client: Redis, *, capacity: int) -> None:
+        """初始化 ContextResourceQueueRepository。
+
+        Args:
+            client: 应用级 Redis 异步客户端实例。
+            capacity: 热队列容量上限（必须大于等于 1，默认 16）。
+
+        Raises:
+            ValueError: 当 capacity 小于 1 时抛出。
+        """
         if capacity < 1:
             raise ValueError("Context resource queue capacity must be positive")
         self._client = client
@@ -106,6 +129,15 @@ class ContextResourceQueueRepository:
 
     @staticmethod
     def _keys(conversation_id: str, chain_id: str) -> tuple[str, str, str]:
+        """生成特定上下文链的 Redis 键三元组（Hash Tag 保证同一槽位以支持 Lua 事务）。
+
+        Args:
+            conversation_id: 会话 ID。
+            chain_id: 上下文链 ID。
+
+        Returns:
+            tuple[str, str, str]: (queue_key, data_key, version_key)。
+        """
         prefix = f"ctx:{{{conversation_id}}}:chain:{chain_id}:resource"
         return (
             f"{prefix}:queue",
@@ -120,11 +152,21 @@ class ContextResourceQueueRepository:
         chain_id: str,
         expected_version: int,
     ) -> ContextResourceQueue | None:
-        """版本一致且 List/Hash 完整时返回热队列，否则返回未命中。"""
+        """版本一致且 List/Hash 完整时返回热队列，否则返回未命中（None）。
+
+        Args:
+            conversation_id: 会话 ID。
+            chain_id: 上下文链 ID。
+            expected_version: 期望匹配的数据库资源版本号。
+
+        Returns:
+            ContextResourceQueue | None: 命中的热资源队列模型；若版本不匹配、数据缺损或超出容量则返回 None。
+        """
         queue_key, data_key, version_key = self._keys(
             conversation_id,
             chain_id,
         )
+        # 1. 检查版本号是否完全一致
         raw_version = await self._client.get(version_key)
         if (
             raw_version is None
@@ -132,6 +174,7 @@ class ContextResourceQueueRepository:
         ):
             return None
 
+        # 2. 读取 List 中的全部 resource_key
         raw_keys = await self._client.lrange(queue_key, 0, -1)
         resource_keys = [_as_text(item) for item in raw_keys]
         if not resource_keys:
@@ -139,10 +182,12 @@ class ContextResourceQueueRepository:
         if len(resource_keys) > self.capacity:
             return None
 
+        # 3. 批量从 Hash 中按 key 顺序获取对应的 JSON 数据
         raw_items = await self._client.hmget(data_key, resource_keys)
         if len(raw_items) != len(resource_keys):
             return None
 
+        # 4. 反序列化并核验 key 一致性
         items: list[ContextResourceRef] = []
         for resource_key, raw_item in zip(
             resource_keys,
@@ -173,7 +218,19 @@ class ContextResourceQueueRepository:
         expected_previous_version: int,
         database_version: int,
     ) -> bool:
-        """版本连续时原子刷新资源；缓存缺口返回 False。"""
+        """版本连续时通过 Lua 脚本原子刷新资源与版本号；缓存缺口或版本冲突返回 False。
+
+        Args:
+            conversation_id: 会话 ID。
+            chain_id: 上下文链 ID。
+            resources: 需加入或刷新活跃位置的资源列表。
+            removed_resource_keys: 需显式移除的资源 Key 列表。
+            expected_previous_version: 期望的 Redis 当前版本号。
+            database_version: 数据库更新后的新版本号。
+
+        Returns:
+            bool: 增量应用成功返回 True，CAS 失败或缓存不存在返回 False。
+        """
         keys = self._keys(conversation_id, chain_id)
         arguments: list[str | int] = [
             self.capacity,
@@ -203,7 +260,14 @@ class ContextResourceQueueRepository:
         resources: list[ContextResourceRef],
         database_version: int,
     ) -> None:
-        """使用数据库最近资源原子替换整个 Redis 队列。"""
+        """使用数据库最近资源通过 Lua 脚本原子替换/预热整个 Redis 队列。
+
+        Args:
+            conversation_id: 会话 ID。
+            chain_id: 上下文链 ID。
+            resources: 预热资源列表（按最旧到最新顺序）。
+            database_version: 数据库版本号。
+        """
         resources = resources[-self.capacity :]
         keys = self._keys(conversation_id, chain_id)
         arguments: list[str | int] = [len(resources)]
@@ -225,7 +289,12 @@ class ContextResourceQueueRepository:
         conversation_id: str,
         chain_id: str,
     ) -> None:
-        """删除热队列；数据库资源事实不受影响。"""
+        """删除热队列（List、Hash、Version）；数据库资源事实不受影响。
+
+        Args:
+            conversation_id: 会话 ID。
+            chain_id: 上下文链 ID。
+        """
         await self._client.delete(
             *self._keys(conversation_id, chain_id)
         )

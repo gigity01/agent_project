@@ -1,4 +1,11 @@
-"""Document 高级查询 Repository 的内存数据库测试。"""
+"""Document 模块只读查询 Repository（文档、产物、父块、子块、知识库）的 SQLite 内存测试。
+
+核心业务不变量：
+1. 复合条件过滤与分页：
+   - 验证 DocumentRepository、DocumentArtifactRepository、ParentBlockRepository、ChildChunkRepository 的动态多字段筛选（状态、时间范围、关键词模糊查询、知识库 ID 等）与分页 limit/offset。
+2. 统计与聚合准确性：
+   - 验证分块聚合统计（父块数量、子块数量、各向量状态子块计数分布）及知识库总体统计指标计算。
+"""
 
 from __future__ import annotations
 

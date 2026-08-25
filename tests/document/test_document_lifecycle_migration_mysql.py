@@ -1,4 +1,13 @@
-"""在显式指定的空 MySQL 测试库中执行真实 Alembic migration。"""
+"""真实 MySQL 环境下的文档生命周期 Alembic 迁移（e7b3c2d4a9f1）集成测试。
+
+核心业务不变量：
+1. 真实 MySQL DDL 执行：
+   - 验证升级过程中成功添加列、填充存量 active_content_hash、创建复合唯一键 `(kb_id, active_content_hash)`。
+2. MySQL NULL 唯一性语义验证：
+   - 验证在同一知识库下，多个 `active_content_hash=NULL` 的失效文档可以共存，而相同非 NULL 哈希的文档在插入时触发 IntegrityError。
+3. 降级回滚：
+   - 验证降级操作安全删除唯一索引与新增的三状态列。
+"""
 
 from __future__ import annotations
 

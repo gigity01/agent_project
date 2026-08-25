@@ -1,4 +1,7 @@
-"""Plan 的 SQLAlchemy ORM 定义。"""
+"""Plan 的 SQLAlchemy ORM 定义。
+
+映射 `plans` 数据表，记录针对 Conversation Turn 的任务规划及其版本修订历史。
+"""
 
 from datetime import datetime
 
@@ -12,7 +15,24 @@ from app.modules.planning.domain.enums import PlanStatus
 
 
 class Plan(Base):
-    """保存一次 Turn 的一个规划 revision。"""
+    """保存一次 Turn 的一个规划 revision 记录。
+
+    Attributes:
+        plan_id: 规划全局唯一标识，主键。
+        workflow_id: 关联的工作流全局唯一标识。
+        turn_id: 关联的 ConversationTurn 外键。
+        parent_plan_id: 父 Plan ID（前一版本 revision 的外键引用）。
+        current_task_id: 当前正在执行的任务 ID 外键引用。
+        status: 规划生命周期状态（PlanStatus）。
+        revision: 修订版本序号，从 1 开始。
+        failure_code: 失败或重试错误分类码。
+        failure_reason: 详细失败原因文本。
+        started_at: 规划开始执行时间。
+        completed_at: 规划最终完成或终止时间。
+        created_at: 创建时间。
+        updated_at: 更新时间。
+        tasks: 与关联 Task 实体的 1 对多关系。
+    """
 
     __tablename__ = "plans"
     __table_args__ = (

@@ -1,4 +1,7 @@
-"""文档模块的 HTTP 请求与响应 Schema。"""
+"""文档模块 HTTP 控制器层的请求与响应 Pydantic Schema 定义。
+
+继承并重用 Application 层 DTO，为 Presentation 路由提供统一的 OpenAPI 输入输出契约定义。
+"""
 
 from datetime import datetime
 from typing import Literal
@@ -24,89 +27,80 @@ from app.modules.document.application.dto import (
     SearchDocumentsResult,
 )
 
-
 RiskLevel = Literal["low", "medium", "high", "critical"]
 
 
 class DocumentUploadFormData(BaseModel):
-    """上传接口从 multipart 表单解析出的文档业务元数据。"""
+    """从 multipart/form-data 表单中提取解析出的文档业务元数据。"""
 
-    title: str = Field(..., min_length=1, max_length=255)
-    kb_id: int = Field(..., gt=0)
-    domain_code: str = Field(..., min_length=1, max_length=255)
-    business_scene: str | None = Field(min_length=1, max_length=255)
-    risk_level: RiskLevel = "low"
-    effective_at: datetime | None = None
-    expired_at: datetime | None = None
+    title: str = Field(..., min_length=1, max_length=255, description="文档标题")
+    kb_id: int = Field(..., gt=0, description="所属知识库 ID")
+    domain_code: str = Field(..., min_length=1, max_length=255, description="业务领域编码")
+    business_scene: str | None = Field(None, min_length=1, max_length=255, description="业务场景编码")
+    risk_level: RiskLevel = Field("low", description="风险等级（low, medium, high, critical）")
+    effective_at: datetime | None = Field(None, description="文档生效时间")
+    expired_at: datetime | None = Field(None, description="文档过期时间")
 
 
 class DocumentResponse(DocumentResult):
-    """上传成功后返回的完整文档视图。"""
-
-    pass
+    """上传成功或详情查询返回的文档完整信息响应 Schema。"""
 
 
 class DocumentProcessResponse(ProcessDocumentResult):
-    """文档清洗或转换完成后的状态视图。"""
-
-    pass
+    """文档清洗或 Docling 转换完成后的状态响应 Schema。"""
 
 
 class BuildChunksResponse(BuildChunksResult):
-    """一次切块任务的结果统计。"""
-
-    pass
+    """父子切块重建完成后的数量与状态响应 Schema。"""
 
 
 class VectorIndexingResponse(IndexVectorsResult):
-    """一次向量索引任务的处理数量和最终状态。"""
-
-    pass
+    """向量索引生成与 Qdrant 写入完成后的数量与状态响应 Schema。"""
 
 
 class DocumentSearchRequest(DocumentSearchQuery):
-    """文档高级查询 HTTP 请求。"""
+    """文档高级检索 HTTP 请求体 Schema。"""
 
 
 class DocumentSearchResponse(SearchDocumentsResult):
-    """文档高级查询 HTTP 响应。"""
+    """文档高级检索 HTTP 响应体 Schema。"""
 
 
 class DocumentPipelineStateResponse(DocumentPipelineStateResult):
-    """文档流水线状态 HTTP 响应。"""
+    """文档流水线三阶段（处理/切块/索引）状态查询响应 Schema。"""
 
 
 class DocumentArtifactsResponse(ListDocumentArtifactsResult):
-    """单文档派生产物 HTTP 响应。"""
+    """单文档关联派生产物列表响应 Schema。"""
 
 
 class DocumentArtifactSearchRequest(DocumentArtifactSearchQuery):
-    """派生产物高级查询 HTTP 请求。"""
+    """派生产物高级检索 HTTP 请求体 Schema。"""
 
 
 class DocumentArtifactSearchResponse(SearchDocumentArtifactsResult):
-    """派生产物高级查询 HTTP 响应。"""
+    """派生产物高级检索 HTTP 响应体 Schema。"""
 
 
 class ParentBlockSearchRequest(ParentBlockSearchQuery):
-    """父级语义块查询 HTTP 请求。"""
+    """父级语义块高级检索 HTTP 请求体 Schema。"""
 
 
 class ParentBlockSearchResponse(ListParentBlocksResult):
-    """父级语义块查询 HTTP 响应。"""
+    """父级语义块高级检索 HTTP 响应体 Schema。"""
 
 
 class ChildChunkSearchRequest(ChildChunkSearchQuery):
-    """子块查询 HTTP 请求。"""
+    """可向量化子块高级检索 HTTP 请求体 Schema。"""
 
 
 class ChildChunkSearchResponse(ListChildChunksResult):
-    """子块查询 HTTP 响应。"""
+    """可向量化子块高级检索 HTTP 响应体 Schema。"""
 
 
 class DocumentChunkStatisticsResponse(DocumentChunkStatisticsResult):
-    """文档切块统计 HTTP 响应。"""
+    """文档父子块与向量化状态统计分布响应 Schema。"""
 
 
 class KnowledgeBaseStatisticsResponse(KnowledgeBaseStatisticsResult):
-    """知识库统计 HTTP 响应。"""
+    """知识库整体文档与切块宏观统计响应 Schema。"""

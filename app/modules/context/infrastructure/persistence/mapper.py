@@ -1,7 +1,15 @@
 """Context ORM Record 构造与领域模型映射。"""
 
+from __future__ import annotations
+
 from typing import Any
 
+from app.modules.context.domain.models import (
+    ContextChain,
+    ContextChainNodeContext,
+    ContextResourceQueue,
+    ConversationTurn,
+)
 from app.modules.context.infrastructure.persistence.models.context_chain import (
     ContextChain as ContextChainModel,
 )
@@ -17,36 +25,35 @@ from app.modules.context.infrastructure.persistence.models.context_selection_rec
 from app.modules.context.infrastructure.persistence.models.conversation_turn import (
     ConversationTurn as TurnModel,
 )
-from app.modules.context.domain.models import (
-    ContextChain,
-    ContextChainNodeContext,
-    ContextResourceQueue,
-    ConversationTurn,
-)
 
 
 class SQLAlchemyContextRecordFactory:
-    """隔离 Application 与 SQLAlchemy ORM 构造器。"""
+    """隔离 Application 与 SQLAlchemy ORM 构造器的实体工厂实现。"""
 
     def conversation_turn(self, **values: Any) -> TurnModel:
+        """创建 ConversationTurn ORM 实体。"""
         return TurnModel(**values)
 
     def context_selection_record(
         self,
         **values: Any,
     ) -> ContextSelectionRecord:
+        """创建 ContextSelectionRecord ORM 实体。"""
         return ContextSelectionRecord(**values)
 
     def context_chain(self, **values: Any) -> ContextChainModel:
+        """创建 ContextChain ORM 实体。"""
         return ContextChainModel(**values)
 
     def context_chain_node(self, **values: Any) -> ContextChainNode:
+        """创建 ContextChainNode ORM 实体。"""
         return ContextChainNode(**values)
 
     def context_resource_event(
         self,
         **values: Any,
     ) -> ContextChainResourceEvent:
+        """创建 ContextChainResourceEvent ORM 实体。"""
         return ContextChainResourceEvent(**values)
 
 
@@ -55,7 +62,19 @@ def build_context_chain(
     *,
     resource_queue: ContextResourceQueue,
 ) -> ContextChain:
-    """忠实保留 Chain 中每个 Turn 的完整字段。"""
+    """将持久化 ContextChain ORM 实体投影为完整的领域 ContextChain 模型。
+
+    规则：
+    - 忠实保留 Chain 中每个 Node 所引用的 Turn 完整字段与关联资源引用。
+    - 注入独立维护的热资源队列（ContextResourceQueue）。
+
+    Args:
+        chain: 持久化 ContextChain ORM 实体对象。
+        resource_queue: 对应上下文链的热资源队列。
+
+    Returns:
+        ContextChain: 组装完成的领域模型实例。
+    """
     projected_nodes: list[ContextChainNodeContext] = []
 
     for node in chain.nodes:

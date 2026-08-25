@@ -1,4 +1,10 @@
-"""Agent Tool 的安全错误分类。"""
+"""Agent Tool 的安全错误分类与映射模块。
+
+职责说明：
+- 隔离底层系统内部异常栈，向 Agent/LLM 提供结构化且安全的错误分类结果。
+- 区分业务拒绝 (rejected，如权限不足、范围越界、状态冲突等不可重试错误) 与系统故障 (failed，如网络超时、服务不可用等可重试错误)。
+- 提供 `classify_tool_error` 与 `safe_tool_error_function`，确保敏感信息与堆栈不泄露给模型。
+"""
 
 from __future__ import annotations
 
@@ -6,25 +12,33 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
-
+# 工具执行终态分类：rejected（业务/权限拒绝）或 failed（系统故障）
 ToolOutcome = Literal["rejected", "failed"]
 
 
 class AgentToolPermissionError(PermissionError):
-    """调用上下文缺少 Tool 所需权限。"""
+    """调用上下文缺少 Tool 所需权限时抛出的异常。"""
 
 
 class AgentToolScopeError(PermissionError):
-    """Tool 请求超出当前 Agent Run 的授权资源范围。"""
+    """Tool 请求超出当前 Agent Run 授权资源范围时抛出的异常。"""
 
 
 class ToolNotAvailableError(LookupError):
-    """指定角色的 Catalog 未注册目标 Tool。"""
+    """指定角色的 Catalog 未注册目标 Tool 时抛出的异常。"""
 
 
 @dataclass(frozen=True)
 class ToolErrorDetails:
-    """可以安全返回给模型的错误语义。"""
+    """可以安全返回给 Agent 模型的结构化错误语义对象。
+
+    属性:
+        outcome: 终态分类（rejected 或 failed）。
+        result_code: 机器可读的稳定错误结果码（如 permission_denied, document_not_found 等）。
+        message: 面向模型或上层调用方的安全中文描述信息。
+        retryable: 是否建议进行自动重试。
+        resource_refs: 关联的业务资源引用标识列表。
+    """
 
     outcome: ToolOutcome
     result_code: str
@@ -34,9 +48,19 @@ class ToolErrorDetails:
 
 
 def _is_retryable(error: Exception, status_code: int | None) -> bool:
+    """根据 HTTP 状态码或底层异常链判断是否属于可重试的临时故障。
+
+    参数:
+        error: 捕获的原始异常对象。
+        status_code: 可选的 HTTP 状态码。
+
+    返回:
+        bool: 若为可重试错误（如 502/503/504、超时或连接断开）返回 True，否则返回 False。
+    """
     if status_code in {502, 503, 504}:
         return True
 
+    # 沿异常链向上回溯检查根本原因
     current: BaseException | None = error
     visited: set[int] = set()
     while current is not None and id(current) not in visited:
@@ -52,7 +76,22 @@ def classify_tool_error(
     *,
     resource_refs: list[str],
 ) -> ToolErrorDetails:
-    """把应用拒绝和系统失败映射为稳定、安全的 Tool 结果。"""
+    """将应用业务拒绝或底层系统异常分类并映射为安全的 ToolErrorDetails。
+
+    分类逻辑：
+    1. `AgentToolPermissionError` -> rejected, permission_denied, retryable=False。
+    2. `AgentToolScopeError` -> rejected, task_scope_violation, retryable=False。
+    3. HTTP 4xx 客户端错误 -> rejected, 映射对应业务码（如 404 document_not_found, 409 document_state_conflict 等），retryable=False。
+    4. 其余未知/系统异常 -> failed, tool_execution_failed, 根据网络/超时判定 retryable。
+
+    参数:
+        error: 捕获的异常对象。
+        resource_refs: 关联资源引用列表。
+
+    返回:
+        ToolErrorDetails: 包含安全错误描述与重试标志的对象。
+    """
+    # 1. 权限不足拦截
     if isinstance(error, AgentToolPermissionError):
         return ToolErrorDetails(
             outcome="rejected",
@@ -62,6 +101,7 @@ def classify_tool_error(
             resource_refs=resource_refs,
         )
 
+    # 2. 授权资源范围越界拦截
     if isinstance(error, AgentToolScopeError):
         return ToolErrorDetails(
             outcome="rejected",
@@ -71,6 +111,7 @@ def classify_tool_error(
             resource_refs=resource_refs,
         )
 
+    # 3. HTTP 4xx 业务拒绝映射
     status_code = getattr(error, "status_code", None)
     if isinstance(status_code, int) and 400 <= status_code < 500:
         result_codes = {
@@ -95,6 +136,7 @@ def classify_tool_error(
             resource_refs=resource_refs,
         )
 
+    # 4. 系统执行故障分类与重试判定
     return ToolErrorDetails(
         outcome="failed",
         result_code="tool_execution_failed",
@@ -105,7 +147,15 @@ def classify_tool_error(
 
 
 def safe_tool_error_function(_context, _error: Exception) -> str:
-    """处理 SDK 参数解析等外围异常时，不向模型暴露原始错误。"""
+    """处理 SDK 参数解析等外围异常时，向模型输出安全的 JSON 错误格式。
+
+    参数:
+        _context: SDK 提供的运行上下文。
+        _error: 参数解析异常对象。
+
+    返回:
+        str: 序列化后的安全 JSON 错误字符串。
+    """
     return json.dumps(
         {
             "outcome": "rejected",

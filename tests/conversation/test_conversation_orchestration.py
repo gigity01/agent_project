@@ -1,4 +1,15 @@
-"""Conversation Coordinator 的 Planning 状态分派测试。"""
+"""Conversation 协调用例（SendConversationMessageUseCase）状态分派与业务流转测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 规划成功（PlanStatus.READY）：
+   - 协调器接收到已发布的 Plan，直接返回 status="processing" 与关联 task_ids，不内联执行 Task（由独立 Runtime Worker 异步执行），且不调用 complete_turn。
+2. 能力不支持（PlanStatus.UNSUPPORTED）：
+   - 规划判定能力不支持时，立即调用 context_service.complete_turn 完成当前 Turn，回写助手回答并保留已有链归属。
+3. 澄清请求（PlanStatus.NEEDS_CLARIFICATION）：
+   - 规划产生澄清请求时，返回 status="needs_clarification" 与澄清问题，保持当前源 Turn 为 open 状态（不调用 complete_turn）。
+4. 澄清回答（source_turn_id 回复）：
+   - 当用户提交澄清回答时，复用原有 source_turn_id，不重复运行 Context 路由，直接写入澄清输入并触发 Replan，返回 retry_pending。
+"""
 
 from __future__ import annotations
 
@@ -20,6 +31,7 @@ from app.modules.planning.domain.enums import PlanStatus
 def _selection(
     relevant_chain_ids: list[str] | None = None,
 ) -> ContextSelectionResult:
+    """构造测试用 ContextSelectionResult 上下文选择结果对象。"""
     relevant_chain_ids = relevant_chain_ids or []
     return ContextSelectionResult(
         conversation_id="conversation-1",
@@ -34,7 +46,10 @@ def _selection(
 
 
 class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
+    """验证 SendConversationMessageUseCase 在各类 Planner 输出状态下的协调编排逻辑。"""
+
     def setUp(self) -> None:
+        """初始化 ContextService、RunPlanning 与 AnswerClarification 的模拟替身。"""
         self.context = mock.Mock()
         self.context.send_message = mock.AsyncMock(return_value=_selection())
         self.context.complete_turn = mock.AsyncMock()
@@ -49,6 +64,7 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_ready_returns_processing_without_running_tasks_inline(self) -> None:
+        """验证 Plan 处于 READY 状态时，协调器返回 processing 并保留任务由 Worker 消费，不内联执行或提前完成 Turn。"""
         self.planning.execute.return_value = RunPlanningResult(
             plan_id="plan-1",
             turn_id="turn-1",
@@ -67,6 +83,7 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
         self.context.complete_turn.assert_not_awaited()
 
     async def test_unsupported_completes_current_turn(self) -> None:
+        """验证 Plan 处于 UNSUPPORTED 状态时，协调器直接完成当前 Turn 并返回 unsupported 状态。"""
         self.context.send_message.return_value = _selection(["chain-a"])
         self.planning.execute.return_value = RunPlanningResult(
             plan_id="plan-unsupported",
@@ -91,6 +108,7 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(command.attribution.create_new_chain)
 
     async def test_clarification_question_keeps_source_turn_open(self) -> None:
+        """验证 Plan 处于 NEEDS_CLARIFICATION 状态时，返回澄清问题并保持源 Turn 处于未完成状态。"""
         self.planning.execute.return_value = RunPlanningResult(
             plan_id="plan-question",
             turn_id="turn-1",
@@ -115,6 +133,7 @@ class ConversationOrchestrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_clarification_answer_reuses_source_turn_and_queues_replan(
         self,
     ) -> None:
+        """验证用户回复澄清答案时复用 source_turn_id，直接调用 AnswerClarification 并触发 Replan 流程。"""
         self.answer.execute.return_value = "plan-question"
 
         result = await self.use_case.execute(
