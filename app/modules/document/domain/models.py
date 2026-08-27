@@ -74,7 +74,7 @@ class ChunkBuildInput:
 class ParentBlockData:
     """内存中尚未持久化的父级语义块（Parent Block）数据。
 
-    父块承载较大颗粒度的完整语义上下文（如一个完整的标题章节或段落组），供检索重排或大模型生成时引用。
+    父块承载较大颗粒度的完整语义上下文（如完整标题章节或段落组），为后续检索、重排或生成能力保留引用单元。
 
     Attributes:
         block_type: 父块类型（如 'section', 'paragraph_group', 'table_group' 等）。
@@ -97,9 +97,10 @@ class ParentBlockData:
 
 @dataclass
 class ChildChunkData:
-    """内存中尚未持久化、用于向量化检索的子切块（Child Chunk）数据。
+    """内存中尚未持久化、用于生成向量索引的子切块（Child Chunk）数据。
 
-    子块由父块进一步细分切分而成，用于精确的 Embedding 计算与高维向量相似度检索。
+    子块由父块进一步细分而成，用于 Embedding 计算与 Qdrant 向量索引；
+    当前项目尚未提供检索、召回或重排 API。
 
     Attributes:
         content: 子块原始正文内容。

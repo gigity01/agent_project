@@ -1,8 +1,8 @@
-"""Context 路由选择与 Conversation 并发锁的结构化事件日志记录模块。
+"""Context Selection 与 Conversation 并发锁的结构化事件日志记录模块。
 
 职责说明：
-- 提供 `ContextEventLogger` 类，统一以非阻断的 JSONL 事件记录 Context Agent 路由判定、Conversation 分布式锁获取/释放及热资源队列变更事件。
-- 支持日志分析器聚合分析路由命中率、降级频率与锁竞争耗时。
+- 提供 `ContextEventLogger` 类，统一以非阻断的 JSONL 事件记录 Context Selection、Conversation 分布式锁获取/释放及热资源队列变更事件。
+- 支持分析 Selection 的 no_context / multi_context 分布、非法输出与锁竞争耗时。
 """
 
 from typing import Any
@@ -36,7 +36,7 @@ class ContextEventLogger:
         """写入单条 Context 子系统事件日志。
 
         参数:
-            event: 事件名称（如 `context_route_decision`、`conversation_lock_acquired`）。
+            event: 事件名称（如 `context_selection_completed`、`context_route_lock_acquired`）。
             level: 日志级别（`info`、`warning`、`error`）。
             **fields: 事件附加字段键值对。
 

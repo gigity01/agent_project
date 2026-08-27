@@ -17,7 +17,7 @@ def build_read_set_fallback_attribution(
     - 若 relevant_chain_ids 为空，说明无历史上下文关联，将当前 Turn 归因至一条新创建的上下文链（create_new_chain=True）。
 
     Args:
-        relevant_chain_ids: 路由命中的历史上下文链 ID 列表。
+        relevant_chain_ids: Context Selection 选中的历史链 ID 列表（Read Set）。
         new_chain_id: 当需要创建新链时预分配的链 ID（可选）。
 
     Returns:

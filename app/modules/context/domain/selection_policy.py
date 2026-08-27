@@ -1,4 +1,4 @@
-"""Context Selection 路由选择决策的纯领域校验与派生策略。"""
+"""Context Selection 历史 Read Set 的纯领域校验与模式派生策略。"""
 
 from __future__ import annotations
 

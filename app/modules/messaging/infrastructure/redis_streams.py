@@ -62,7 +62,7 @@ class RedisStreamWorker:
     """Redis Streams 消费者 Worker。
 
     由独立 Worker 进程循环调用，不挂载到 FastAPI lifespan。
-    采用 XAUTOCLAIM 与 XREADGROUP 保证消息的不丢失与分布式消费接管。
+    采用 XAUTOCLAIM 与 XREADGROUP 支持 pending 消息恢复与跨实例消费接管。
     """
 
     def __init__(

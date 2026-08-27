@@ -1,6 +1,6 @@
 """CompleteTask 显式 Application 用例入口。
 
-提供在短事务中完成 Task 状态标记、产物落盘与后续事件触发的用例封装。
+提供在短事务中完成 Task 状态、执行结果与后续事件持久化的用例封装。
 """
 
 from app.modules.task_runtime.application.dto import TaskSnapshot
@@ -23,7 +23,7 @@ class CompleteTaskUseCase:
         output_json: dict,
         resource_refs: list[str],
     ) -> None:
-        """执行 Task 成功落盘与状态流转。
+        """执行 Task 成功结果持久化与状态流转。
 
         Args:
             snapshot: 任务 Claim 快照。

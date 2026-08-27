@@ -128,11 +128,11 @@ class ContextChain(BaseModel):
 
 
 class ContextSelectionDecision(BaseModel):
-    """Context Agent 做出的历史读取集合路由决策。
+    """Context Agent 做出的历史 Context Read Set 选择。
 
     Attributes:
-        relevant_chain_ids: 命中的历史上下文链 ID 列表（Read Set）。
-        reason_summary: 路由决策的理由说明。
+        relevant_chain_ids: 选中的历史上下文链 ID 列表（Read Set）。
+        reason_summary: 历史读取集合选择依据摘要。
     """
 
     model_config = ConfigDict(extra="forbid")

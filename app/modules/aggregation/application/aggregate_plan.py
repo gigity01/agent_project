@@ -26,7 +26,7 @@ class _AggregationSnapshot:
     Attributes:
         turn_id: 关联的 ConversationTurn 标识。
         task_ids: Plan 下包含的所有 Task 标识列表。
-        relevant_chain_ids: 该 Turn 路由命中的上下文链 ID 列表。
+        relevant_chain_ids: Context Selection 为该 Turn 选中的历史链 ID 列表（Read Set）。
         summaries: 各 Task 的执行摘要字符串列表（格式为 `{capability_code}: {output_json}`）。
         resource_refs: 各 Task 执行过程中产生或引用的资源唯一引用列表（稳定去重）。
     """

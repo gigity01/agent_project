@@ -119,7 +119,7 @@ EMBEDDING_BATCH_SIZE: Final[int] = environment.get_int_env(
 # ----------------------------------------------------------------------
 # 6. 大语言模型服务 (DeepSeek Agent LLM)
 # ----------------------------------------------------------------------
-# 用于 Context 路由选择、Planner 任务编排与 Document Executor Agents。
+# 用于历史 Context Read Set 选择、Planner 任务编排与 Document Executor Agents。
 DEEPSEEK_API_KEY: Final[str | None] = environment.get_optional_env(
     "DEEPSEEK_API_KEY"
 )

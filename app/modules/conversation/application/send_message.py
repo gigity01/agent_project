@@ -86,7 +86,7 @@ class SendConversationMessageUseCase:
                 status="retry_pending",
             )
 
-        # 分支 2：普通完整用户消息，执行上下文路由选择
+        # 分支 2：普通完整用户消息，执行历史 Context Read Set 选择
         selection = await self._context_service.send_message(
             SendMessageCommand(
                 conversation_id=command.conversation_id,

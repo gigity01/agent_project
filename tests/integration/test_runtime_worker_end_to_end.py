@@ -4,7 +4,7 @@
 1. 异步任务编排与可靠消息闭环：
    - HTTP Message 接入 -> Context 路由选择 -> Planner 发布 Plan、Task DAG 与 Outbox Event (`runtime.plan_wakeup`)。
    - Outbox Publisher 扫描 Outbox 投递至 Redis Stream；
-   - 独立 Runtime Worker Consumer 从 Redis Stream 消费事件，通过 Inbox 去重保证 Exactly-Once 语义。
+   - Redis Stream 提供至少一次投递，业务处理方通过 Inbox 与状态机幂等抑制已完成事件的重复执行。
 2. Task 执行与三段式短事务边界：
    - Claim 阶段：严格按 DAG 依赖关系领取 Task，写入 execution 快照与 operation ownership；
    - 事务外 Executor：分派至 capability-scoped Agent Executor 或 deterministic 后备 Executor；

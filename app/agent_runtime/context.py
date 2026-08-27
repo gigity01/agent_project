@@ -105,7 +105,7 @@ class DocumentToolServices:
 class ContextToolServices:
     """Context 模块暴露给 Tool 层的只读 Application Use Case 集合容器。
 
-    包含上下文链、节点历史、关联资源与路由决策记录的只读查询能力。
+    包含上下文链、节点历史、关联资源与 Context Selection 记录的只读查询能力。
     """
 
     query_service: ContextQueryService | None = None

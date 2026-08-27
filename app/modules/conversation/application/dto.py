@@ -30,12 +30,12 @@ class SendConversationMessageCommand(BaseModel):
 
 
 class ContextSelectionMetadata(BaseModel):
-    """上下文路由选择结果元数据。
+    """Planner 历史 Context Read Set 选择结果元数据。
 
     Attributes:
-        selection_mode: 派生的上下文选择模式（single_match / multi_match / new_chain 等）。
-        relevant_chain_ids: 本次路由判定命中的历史上下文链 ID 列表（Read Set）。
-        reason_summary: Context Agent 做出的路由归因决策理由摘要。
+        selection_mode: 派生的选择模式（no_context / single_context / multi_context）。
+        relevant_chain_ids: 本次选中的历史上下文链 ID 列表（Read Set）。
+        reason_summary: Context Agent 给出的历史读取集合选择依据摘要。
     """
 
     selection_mode: ContextSelectionMode
@@ -53,7 +53,7 @@ class SendConversationMessageResult(BaseModel):
         status: 当前处理状态（processing / unsupported / needs_clarification / retry_pending / completed / failed）。
         assistant_message: 当处于 needs_clarification、unsupported 或 failed 时的即时助手回复或错误信息。
         task_ids: 规划生成的 Task 标识列表。
-        context_selection: 上下文路由选择元数据。
+        context_selection: 历史 Context Read Set 选择元数据。
     """
 
     conversation_id: str

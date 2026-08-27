@@ -1,4 +1,4 @@
-"""基于 Redis 的 Conversation 级 Context 路由短锁基础设施实现。"""
+"""基于 Redis 的 Conversation 级 Context 互斥短锁基础设施实现。"""
 
 from __future__ import annotations
 
@@ -19,11 +19,11 @@ ConversationRouteLockUnavailable = ConversationLockUnavailable
 
 
 class ConversationRouteLockManager:
-    """使用应用级共享 Redis 客户端串行化 Context 路由的锁管理器。
+    """使用应用级共享 Redis 客户端串行化 Context Selection 与完成写回。
 
     设计原则：
     - 粒度：按 conversation_id 隔离（Key: `ctx:{conversation_id}:route:lock`）。
-    - 短锁策略：仅在执行路由判定与更新上下文短事务期间持有，避免长期占用。
+    - 使用范围：保护 Selection 读取集合判定，以及完成阶段的 Attribution、Node 和资源写回。
     - 超时控制：配置独立的 lock_timeout（锁最大持有时间）与 blocking_timeout（等待获取锁最大等待时间）。
     """
 

@@ -30,7 +30,7 @@ class SelectedContextPackage(BaseModel):
         current_turn_id: 本轮分配的 Turn ID。
         current_user_input: 用户原始输入文本。
         context_chains: 命中的上下文链列表（包含节点与资源）。
-        selection_decision: Context Agent 路由选择决策。
+        selection_decision: Context Agent 历史 Read Set 选择。
     """
 
     current_turn_id: str

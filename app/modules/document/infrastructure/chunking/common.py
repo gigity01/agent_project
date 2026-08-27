@@ -235,7 +235,7 @@ def build_embedding_text(
     section_path: list[str] | None,
     content: str,
 ) -> str:
-    """将章节面包屑标题路径拼入待向量化文本，提升检索召回语义的完整性。
+    """将章节面包屑标题路径拼入待向量化文本，增强向量索引的语义上下文。
 
     注意：子块的 content 字段仍保存纯净的正文原始切片；
     仅有 embedding_text 拼接了前缀 '标题路径：...\\n正文：...'。

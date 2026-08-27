@@ -16,19 +16,19 @@ from app.modules.context.domain.models import (
 
 
 class ContextRouterPort(Protocol):
-    """上下文路由器抽象端口。"""
+    """历史 Context Read Set 选择器抽象端口。"""
 
     async def route(
         self,
         agent_input: ContextAgentInput,
     ) -> ContextSelectionDecision:
-        """调用上下文路由判定，返回当前消息所关联的历史链读取集合（Read Set）。
+        """选择 Planner 理解当前消息所需的历史链读取集合（Read Set）。
 
         Args:
             agent_input: 包含当前用户输入与候选未归档链的完整输入。
 
         Returns:
-            ContextSelectionDecision: 路由决策结果。
+            ContextSelectionDecision: 历史读取集合选择结果。
         """
 
 
@@ -39,7 +39,7 @@ class ConversationLockPort(Protocol):
         self,
         conversation_id: str,
     ) -> AsyncContextManager[None]:
-        """获取指定会话的异步并发分布式短锁，用于串行化路由决策。
+        """获取指定会话的异步分布式短锁，用于串行化 Context Selection 与完成写回。
 
         Args:
             conversation_id: 会话唯一标识。

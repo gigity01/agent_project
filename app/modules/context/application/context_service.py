@@ -91,11 +91,11 @@ class ContextService:
     """保持 Conversation Context 变更串行，并划分短数据库事务的核心应用服务。
 
     主要职责：
-    1. 路由阶段（send_message）：
+    1. Context Selection 阶段（send_message）：
        - 获取会话级 Redis 短锁，防止并发交互导致链状态分叉。
        - 短事务创建 Turn（ROUTING 状态）并读取当前会话的所有未归档链。
        - 从 Redis（或 MySQL 预热）注入各链的有界热资源队列（FIFO）。
-       - 调用 Context Agent Router 进行关联性判定，并经由领域策略（SelectionPolicy）校验与保序去重。
+       - 调用 Context Agent 选择历史 Read Set，并经由 SelectionPolicy 校验与保序去重。
        - 短事务持久化 ContextSelectionRecord，将 Turn 推进至 CONTEXT_READY 状态。
     2. 完成阶段（complete_turn）：
        - 在同一短事务内：更新 Turn（COMPLETED 状态）、为归属链建立 ContextChainNode、追加资源事件并递增 resource_version。
@@ -139,18 +139,18 @@ class ContextService:
         """创建唯一 Turn，并持久化 Planner 所需的历史读取集合。
 
         主流程：
-        1. 获取当前 Conversation 的 Redis 短分布式锁，串行化并发路由。
+        1. 获取当前 Conversation 的 Redis 短分布式锁，串行化并发 Selection。
         2. 短事务内创建 Turn（状态为 ROUTING）并加载该会话全部未归档链。
         3. 从 Redis（或 MySQL 兜底预热）为每条链注入热资源队列。
-        4. 调用 Context Agent Router（DeepSeek 或确定性策略）进行上下文判定。
+        4. 调用 Context Agent（DeepSeek 或确定性策略）选择历史 Read Set。
         5. 执行严格的领域规则校验（validate_context_selection）。
-        6. 短事务保存路由决策记录，将 Turn 推进至 CONTEXT_READY 状态。
+        6. 短事务保存 Context Selection 记录，将 Turn 推进至 CONTEXT_READY 状态。
 
         Args:
             command: SendMessageCommand 命令对象。
 
         Returns:
-            ContextSelectionResult: 上下文路由选择结果。
+            ContextSelectionResult: 历史 Read Set 选择结果。
 
         Raises:
             RuntimeError: Context Agent Router 未配置。
@@ -203,7 +203,7 @@ class ContextService:
                     chains=chains,
                 )
 
-                # 4. 调用 LLM 路由器执行上下文模式判定
+                # 4. 调用 LLM 选择 Planner 所需的历史 Read Set
                 try:
                     llm_started_at = monotonic_ns()
                     raw_decision = await self._agent_router.route(agent_input)
@@ -227,7 +227,7 @@ class ContextService:
                         f"Context Agent 返回了非法 Selection: {exc}"
                     ) from exc
 
-                # 6. 短事务持久化路由决策并推进 Turn 状态至 CONTEXT_READY
+                # 6. 短事务持久化 Context Selection 并推进 Turn 状态至 CONTEXT_READY
                 await run_in_threadpool(
                     self._persist_context_selection,
                     turn_id,

@@ -2,9 +2,9 @@
 
 本模块实现了 Task Runtime 的核心状态机与执行循环：
 1. Claim 阶段（短事务）：抢占下一个依赖全部满足的 pending 任务，生成 execution_id 与 operation_id（ownership token），并在有陈旧执行时触发恢复。
-2. 事务外执行阶段：在能力指定的超时围栏内驱动 Executor（Agent 或后备确定性 Executor）。
+2. 事务外执行阶段：在能力超时边界内驱动 Executor；超时时请求取消，并等待内部副作用完全静默后才进入补偿。
 3. Completion / Compensation 阶段（短事务）：
-   - 成功：更新 Task 为 SUCCEEDED，产物落盘，追加下一个任务唤醒或 Plan 聚合事件。
+   - 成功：更新 Task 为 SUCCEEDED，持久化执行结果，追加下一个任务唤醒或 Plan 聚合事件。
    - 失败：进入确定性 Compensator 补偿，采用指数退避重试，补偿成功后释放 ownership 并进入 RETRY_WAIT 或触发 REPLAN_REQUESTED；若补偿超限则进入 COMPENSATION_LOCKED 锁定。
 """
 
@@ -106,7 +106,7 @@ class TaskRuntimeService:
 
         三段式主流程：
         1. Claim（短事务）：抢占下一个依赖已满足的 pending 任务，生成 execution_id / operation_id；或发现需要补偿的执行。
-        2. 事务外执行：调用能力绑定的 Executor（Agent 或后备确定性 Executor），严格在能力指定的超时时间内运行。
+        2. 事务外执行：调用能力绑定的 Executor；超时时请求取消，并在 Executor 静默排空后传播取消。
         3. Completion / Failure / Compensation（短事务）：
            - 成功：更新 Task 为 succeeded，追加 Outbox 事件（下一个 Task 唤醒或 Plan 聚合）。
            - 失败：进入补偿流程，补偿成功后根据重试次数决定重试或发起 Replan。

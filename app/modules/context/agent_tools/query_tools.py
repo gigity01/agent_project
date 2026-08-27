@@ -327,7 +327,7 @@ def _list_context_chain_resources(context: AgentToolContext, query):
 
 
 def _list_context_selection_records(context: AgentToolContext, query):
-    """分页查询当前 Turn 的上下文路由选择决策记录。
+    """分页查询当前 Turn 的 Context Selection Read Set 记录。
 
     Args:
         context: AgentTool 上下文对象。

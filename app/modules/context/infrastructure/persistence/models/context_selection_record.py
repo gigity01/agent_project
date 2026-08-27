@@ -24,8 +24,8 @@ class ContextSelectionRecord(Base):
 
     设计原则：
     - (current_turn_id) 唯一约束：确保每个 Turn 仅产生一条经过合法性校验的 Context Selection 事实。
-    - relevant_chain_ids: 记录路由命中的所有历史链 ID。
-    - selection_mode: 确定性推导的路由模式（如 single_match, multi_match, new_chain 等）。
+    - relevant_chain_ids: 记录选中的所有历史链 ID（Read Set）。
+    - selection_mode: 按 Read Set 规模确定性派生（no_context / single_context / multi_context）。
     """
 
     __tablename__ = "context_selection_records"

@@ -8,7 +8,7 @@ from enum import Enum
 class ContextSelectionMode(str, Enum):
     """Planner 历史上下文读取集合的派生规模模式。
 
-    - NO_CONTEXT: 无历史上下文关联（创建新链）。
+    - NO_CONTEXT: 历史读取集合为空；最终链归属由下游 Attribution 决定。
     - SINGLE_CONTEXT: 关联单条已有历史链。
     - MULTI_CONTEXT: 同时关联多条已有历史链。
     """

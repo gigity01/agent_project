@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from agents import (
     Agent,
@@ -73,7 +73,7 @@ class _PlannerWorkflowOutput(TypedDict):
     final_result: Any
 
 
-class _PlannerWorkflowState(TypedDict, total=False):
+class _PlannerWorkflowState(TypedDict):
     """LangGraph Planner 工作流节点间流转的内部完整状态字典。
 
     字段:
@@ -86,11 +86,11 @@ class _PlannerWorkflowState(TypedDict, total=False):
     """
 
     planner_input: PlannerContextInput
-    evidence_rounds: list[EvidenceRound]
-    evidence_history: list[Any]
-    gap_result: Any
-    gap_decision: GapDecision
-    final_result: Any
+    evidence_rounds: NotRequired[list[EvidenceRound]]
+    evidence_history: NotRequired[list[Any]]
+    gap_result: NotRequired[Any]
+    gap_decision: NotRequired[GapDecision]
+    final_result: NotRequired[Any]
 
 
 class ClarificationHandoffInput(BaseModel):

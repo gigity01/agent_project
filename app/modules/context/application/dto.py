@@ -14,7 +14,7 @@ from app.modules.context.domain.models import (
 
 
 class ContextAgentInput(BaseModel):
-    """Context Router 单次路由判定所需的完整输入。
+    """Context Agent 单次历史 Read Set 选择所需的完整输入。
 
     Attributes:
         conversation_id: 会话唯一标识。
@@ -51,7 +51,7 @@ class ContextSelectionResult:
         turn_id: 创建并推进至 context_ready 状态的 Turn ID。
         message: 用户原始输入文本。
         context_chains: 命中的上下文链领域对象列表。
-        decision: Context Agent 产出的路由决策。
+        decision: Context Agent 产出的历史 Read Set 选择。
     """
 
     conversation_id: str

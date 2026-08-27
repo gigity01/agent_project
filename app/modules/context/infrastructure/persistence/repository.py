@@ -349,7 +349,7 @@ class ContextRepository:
         self,
         selection_record: ContextSelectionRecord,
     ) -> ContextSelectionRecord:
-        """创建并插入 ContextSelectionRecord 路由决策记录。
+        """创建并插入 ContextSelectionRecord 历史 Read Set 事实记录。
 
         Args:
             selection_record: ContextSelectionRecord ORM 实体。
