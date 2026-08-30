@@ -1,18 +1,4 @@
-"""应用全局文件存储、外部服务客户端与处理流水线参数配置模块。
-
-职责说明：
-- 声明并导出系统各模块运行所需的全部静态常量与环境变量配置项。
-- 涵盖配置分组：
-  1. 项目根路径与 `.env` 环境变量加载；
-  2. 原始文件、Docling 中间文本、清洗文本与 Staging 暂存目录配置及上传约束；
-  3. 文档生命周期默认值与编号生成规则；
-  4. MySQL 关系数据库与 Qdrant 向量数据库连接配置；
-  5. DashScope (Qwen) Embedding 向量模型与批处理参数；
-  6. DeepSeek LLM 提供者参数（API Key、Base URL、超时与重试）；
-  7. Redis 连接、超时、Conversation 路由锁租期与热资源队列容量；
-  8. Docling 复杂格式解析服务地址与转换超时；
-  9. 可观测性 JSONL 结构化日志目录路径定义。
-"""
+"""应用全局文件存储、外部服务客户端与处理流水线参数配置模块。"""
 
 from pathlib import Path
 from typing import Final
@@ -191,7 +177,7 @@ LOCAL_TABLE_SOURCE_TYPES: Final[set[str]] = {"csv"}
 # Docling 转换服务地址与接口端点
 DOCLING_SERVER_URL: Final[str] = environment.get_env(
     "DOCLING_SERVER_URL",
-    "http://115.29.238.225:5001",
+    "http://127.0.0.1:5001",
 )
 DOCLING_CONVERT_ENDPOINT: Final[str] = f"{DOCLING_SERVER_URL}/v1/convert/file"
 # Docling 单文档转换超时时间（秒）及目标输出格式
