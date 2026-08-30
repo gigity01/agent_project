@@ -51,12 +51,7 @@ from app.modules.context.domain.selection_policy import (
 
 @dataclass(frozen=True)
 class _LoadedContextChain:
-    """内部加载的上下文链及其资源版本快照。
-
-    Attributes:
-        chain: 上下文链领域对象。
-        resource_version: 数据库当前资源版本号。
-    """
+    """内部加载的上下文链及其资源版本快照。"""
 
     chain: ContextChain
     resource_version: int
@@ -64,43 +59,19 @@ class _LoadedContextChain:
 
 @dataclass(frozen=True)
 class _CompleteTurnTransactionResult:
-    """完成 Turn 数据库事务执行结果内部结构。
-
-    Attributes:
-        response: 对外返回的 CompleteTurnResult 对象。
-        resource_refreshes: 事务提交成功后待应用到 Redis 的资源增量列表。
-    """
+    """完成 Turn 数据库事务执行结果内部结构。"""
 
     response: CompleteTurnResult
     resource_refreshes: list[ContextResourceQueueRefresh]
 
 
 def _new_id(prefix: str) -> str:
-    """生成带有指定前缀的 UUID 字符串。
-
-    Args:
-        prefix: ID 前缀（例如 "turn", "selection", "chain", "node"）。
-
-    Returns:
-        str: 格式为 `{prefix}_{hex}` 的唯一标识字符串。
-    """
+    """生成带有指定前缀的 UUID 字符串。"""
     return f"{prefix}_{uuid4().hex}"
 
 
 class ContextService:
-    """保持 Conversation Context 变更串行，并划分短数据库事务的核心应用服务。
-
-    主要职责：
-    1. Context Selection 阶段（send_message）：
-       - 获取会话级 Redis 短锁，防止并发交互导致链状态分叉。
-       - 短事务创建 Turn（ROUTING 状态）并读取当前会话的所有未归档链。
-       - 从 Redis（或 MySQL 预热）注入各链的有界热资源队列（FIFO）。
-       - 调用 Context Agent 选择历史 Read Set，并经由 SelectionPolicy 校验与保序去重。
-       - 短事务持久化 ContextSelectionRecord，将 Turn 推进至 CONTEXT_READY 状态。
-    2. 完成阶段（complete_turn）：
-       - 在同一短事务内：更新 Turn（COMPLETED 状态）、为归属链建立 ContextChainNode、追加资源事件并递增 resource_version。
-       - 事务提交后：将各链的资源增量刷新至 Redis 热队列，若失败则安全失效缓存。
-    """
+    """保持 Conversation Context 变更串行，并划分短数据库事务的核心应用服务。"""
 
     def __init__(
         self,
@@ -113,17 +84,7 @@ class ContextService:
         chain_mapper: ContextChainMapperPort,
         event_logger: Any | None = None,
     ) -> None:
-        """初始化 ContextService。
-
-        Args:
-            agent_router: ContextRouterPort 实例（如 DeepSeekRouter）。
-            route_lock_manager: ConversationLockPort 会话分布式锁管理器。
-            resource_service: ContextResourceService 资源管理服务。
-            uow_factory: UnitOfWork 工厂。
-            record_factory: ContextRecordFactoryPort ORM 工厂。
-            chain_mapper: ContextChainMapperPort 链映射器。
-            event_logger: 结构化可观测性日志记录器（可选）。
-        """
+        """初始化 ContextService。"""
         self._agent_router = agent_router
         self._route_lock_manager = route_lock_manager
         self._resource_service = resource_service
@@ -136,27 +97,7 @@ class ContextService:
         self,
         command: SendMessageCommand,
     ) -> ContextSelectionResult:
-        """创建唯一 Turn，并持久化 Planner 所需的历史读取集合。
-
-        主流程：
-        1. 获取当前 Conversation 的 Redis 短分布式锁，串行化并发 Selection。
-        2. 短事务内创建 Turn（状态为 ROUTING）并加载该会话全部未归档链。
-        3. 从 Redis（或 MySQL 兜底预热）为每条链注入热资源队列。
-        4. 调用 Context Agent（DeepSeek 或确定性策略）选择历史 Read Set。
-        5. 执行严格的领域规则校验（validate_context_selection）。
-        6. 短事务保存 Context Selection 记录，将 Turn 推进至 CONTEXT_READY 状态。
-
-        Args:
-            command: SendMessageCommand 命令对象。
-
-        Returns:
-            ContextSelectionResult: 历史 Read Set 选择结果。
-
-        Raises:
-            RuntimeError: Context Agent Router 未配置。
-            ConversationLockUnavailable: 会话锁不可用。
-            ContextRoutingError: 路由调用失败或输出非法。
-        """
+        """创建唯一 Turn，并持久化 Planner 所需的历史读取集合。"""
         if self._agent_router is None:
             raise RuntimeError("Context Agent Router 未配置")
 
@@ -315,31 +256,7 @@ class ContextService:
         turn_id: str,
         command: CompleteTurnCommand,
     ) -> CompleteTurnResult:
-        """按完成方提交的 Attribution 原子关联 Turn 与最终 Chain。
-
-        主流程：
-        1. 获取会话 ID 并持有会话级 Redis 短锁。
-        2. 短事务内执行 complete_turn：
-           - 校验 Turn 状态（处于 CONTEXT_READY 或 PROCESSING）。
-           - 根据 Attribution 关联已有链或创建新链。
-           - 为各归属链创建 ContextChainNode（仅引用 Turn，不复制文本）。
-           - 追加资源事件、更新资源状态并递增 resource_version。
-           - 标记 Turn 为 COMPLETED 并记录助手回答与完成时间。
-        3. 事务提交后，增量刷新 Redis 热资源队列；若刷新失败仅使缓存失效。
-
-        Args:
-            turn_id: 待完成的 Turn ID。
-            command: CompleteTurnCommand 完成命令。
-
-        Returns:
-            CompleteTurnResult: 包含完成后的 Turn 与关联链 ID 列表。
-
-        Raises:
-            ContextTurnNotFoundError: Turn 不存在。
-            ConversationLockUnavailable: 会话锁获取失败。
-            ContextConflictError: 状态冲突或归属错误。
-            ContextValidationError: 输入命令参数非法。
-        """
+        """按完成方提交的 Attribution 原子关联 Turn 与最终 Chain。"""
         conversation_id = await run_in_threadpool(
             self._get_turn_conversation_id,
             turn_id,
@@ -367,15 +284,7 @@ class ContextService:
         turn_id: str,
         command: SendMessageCommand,
     ) -> list[_LoadedContextChain]:
-        """在短数据库事务中创建 Turn 记录并读取当前会话的所有未归档上下文链。
-
-        Args:
-            turn_id: 新分配的 Turn ID。
-            command: SendMessageCommand 命令。
-
-        Returns:
-            list[_LoadedContextChain]: 加载的上下文链列表及其资源版本。
-        """
+        """在短数据库事务中创建 Turn 记录并读取当前会话的所有未归档上下文链。"""
         with self._uow_factory() as uow:
             uow.context.create_turn(
                 self._record_factory.conversation_turn(
@@ -408,16 +317,7 @@ class ContextService:
         conversation_id: str,
         decision: ContextSelectionDecision,
     ) -> None:
-        """在短数据库事务中复核并持久化上下文选择记录，将 Turn 推进为 CONTEXT_READY。
-
-        Args:
-            turn_id: Turn ID。
-            conversation_id: 会话 ID。
-            decision: 校验通过的上下文选择决策。
-
-        Raises:
-            RuntimeError: Turn 不存在、会话归属变化、状态非 ROUTING、选中链已归档或消失。
-        """
+        """在短数据库事务中复核并持久化上下文选择记录，将 Turn 推进为 CONTEXT_READY。"""
         with self._uow_factory() as uow:
             turn = uow.context.get_turn_for_update(turn_id)
             if turn is None:
@@ -470,11 +370,7 @@ class ContextService:
             uow.commit()
 
     def _mark_turn_failed(self, turn_id: str) -> None:
-        """若 Turn 仍处于 ROUTING 状态，则将其安全更新为 FAILED 终态。
-
-        Args:
-            turn_id: Turn ID。
-        """
+        """若 Turn 仍处于 ROUTING 状态，则将其安全更新为 FAILED 终态。"""
         with self._uow_factory() as uow:
             turn = uow.context.get_turn_for_update(turn_id)
             if (
@@ -488,14 +384,7 @@ class ContextService:
                 uow.commit()
 
     def _get_turn_conversation_id(self, turn_id: str) -> str | None:
-        """只读查询 Turn 所属的 conversation_id。
-
-        Args:
-            turn_id: Turn ID。
-
-        Returns:
-            str | None: 会话 ID，若 Turn 不存在则返回 None。
-        """
+        """只读查询 Turn 所属的 conversation_id。"""
         with self._uow_factory() as uow:
             turn = uow.context.get_turn(turn_id)
             return None if turn is None else turn.conversation_id
@@ -506,21 +395,7 @@ class ContextService:
         conversation_id: str,
         command: CompleteTurnCommand,
     ) -> _CompleteTurnTransactionResult:
-        """在单一短数据库事务中完成 Turn，创建节点并更新链与资源事实。
-
-        Args:
-            turn_id: Turn ID。
-            conversation_id: 会话 ID。
-            command: CompleteTurnCommand 命令。
-
-        Returns:
-            _CompleteTurnTransactionResult: 事务执行结果。
-
-        Raises:
-            ContextTurnNotFoundError: Turn 不存在。
-            ContextConflictError: 状态冲突或归属错误。
-            ContextValidationError: 输入命令参数非法。
-        """
+        """在单一短数据库事务中完成 Turn，创建节点并更新链与资源事实。"""
         with self._uow_factory() as uow:
             # 1. 锁定 Turn 并复核状态
             turn = uow.context.get_turn_for_update(turn_id)
@@ -707,26 +582,7 @@ class ContextService:
         target_chain_ids: list[str],
         turn_task_ids: list[str],
     ) -> dict[str, ChainTurnUpdate]:
-        """校验各链更新载荷的合法性与一致性。
-
-        校验规则：
-        1. 禁止针对同一 chain_id 提交多条更新。
-        2. 链更新目标必须在 target_chain_ids 范围内。
-        3. 涉及的 Task ID 必须在 Turn 的 task_ids 范围内。
-        4. 单链内禁止重复新增资源或重复移除资源。
-        5. 同一资源 Key 禁止在同一轮同时被刷新和显式移除。
-
-        Args:
-            updates: 下游提交的 ChainTurnUpdate 列表。
-            target_chain_ids: 本轮所有目标归属链 ID 集合。
-            turn_task_ids: 本轮所有执行成功的 Task ID 列表。
-
-        Returns:
-            dict[str, ChainTurnUpdate]: 以 chain_id 为键的更新载荷映射字典。
-
-        Raises:
-            ContextValidationError: 违反上述任一校验约束时抛出。
-        """
+        """校验各链更新载荷的合法性与一致性。"""
         target_set = set(target_chain_ids)
         turn_task_set = set(turn_task_ids)
         update_map: dict[str, ChainTurnUpdate] = {}
