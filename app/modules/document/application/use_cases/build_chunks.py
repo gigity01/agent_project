@@ -1,19 +1,4 @@
-"""构建文档切块应用用例：以短事务编排领取、执行与结果登记。
-
-流水线阶段 3：Build Chunks
-负责从 cleaned 文本构建层次化父语义块（ParentBlock）与可向量化子块（ChildChunk）：
-1. Claim 短事务：以行锁锁定 Document，复核状态必须为 processed（或满足无已有切块的 failed 状态重试条件），
-   更新为 chunking 状态并写入当前 operation_id 作为 ownership token。
-2. 事务外切块：
-   - 依据 cleaned 文本格式分发至对应的 Chunker（TextChunker, MarkdownChunker, CsvChunker）
-   - 构建父块（ParentBlockData）与子块（ChildChunkData），生成包含标题上下文的 embedding_text
-   - 严密校验切块结果（父子块非空、序号连续唯一、无孤立引用、embedding_text 非空）
-3. Finalize 短事务：再次锁定 Document 复核状态与 ownership，先批量删除旧 child chunks，
-   再批量删除旧 parent blocks，批量持久化新父块与新子块（初始 vector_status='pending'），
-   将 Document 推进为 chunked 并释放 ownership。
-
-若失败，由 BuildChunksCompensator 校验 ownership 并将 Document 置为 failed。
-"""
+"""构建文档切块应用用例：以短事务编排领取、执行与结果登记。"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,23 +46,7 @@ class ChunkingAbortedError(RuntimeError):
 
 @dataclass(frozen=True)
 class ChunkingContext:
-    """领取事务提交后传递给事务外切块计算阶段的不可变文档快照。
-
-    Attributes:
-        document_id: 文档自增 ID。
-        doc_code: 文档业务编码。
-        source_type: 原始文件类型。
-        cleaned_path: 清洗后文本文件绝对路径。
-        chunk_source_type: 清洗文本格式类型（如 'md', 'txt', 'csv'）。
-        document_title: 文档标题（用于丰富 embedding_text 上下文）。
-        kb_id: 所属知识库 ID。
-        domain_code: 业务领域编码。
-        business_scene: 业务场景标识。
-        version: 文档版本号。
-        process_metadata: 处理阶段附加元数据。
-        status_before: 领取前状态。
-        operation_id: 本次切块操作 ID。
-    """
+    """领取事务提交后传递给事务外切块计算阶段的不可变文档快照。"""
 
     document_id: int
     doc_code: str
@@ -96,29 +65,14 @@ class ChunkingContext:
 
 @dataclass(frozen=True)
 class ChunkingExecutionResult:
-    """事务外生成、等待在完成短事务中持久化的父子切块数据集合。
-
-    Attributes:
-        context: 切块上下文。
-        chunks: 切块器构建产出的父子块结果。
-    """
+    """事务外生成、等待在完成短事务中持久化的父子切块数据集合。"""
 
     context: ChunkingContext
     chunks: ChunkBuildResult
 
 
 def generate_parent_code(doc_code: str, block_index: int) -> str:
-    """为文档内的父语义块生成唯一且包含顺序的业务编号。
-
-    格式形如：PB_DOC_20260825_0001_ABC123
-
-    Args:
-        doc_code: 文档业务编码。
-        block_index: 父块序号（0-based）。
-
-    Returns:
-        生成的父块业务编码。
-    """
+    """为文档内的父语义块生成唯一且包含顺序的业务编号。"""
     return f"PB_{doc_code}_{block_index:04d}_{uuid4().hex[:6].upper()}"
 
 
@@ -127,18 +81,7 @@ def generate_chunk_code(
     parent_index: int,
     chunk_index: int,
 ) -> str:
-    """为父块内的子切块生成唯一且包含父子序号的业务编号。
-
-    格式形如：CK_DOC_20260825_0001_0002_ABC123
-
-    Args:
-        doc_code: 文档业务编码。
-        parent_index: 所属父块序号。
-        chunk_index: 子块序号。
-
-    Returns:
-        生成的子块业务编码。
-    """
+    """为父块内的子切块生成唯一且包含父子序号的业务编号。"""
     return (
         f"CK_{doc_code}_{parent_index:04d}_"
         f"{chunk_index:04d}_{uuid4().hex[:6].upper()}"
@@ -149,11 +92,7 @@ class BuildChunksUseCase:
     """在短事务与事务外切块引擎之间编排父块与子块构建的用例入口。"""
 
     def __init__(self, *, ports: DocumentApplicationPorts) -> None:
-        """初始化切块用例。
-
-        Args:
-            ports: 外部依赖端口容器。
-        """
+        """初始化切块用例。"""
         self._ports = ports
 
     def execute(
@@ -162,18 +101,7 @@ class BuildChunksUseCase:
         *,
         operation_context: DocumentOperationContext | None = None,
     ) -> BuildChunksResult:
-        """同步执行文档切块流程（Claim -> Execute -> Finalize）。
-
-        Args:
-            document_id: 待切块的文档 ID。
-            operation_context: 可选的操作上下文追踪信息。
-
-        Returns:
-            BuildChunksResult: 包含生成父子块数量的切块结果 DTO。
-
-        Raises:
-            DocumentApplicationError: 状态不合法（409）、未找到（404）或切块异常（400/500）。
-        """
+        """同步执行文档切块流程（Claim -> Execute -> Finalize）。"""
         return _build_document_chunks(
             document_id,
             ports=self._ports,
@@ -261,23 +189,7 @@ def _claim_chunking(
     operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> ChunkingContext:
-    """以行锁领取切块权，并立即提交 chunking 状态。
-
-    业务规则：
-    - 文档必须存在（404）
-    - 无未释放的 active_operation_id（409）
-    - 文档状态必须为 processed；若为 failed，必须满足无已有切块结果才允许从切块重试（已有切块必须走索引重试）
-    - 业务生命周期必须有效（active / scheduled）
-    - 存储状态必须为 active
-
-    Args:
-        document_id: 文档 ID。
-        operation_id: 本次操作唯一 ID。
-        ports: 端口容器。
-
-    Returns:
-        ChunkingContext: 领取成功后的不可变快照。
-    """
+    """以行锁领取切块权，并立即提交 chunking 状态。"""
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
 
@@ -369,16 +281,7 @@ def _execute_chunking(
     ports: DocumentApplicationPorts,
     chunk_logger: DocumentChunkLogger | None = None,
 ) -> ChunkingExecutionResult:
-    """在数据库事务外读取 cleaned 文件并调用 Chunker 生成父子块内存 DTO。
-
-    Args:
-        context: 切块上下文。
-        ports: 端口容器。
-        chunk_logger: 可选日志记录器。
-
-    Returns:
-        ChunkingExecutionResult: 切块执行结果。
-    """
+    """在数据库事务外读取 cleaned 文件并调用 Chunker 生成父子块内存 DTO。"""
     if not context.cleaned_path.exists():
         raise DocumentApplicationError(
             status_code=404,
@@ -411,21 +314,7 @@ def _execute_chunking(
 
 
 def _validate_chunk_build_result(chunks: ChunkBuildResult) -> None:
-    """严格校验切块结果的合法性，拒绝无法持久化或无法向量化的残缺结果。
-
-    校验项：
-    1. 必须生成至少一个父块与至少一个子块。
-    2. 父块 block_index 必须全局唯一。
-    3. 子块所属的父块索引必须全部存在于父块列表中。
-    4. 各父块内部的子块 chunk_index 必须唯一。
-    5. 所有子块的 embedding_text 必须为非空非空白字符串。
-
-    Args:
-        chunks: 待校验的切块结果。
-
-    Raises:
-        DocumentApplicationError: 校验不通过时抛出。
-    """
+    """严格校验切块结果的合法性，拒绝无法持久化或无法向量化的残缺结果。"""
     if not chunks.parents:
         raise DocumentApplicationError(
             status_code=400,
@@ -478,15 +367,7 @@ def _complete_chunking(
     *,
     ports: DocumentApplicationPorts,
 ) -> BuildChunksResult:
-    """在短事务中复核状态、删除旧块、持久化新父子块并推进状态到 chunked。
-
-    Args:
-        result: 切块执行结果。
-        ports: 端口容器。
-
-    Returns:
-        BuildChunksResult: 完成结果 DTO。
-    """
+    """在短事务中复核状态、删除旧块、持久化新父子块并推进状态到 chunked。"""
     context = result.context
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(context.document_id)
@@ -561,17 +442,7 @@ def _fail_chunking(
     operation_id: str,
     ports: DocumentApplicationPorts,
 ) -> FailureStateResult:
-    """仅在任务仍处于 chunking 且由指定 operation_id 持有时，标记为 failed 并释放 ownership。
-
-    Args:
-        document_id: 文档 ID。
-        error: 错误对象。
-        operation_id: 操作 ID。
-        ports: 端口容器。
-
-    Returns:
-        FailureStateResult: 状态变更快照。
-    """
+    """仅在任务仍处于 chunking 且由指定 operation_id 持有时，标记为 failed 并释放 ownership。"""
     del error
     with ports.uow_factory() as uow:
         document = uow.documents.get_by_id_for_update(document_id)
@@ -602,11 +473,7 @@ class BuildChunksCompensator:
     """回收指定切块 Operation 的 Document ownership 并标记失败的确定性补偿器。"""
 
     def __init__(self, *, ports: DocumentApplicationPorts) -> None:
-        """初始化切块补偿器。
-
-        Args:
-            ports: 端口容器。
-        """
+        """初始化切块补偿器。"""
         self._ports = ports
 
     def compensate(
@@ -615,15 +482,7 @@ class BuildChunksCompensator:
         document_id: int,
         operation_id: str,
     ) -> FailureStateResult:
-        """执行切块失败的补偿动作。
-
-        Args:
-            document_id: 文档 ID。
-            operation_id: 需补偿的操作 ID。
-
-        Returns:
-            FailureStateResult: 状态变更快照。
-        """
+        """执行切块失败的补偿动作。"""
         return _fail_chunking(
             document_id,
             RuntimeError("文档切块 Operation 需要补偿"),
@@ -638,16 +497,7 @@ def _build_parent_block(
     *,
     ports: DocumentApplicationPorts,
 ) -> Any:
-    """把事务外父块内存数据（ParentBlockData）转换为待持久化的 ORM 实体。
-
-    Args:
-        context: 切块上下文。
-        parent_data: 内存父块数据。
-        ports: 端口容器。
-
-    Returns:
-        持久化 ParentBlock 实体。
-    """
+    """把事务外父块内存数据（ParentBlockData）转换为待持久化的 ORM 实体。"""
     return ports.parent_block_factory(
         parent_code=generate_parent_code(
             doc_code=context.doc_code,
@@ -678,20 +528,7 @@ def _build_child_chunk(
     child_data: ChildChunkData,
     ports: DocumentApplicationPorts,
 ) -> Any:
-    """把事务外子块内存数据（ChildChunkData）转换为待持久化的 ORM 实体。
-
-    初始 vector_status 固定为 'pending'，等待向量索引阶段处理。
-
-    Args:
-        context: 切块上下文。
-        parent_id: 所属父块持久化自增 ID。
-        parent_index: 所属父块序号。
-        child_data: 内存子块数据。
-        ports: 端口容器。
-
-    Returns:
-        持久化 ChildChunk 实体。
-    """
+    """把事务外子块内存数据（ChildChunkData）转换为待持久化的 ORM 实体。"""
     return ports.child_chunk_factory(
         chunk_code=generate_chunk_code(
             doc_code=context.doc_code,
