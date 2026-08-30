@@ -1,11 +1,4 @@
-"""Planner Evidence、Gap 判断、Commit 及其 LangGraph 编排模块。
-
-职责说明：
-- 实现规划阶段（Planning Phase）的核心编排器 `PlannerAgentRunner`。
-- 使用进程内 LangGraph `StateGraph` 将物理隔离的两阶段取证 (Evidence Phase)、缺口判断 (GapHandler)、任务提交 (Commit Phase) 以及澄清生成 (Clarification Phase) 串联成严谨的状态机图。
-- Evidence Agent 开启最多 3 路并行取证 (`max_function_tool_concurrency=3`)，Commit Agent 关闭并行严格串行 (`max_function_tool_concurrency=1`)。
-- 确保数据库（Plan、Task、Turn、Outbox）是唯一事实源，模型无法直接越过校验修改状态。
-"""
+"""Planner Evidence、Gap 判断、Commit 及其 LangGraph 编排模块。"""
 
 from __future__ import annotations
 
@@ -53,11 +46,8 @@ from app.modules.planning.application.dto import (
 )
 from app.modules.planning.application.errors import PlanningRetryRequested
 
-# Planner 默认单次 Agent Run 最大轮次
 DEFAULT_PLANNER_MAX_TURNS = 12
-# Evidence 阶段最大并行 Tool 调用数
 PLANNER_EVIDENCE_MAX_FUNCTION_TOOL_CONCURRENCY = 3
-# Commit 阶段最大并行 Tool 调用数（严格串行）
 PLANNER_COMMIT_MAX_FUNCTION_TOOL_CONCURRENCY = 1
 
 
@@ -74,16 +64,7 @@ class _PlannerWorkflowOutput(TypedDict):
 
 
 class _PlannerWorkflowState(TypedDict):
-    """LangGraph Planner 工作流节点间流转的内部完整状态字典。
-
-    字段:
-        planner_input: 规划上下文输入。
-        evidence_rounds: 累积的取证轮次列表。
-        evidence_history: Evidence Agent Run 产生的原始对话消息列表（用于喂给 Commit Agent）。
-        gap_result: GapHandler Agent 的原始 RunResult。
-        gap_decision: 解析校验后的 GapDecision 决策对象。
-        final_result: 最终产出的 Agent Run 结果。
-    """
+    """LangGraph Planner 工作流节点间流转的内部完整状态字典。"""
 
     planner_input: PlannerContextInput
     evidence_rounds: NotRequired[list[EvidenceRound]]
@@ -94,14 +75,7 @@ class _PlannerWorkflowState(TypedDict):
 
 
 class ClarificationHandoffInput(BaseModel):
-    """转交 Clarification Agent 生成用户澄清问题时的结构化载荷。
-
-    属性:
-        clarification_kind: 澄清类型（resource、intent 或 missing_parameter）。
-        reason: 触发澄清的业务原因。
-        required_information: 需要用户回答的信息项列表。
-        known_resource_refs: 已知相关资源引用标识列表。
-    """
+    """转交 Clarification Agent 生成用户澄清问题时的结构化载荷。"""
 
     clarification_kind: Literal[
         "resource",
@@ -114,27 +88,14 @@ class ClarificationHandoffInput(BaseModel):
 
 
 class ClarificationAgentOutput(BaseModel):
-    """Clarification Agent 输出的单一自然语言澄清问题模型。
-
-    属性:
-        question: 面向用户的简洁、清晰且可直接回答的澄清提问。
-    """
+    """Clarification Agent 输出的单一自然语言澄清问题模型。"""
 
     question: str = Field(min_length=1, max_length=4000)
 
 
 @dataclass(frozen=True)
 class PlannerAgentRunner:
-    """使用进程内 StateGraph 编排 Evidence 取证、Gap 缺口判断与 Commit 提交的编排运行器。
-
-    状态机流转：
-    - `START` -> `collect_initial_evidence` (第一轮证据收集)
-    - -> 条件分支（全成功且无 gap 直接 `commit_plan`；否则 `assess_initial_gap`）
-    - -> `assess_initial_gap`（首轮缺口评估）
-    - -> 条件分支（COLLECT_MORE 则 `collect_follow_up_evidence`；其余走 `resolve_gap`）
-    - -> `collect_follow_up_evidence` (第二轮定向补查) -> `assess_final_gap` (终轮缺口评估) -> `resolve_gap`
-    - -> `commit_plan` / `resolve_gap` -> `END`
-    """
+    """使用进程内 StateGraph 编排 Evidence 取证、Gap 缺口判断与 Commit 提交的编排运行器。"""
 
     evidence_agent: Agent[AgentToolContext]
     gap_handler_agent: Agent[AgentToolContext]
@@ -157,15 +118,7 @@ class PlannerAgentRunner:
         planner_input: PlannerContextInput,
         context: AgentToolContext,
     ) -> Any:
-        """异步执行完整的 Planning 工作流状态图。
-
-        参数:
-            planner_input: 规划上下文输入，包含原始用户输入与授权的 Context 链列表。
-            context: 当前 Agent Run 的窄依赖工具调用上下文。
-
-        返回:
-            Any: 最终 Agent Run 的输出结果。
-        """
+        """异步执行完整的 Planning 工作流状态图。"""
         result = await self._workflow.ainvoke(
             {"planner_input": planner_input},
             context=context,
@@ -173,18 +126,13 @@ class PlannerAgentRunner:
         return result["final_result"]
 
     def _build_workflow(self) -> Any:
-        """构建并编译 LangGraph StateGraph 状态机图。
-
-        返回:
-            CompiledGraph: 可执行的状态图实例。
-        """
+        """构建并编译 LangGraph StateGraph 状态机图。"""
         workflow = StateGraph(
             _PlannerWorkflowState,
             context_schema=AgentToolContext,
             input_schema=_PlannerWorkflowInput,
             output_schema=_PlannerWorkflowOutput,
         )
-        # 注册图节点
         workflow.add_node(
             "collect_initial_evidence",
             self._collect_initial_evidence,
@@ -198,7 +146,6 @@ class PlannerAgentRunner:
         workflow.add_node("commit_plan", self._commit_plan)
         workflow.add_node("resolve_gap", self._resolve_gap)
 
-        # 注册边与条件分支
         workflow.add_edge(START, "collect_initial_evidence")
         workflow.add_conditional_edges(
             "collect_initial_evidence",
@@ -358,17 +305,7 @@ class PlannerAgentRunner:
         collect_more_allowed: bool,
         context: AgentToolContext,
     ) -> tuple[Any, GapDecision]:
-        """封装调用 GapHandler Agent 并解析校验其决策。
-
-        参数:
-            planner_input: 规划输入上下文。
-            evidence_rounds: 已执行证据轮次。
-            collect_more_allowed: 是否允许补查。
-            context: 工具调用上下文。
-
-        返回:
-            tuple[Any, GapDecision]: 原始 RunResult 与校验后的决策对象。
-        """
+        """封装调用 GapHandler Agent 并解析校验其决策。"""
         handler_input = GapHandlerInput(
             current_user_input=planner_input.current_user_input,
             selected_context=planner_input.context_chains,
@@ -394,24 +331,8 @@ class PlannerAgentRunner:
         evidence_history: list[Any],
         context: AgentToolContext,
     ) -> Any:
-        """根据 GapDecision 动作类型进行最终分支分发。
-
-        参数:
-            decision: Gap 决策对象。
-            gap_result: GapHandler 的 RunResult。
-            evidence_history: 取证历史消息列表。
-            context: 上下文对象。
-
-        返回:
-            Any: 对应分支的执行终态结果。
-
-        异常:
-            PlanningRetryRequested: 当决策为 RETRY 时抛出。
-            RuntimeError: 当决策为 SYSTEM_FAILURE 时抛出。
-            GapDecisionError: 当出现非法决策时抛出。
-        """
+        """根据 GapDecision 动作类型进行最终分支分发。"""
         if decision.action == GapAction.COMMIT:
-            # 决策允许 Commit：将决策作为内部消息追加到历史后进入 Commit Agent
             return await self._run_commit(
                 evidence_history=_append_internal_message(
                     evidence_history,
@@ -436,9 +357,7 @@ class PlannerAgentRunner:
                 required_information=decision.required_information,
                 known_resource_refs=decision.known_resource_refs,
             )
-            # 在数据库持久化澄清请求
             await _mark_gap_clarification(context, clarification)
-            # 驱动 Clarification Agent 生成面向用户的澄清提问
             return await Runner.run(
                 self.clarification_agent,
                 clarification.model_dump_json(indent=2),
@@ -454,15 +373,7 @@ class PlannerAgentRunner:
         evidence_history: list[Any],
         context: AgentToolContext,
     ) -> Any:
-        """运行 Commit Agent 创建 Task 并提交 Plan。
-
-        参数:
-            evidence_history: 包含完整 Evidence 交互历史的消息列表。
-            context: 工具调用上下文。
-
-        返回:
-            Any: Commit Agent Run 结果。
-        """
+        """运行 Commit Agent 创建 Task 并提交 Plan。"""
         return await Runner.run(
             self.commit_agent,
             evidence_history,
@@ -475,10 +386,7 @@ class PlannerAgentRunner:
 def _route_initial_evidence(
     state: _PlannerWorkflowState,
 ) -> Literal["commit", "assess_gap"]:
-    """条件路由函数：判断第一轮取证后是否直接可 Commit。
-
-    若所有 EvidenceItem 均成功且无任何 gap，直接进入 commit_plan，否则进入 assess_initial_gap。
-    """
+    """条件路由函数：判断第一轮取证后是否直接可 Commit。"""
     first_round = state["evidence_rounds"][0]
     if _evidence_is_ready_for_commit(first_round.collector_results):
         return "commit"
@@ -495,19 +403,7 @@ def _route_initial_gap(
 
 
 def _evidence_is_ready_for_commit(results: list[CollectorResult]) -> bool:
-    """检查取证结果是否达到无缺口直通 Commit 的严格标准。
-
-    条件：
-    - 至少存在一条 EvidenceItem；
-    - 所有 EvidenceItem 的 outcome 均为 succeeded；
-    - 所有 Collector 的 gaps 列表均为空。
-
-    参数:
-        results: Collector 结果列表。
-
-    返回:
-        bool: 符合直通条件返回 True，否则返回 False。
-    """
+    """检查取证结果是否达到无缺口直通 Commit 的严格标准。"""
     evidence_items = [
         item for result in results for item in result.evidence_items
     ]
@@ -525,16 +421,7 @@ def _append_internal_message(
     label: str,
     payload: Any,
 ) -> list[Any]:
-    """向消息历史中追加内部系统/状态机提示消息。
-
-    参数:
-        history: 既有消息列表。
-        label: 消息标签。
-        payload: 待序列化的数据载荷。
-
-    返回:
-        list[Any]: 追加后的新消息列表。
-    """
+    """向消息历史中追加内部系统/状态机提示消息。"""
     return [
         *history,
         {
@@ -550,17 +437,7 @@ def _append_internal_message(
 def _planning_scope(
     context: AgentToolContext,
 ) -> tuple[Any, str, str]:
-    """提取 Planning 上下文必要服务与 ID，确保不为空。
-
-    参数:
-        context: 工具调用上下文。
-
-    返回:
-        tuple[Any, str, str]: (planning_services, plan_id, conversation_id)。
-
-    异常:
-        RuntimeError: 当上下文缺少必要 planning 字段时抛出。
-    """
+    """提取 Planning 上下文必要服务与 ID，确保不为空。"""
     if (
         context.planning_services is None
         or context.plan_id is None
@@ -574,12 +451,7 @@ async def _mark_gap_unsupported(
     context: AgentToolContext,
     reason: str,
 ) -> None:
-    """在线程池中调用 Use Case 将 Plan 标记为 unsupported。
-
-    参数:
-        context: 工具调用上下文。
-        reason: 不支持原因。
-    """
+    """在线程池中调用 Use Case 将 Plan 标记为 unsupported。"""
     services, plan_id, _ = _planning_scope(context)
     await asyncio.to_thread(
         services.mark_plan_unsupported.execute,
@@ -591,12 +463,7 @@ async def _mark_gap_clarification(
     context: AgentToolContext,
     data: ClarificationHandoffInput,
 ) -> None:
-    """在线程池中调用 Use Case 将 Plan 标记为 needs_clarification 并持久化澄清请求。
-
-    参数:
-        context: 工具调用上下文。
-        data: 澄清参数载荷。
-    """
+    """在线程池中调用 Use Case 将 Plan 标记为 needs_clarification 并持久化澄清请求。"""
     services, plan_id, conversation_id = _planning_scope(context)
     await asyncio.to_thread(
         services.mark_plan_needs_clarification.execute,
@@ -611,10 +478,8 @@ async def _mark_gap_clarification(
     )
 
 
-# 加载业务 Service Map 规则描述常量
 _SERVICE_MAP = load_service_map()
 
-# Planner 基础通用指令
 _PLANNER_BASE_INSTRUCTIONS = f"""
 你是业务 Planner。输入中的 current_user_input 是当前请求，context_chains 只包含
 Context Selection 授权读取的完整历史 Chain；当前 Turn 不属于这些历史 Chain。
@@ -627,7 +492,6 @@ WHAT，Task Runtime 和受限 Executor 决定 HOW。
 {_SERVICE_MAP}
 """.strip()
 
-# Evidence Phase 专用系统指令
 _PLANNER_EVIDENCE_INSTRUCTIONS = f"""
 {_PLANNER_BASE_INSTRUCTIONS}
 
@@ -644,7 +508,6 @@ gap 只描述未知事实，不决定 clarification、retry、unsupported 或后
 完整传递给 Commit Phase，不得编造或改写其中的事实。
 """.strip()
 
-# Commit Phase 专用系统指令
 _PLANNER_COMMIT_INSTRUCTIONS = f"""
 {_PLANNER_BASE_INSTRUCTIONS}
 
@@ -696,16 +559,7 @@ def build_planner_agent(
     model_settings: ModelSettings,
     collectors: CollectorAgentSet,
 ) -> PlannerAgentRunner:
-    """初始化装配物理隔离的 Evidence、GapHandler、Commit 与 Clarification 各阶段 Agent。
-
-    参数:
-        model: 模型实例。
-        model_settings: 基础模型设置。
-        collectors: 三个只读 Collector 包装的工具集。
-
-    返回:
-        PlannerAgentRunner: 编译好 LangGraph 状态图的运行器实例。
-    """
+    """初始化装配物理隔离的 Evidence、GapHandler、Commit 与 Clarification 各阶段 Agent。"""
     evidence_settings = model_settings.resolve(
         ModelSettings(parallel_tool_calls=True)
     )
@@ -737,7 +591,6 @@ def build_planner_agent(
         """Commit Agent 决定转交 Clarification 时的 Handoff 回调函数。"""
         await _mark_gap_clarification(ctx.context, data)
 
-    # 包装 Clarification Handoff 工具
     clarification_handoff = handoff(
         clarification_agent,
         tool_name_override="clarification_handoff",
@@ -755,14 +608,12 @@ def build_planner_agent(
         model_settings=model_settings,
         output_type=None,
     )
-    # Evidence Agent：仅绑定 Collector Tools，开启并发调用
     evidence_agent = base_planner.clone(
         instructions=_PLANNER_EVIDENCE_INSTRUCTIONS,
         tools=list(collectors.planner_tools),
         handoffs=[],
         model_settings=evidence_settings,
     )
-    # Commit Agent：仅绑定 Planning Tools 与 Clarification Handoff，关闭并发调用
     commit_agent = base_planner.clone(
         instructions=_PLANNER_COMMIT_INSTRUCTIONS,
         tools=list(PLANNER_TOOLS),
