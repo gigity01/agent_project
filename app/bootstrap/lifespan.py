@@ -1,11 +1,4 @@
-"""FastAPI 应用生命周期与全局依赖对象装配模块。
-
-职责说明：
-- 负责在服务启动时初始化 Redis 客户端、执行 PING 健康检查探测，构建 DeepSeek LLM Provider、MySQL 命名锁、Qdrant 向量库、Docling 解析器等基础设施客户端。
-- 装配各业务领域（Context、Document、Operations、Planning、Task Runtime、Messaging）的 Application Use Case、Ports 与 Agent 执行器。
-- 保证 Redis 故障时应用 fail-fast 启动失败，防止带着不可用的锁与缓存进入服务状态。
-- 通过 FastAPI `lifespan` 异步上下文管理器管理应用启动与优雅关闭流程。
-"""
+"""FastAPI 应用生命周期与全局依赖对象装配模块。"""
 
 from __future__ import annotations
 
@@ -249,23 +242,7 @@ from app.shared.observability.context_logger import ContextEventLogger
 
 
 async def build_container() -> AppContainer:
-    """初始化底层客户端并装配应用级共享依赖对象容器。
-
-    执行步骤：
-    1. 创建 Redis 客户端并执行 PING 探测；若不可用则抛出异常阻止启动。
-    2. 创建 Context 领域组件（路由锁、热资源队列、ContextService）。
-    3. 创建 DeepSeek Model Provider（若配置了 API Key）及其对应的 Agent 路由与执行器。
-    4. 创建 Operations 日志仓储与查询服务。
-    5. 创建 Document 领域组件（存储、解析工厂、切块器、Embedding、Qdrant、MySQL 命名锁围栏）。
-    6. 装配 Planning 领域与 Task Runtime 领域用例。
-    7. 返回装配完成的 `AppContainer` 实例。
-
-    返回:
-        AppContainer: 全局应用容器。
-
-    异常:
-        RuntimeError: 当 Redis 连接失败或依赖装配异常时抛出。
-    """
+    """初始化底层客户端并装配应用级共享依赖对象容器。"""
     # 1. 初始化 Redis 客户端并执行健康探测
     redis_client = create_redis_client(
         REDIS_URL,
@@ -753,14 +730,7 @@ async def build_container() -> AppContainer:
 
 
 def _build_collector_agents(provider: DeepSeekModelProvider):
-    """仅在启用 Agent 时加载 Agents SDK Collector 定义。
-
-    参数:
-        provider: DeepSeek 模型提供者。
-
-    返回:
-        CollectorAgentSet: 三个 Collector Agent 集合。
-    """
+    """仅在启用 Agent 时加载 Agents SDK Collector 定义。"""
     from app.agents.collectors import build_collector_agents
 
     return build_collector_agents(
@@ -770,15 +740,7 @@ def _build_collector_agents(provider: DeepSeekModelProvider):
 
 
 def _build_planner_agent(provider, collectors):
-    """使用同一 DeepSeek Provider 装配 Planner 与并发 Tool 配置。
-
-    参数:
-        provider: DeepSeek 模型提供者。
-        collectors: 取证 Collector 工具集合。
-
-    返回:
-        PlannerAgentRunner: Planner 运行器。
-    """
+    """使用同一 DeepSeek Provider 装配 Planner 与并发 Tool 配置。"""
     from app.agents.planner import build_planner_agent
 
     return build_planner_agent(
@@ -789,14 +751,7 @@ def _build_planner_agent(provider, collectors):
 
 
 def _build_document_executor_agents(provider):
-    """使用同一 DeepSeek Provider 装配受限 Document Executor Agents。
-
-    参数:
-        provider: DeepSeek 模型提供者。
-
-    返回:
-        DocumentExecutorAgentSet: 三个受限能力执行器集合。
-    """
+    """使用同一 DeepSeek Provider 装配受限 Document Executor Agents。"""
     from app.agents.document_executors import (
         build_document_executor_agents,
     )
@@ -809,14 +764,7 @@ def _build_document_executor_agents(provider):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI 应用生命周期管理器。
-
-    启动时创建统一依赖容器并挂载至 `app.state.container`；
-    关闭时安全调用 `container.aclose()` 释放外部连接。
-
-    参数:
-        app: FastAPI 应用对象。
-    """
+    """FastAPI 应用生命周期管理器。"""
     container = await build_container()
     app.state.container = container
 
