@@ -81,6 +81,8 @@ class EvidenceItem(BaseModel):
     属性:
         tool_name: 实际调用的工具名称。
         tool_call_id: 工具调用的唯一标识 ID。
+        original_tool_call_id: 首次查询的 Tool Call ID，用于关联局部重试尝试。
+        attempt_count: 当前逻辑查询的调用次数，首次调用为 1。
         arguments: 实际传入的查询参数字典。
         outcome: 执行终态分类（succeeded、rejected 或 failed）。
         result_code: 机器可读的业务结果码。
@@ -92,6 +94,8 @@ class EvidenceItem(BaseModel):
 
     tool_name: str = Field(min_length=1)
     tool_call_id: str = Field(min_length=1)
+    original_tool_call_id: str = Field(min_length=1)
+    attempt_count: int = Field(ge=1)
 
     # ToolCallItem：实际查询输入。
     arguments: dict[str, Any] = Field(default_factory=dict)
@@ -329,6 +333,8 @@ def _extract_evidence_items(new_items: list[Any]) -> list[EvidenceItem]:
                 message=data["message"],
                 retryable=data["retryable"],
                 resource_refs=data["resource_refs"],
+                original_tool_call_id=call_id,
+                attempt_count=1,
                 payload=payload,
             )
         )
