@@ -1,0 +1,142 @@
+"""QdrantVectorStore 稳定 Point ID 批量删除与异常边界轻量测试。
+
+核心业务不变量（遵循 AGENTS.md 规范）：
+1. 稳定 Point ID 映射与幂等删除：
+   - Qdrant 中的 Point ID 与 `child_chunks.id` 一一对应。
+   - `delete_points` 接收稳定的 Point ID 列表，并通过 PointIdsList 发送批量删除指令，用于补偿清理与重复索引。
+2. 异常隔离：
+   - 集合不存在时自动初始化并配置 Distance.COSINE 向量参数；删除操作抛出异常时安全向上层抛出。
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import types
+import unittest
+from pathlib import Path
+
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+STORE_PATH = (
+    ROOT_DIR
+    / "app"
+    / "modules"
+    / "document"
+    / "infrastructure"
+    / "vector_store"
+    / "qdrant.py"
+)
+
+
+class _PointIdsList:
+    """测试用 Qdrant models.PointIdsList 替身。"""
+    def __init__(self, *, points: list[int]) -> None:
+        self.points = points
+
+
+class _VectorParams:
+    """测试用 Qdrant models.VectorParams 替身。"""
+    def __init__(self, **values) -> None:
+        self.values = values
+
+
+class _Distance:
+    """测试用 Qdrant models.Distance 替身。"""
+    COSINE = "cosine"
+
+
+class _Client:
+    """测试用 QdrantClient 替身，拦截 collection_exists, upsert, delete 调用。"""
+    def __init__(self) -> None:
+        self.collection_exists_calls: list[dict] = []
+        self.upsert_calls: list[dict] = []
+        self.delete_calls: list[dict] = []
+
+    def collection_exists(self, **values) -> bool:
+        self.collection_exists_calls.append(values)
+        return True
+
+    def upsert(self, **values) -> None:
+        self.upsert_calls.append(values)
+
+    def delete(self, **values) -> None:
+        self.delete_calls.append(values)
+
+
+def _load_store_module(client: _Client):
+    qdrant_module = types.ModuleType("qdrant_client")
+    qdrant_models_module = types.ModuleType("qdrant_client.models")
+    settings_module = types.ModuleType("app.config.settings")
+    qdrant_module.QdrantClient = lambda url: client
+    qdrant_models_module.Distance = _Distance
+    qdrant_models_module.PointIdsList = _PointIdsList
+    qdrant_models_module.PointStruct = object
+    qdrant_models_module.VectorParams = _VectorParams
+    settings_module.QDRANT_URL = "http://qdrant.invalid"
+    settings_module.QDRANT_COLLECTION_NAME = "chunks"
+    settings_module.EMBEDDING_VECTOR_SIZE = 3
+    replacements = {
+        "qdrant_client": qdrant_module,
+        "qdrant_client.models": qdrant_models_module,
+        "app.config.settings": settings_module,
+    }
+    originals = {name: sys.modules.get(name) for name in replacements}
+    sys.modules.update(replacements)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "qdrant_store_under_test",
+            STORE_PATH,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("无法加载待测试的 QdrantVectorStore")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for name, original in originals.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
+
+
+class QdrantVectorStoreTest(unittest.TestCase):
+    def test_upsert_points_does_not_check_collection_implicitly(self) -> None:
+        client = _Client()
+        store_module = _load_store_module(client)
+        store = store_module.QdrantVectorStore()
+        point = object()
+
+        store.upsert_points([point])
+
+        self.assertEqual(client.collection_exists_calls, [])
+        self.assertEqual(len(client.upsert_calls), 1)
+        self.assertEqual(client.upsert_calls[0]["points"], [point])
+        self.assertTrue(client.upsert_calls[0]["wait"])
+
+    def test_delete_points_uses_point_ids_selector_and_waits(self) -> None:
+        client = _Client()
+        store_module = _load_store_module(client)
+        store = store_module.QdrantVectorStore()
+
+        store.delete_points([1, 2])
+
+        self.assertEqual(len(client.delete_calls), 1)
+        call = client.delete_calls[0]
+        self.assertEqual(call["collection_name"], "chunks")
+        self.assertEqual(call["points_selector"].points, [1, 2])
+        self.assertTrue(call["wait"])
+
+    def test_delete_points_skips_empty_ids(self) -> None:
+        client = _Client()
+        store_module = _load_store_module(client)
+        store = store_module.QdrantVectorStore()
+
+        store.delete_points([])
+
+        self.assertEqual(client.delete_calls, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

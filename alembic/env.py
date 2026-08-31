@@ -1,4 +1,11 @@
-"""Alembic 运行环境：将应用 ORM 元数据与数据库 URL 提供给迁移上下文。"""
+"""Alembic 迁移运行环境配置模块。
+
+本模块负责在执行数据库迁移（Alembic upgrade / downgrade）时：
+1. 显式调用 `load_all_models()` 导入全部 SQLAlchemy ORM 实体，确保 `Base.metadata` 包含完整的数据库模式定义。
+2. 从应用核心配置 `app.config.settings.SQLALCHEMY_DATABASE_URL` 动态覆盖 Alembic 配置中的数据库连接串，
+   保证迁移工具与 FastAPI / Worker 运行时连接同一数据库实例，避免环境配置漂移。
+3. 提供离线（offline）SQL 脚本生成与在线（online）事务性连接执行两种迁移执行模式。
+"""
 
 from logging.config import fileConfig
 
@@ -7,27 +14,31 @@ from sqlalchemy import pool
 
 from alembic import context
 
-from app.app_config.settings import SQLALCHEMY_DATABASE_URL
-from app.db.session import Base
+from app.config.settings import SQLALCHEMY_DATABASE_URL
+from app.infrastructure.database.base import Base
+from app.infrastructure.database.model_registry import load_all_models
 
-from app.models.knowledge_base import KnowledgeBase
-from app.models.document import Document
-from app.models.document_artifact import DocumentArtifact
 
-# Alembic 配置对象来自 alembic.ini；运行时 URL 由应用统一配置覆盖，避免迁移
-# 与服务连接到不同数据库。
+# 加载所有 ORM 模型类，确保 Base.metadata 注册了完整的表结构定义
+load_all_models()
+
+# Alembic 配置对象来自 alembic.ini；运行时 URL 由应用统一配置覆盖，避免迁移与服务连接到不同数据库
 config = context.config
 config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
 
-# 仅在存在 ini 文件时初始化 Alembic 自身日志。
+# 仅在存在 ini 配置文件时初始化 Alembic 自身日志格式
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# 自动生成迁移时以应用 Base.metadata 为唯一模型来源。
+# 自动生成迁移（autogenerate）时以应用 ORM 的 Base.metadata 为唯一事实来源
 target_metadata = Base.metadata
 
+
 def run_migrations_offline() -> None:
-    """以离线模式生成 SQL，不创建数据库连接。"""
+    """以离线模式运行迁移：仅输出 SQL DDL 语句，不与数据库建立真实连接。
+
+    用于审查即将执行的 SQL 变更或在受限生产环境中导出迁移脚本。
+    """
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -41,7 +52,10 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """以在线模式建立临时连接并在受控事务中执行迁移。"""
+    """以在线模式运行迁移：创建临时连接池并在受控事务中执行 DDL 迁移。
+
+    使用 NullPool 避免连接池驻留，迁移完成后立即释放数据库连接。
+    """
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -50,7 +64,8 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
         )
 
         with context.begin_transaction():

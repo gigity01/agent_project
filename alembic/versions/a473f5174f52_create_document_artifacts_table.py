@@ -1,12 +1,15 @@
-"""创建文档派生产物表。
+"""创建文档派生产物表（document_artifacts）。
 
-该表将二级文本、布局结果等可追溯产物与原始 Document 分离保存，支持同类
-产物版本替换，同时保留历史记录供审计。
+业务背景与设计规范：
+1. 本表用于将复杂格式转换产物（如 Docling 转换的 secondary markdown、版面布局分析等）、清洗后的规范文本（cleaned markdown）
+   以及未来扩展的多模态中间产物与原始 Document 记录物理分离保存。
+2. 支持 operation-scoped 产物生命周期管理：文档重新处理激活新产物前，旧 active 产物标记为 superseded，保留历史记录供审计与回溯。
+3. 建立基于 document_id 的外键级联删除（CASCADE）和针对 (document_id, artifact_type, artifact_role) 的多维复合索引，
+   支持高效按类型查询激活态产物。
 
 Revision ID: a473f5174f52
 Revises: f9ea202ef500
 Create Date: 2026-07-09 09:56:35.417378
-
 """
 from typing import Sequence, Union
 
@@ -23,7 +26,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """创建派生产物表及其按文档、类型和状态查询所需的索引。"""
+    """创建 document_artifacts 物理表并建立按文档、产物类型、角色及状态查询的多维索引。"""
     op.create_table(
         "document_artifacts",
         sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),

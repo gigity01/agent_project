@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents import Agent, Runner
 
-from app.agents.deepseek_provider import (
+from app.infrastructure.llm.deepseek.provider import (
     DeepSeekModelProvider,
     build_deepseek_run_config,
 )

@@ -44,8 +44,8 @@ coverage.xml
 *.db
 *.sqlite
 *.sqlite3
-storage/
-app/storage/
+/storage/
+/app/storage/
 uploads/
 cleaned_files/
 chroma_db/
@@ -66,3 +66,7 @@ __pycache__/
 desktop.ini
 Thumbs.db
 .DS_Store
+
+# 其他
+AGENTS.md
+/PROJECT_DOCUMENTATION.md
